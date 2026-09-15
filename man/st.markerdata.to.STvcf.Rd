@@ -1,0 +1,90 @@
+\name{st.markerdata.to.STvcf}
+\alias{st.markerdata.to.STvcf}
+\title{Convert a SelectionTools Marker Data Set to STvcf}
+\description{
+Converts marker genotypes and the linkage map of an existing SelectionTools
+marker data set to the compact diploid STvcf representation.
+}
+\usage{
+st.markerdata.to.STvcf(data.set="default")
+}
+\arguments{
+\item{data.set}{Character string naming the SelectionTools marker data set to
+be converted.}
+}
+\details{
+This function supplies the marker-data to STvcf step of the reverse data
+chain. With the existing \code{st.get.simpop()} function, a simulation
+population can first be returned to the ordinary SelectionTools marker-data
+structure and can then be converted to STvcf without introducing a separate
+simulation-to-STvcf bridge.
+
+The marker data set must contain genotype data and a usable linkage map.
+Every marker-matrix column must have exactly one active map location. Map-only
+locations are ignored. Missing or duplicate marker locations, inconsistent
+marker and map names, invalid chromosome numbers, non-finite positions, and
+negative positions cause conversion to fail.
+
+The current marker order is retained. Map positions are returned as the
+current double-precision cM values without intentional rounding. Current
+numeric chromosome numbers are converted to consecutive STvcf running codes
+1, 2, ..., in order of first appearance, while \code{CHROM.levels} records
+the corresponding numeric chromosome labels as character strings.
+
+Current marker and individual names become STvcf identifiers. They must be
+unique, contain fewer than 256 bytes, and contain only ASCII letters and
+digits. Dots and all other punctuation are rejected. Names are never silently
+modified during this conversion.
+
+When the marker data came from a simulation population through
+\code{st.get.simpop()}, that existing transfer deliberately creates new
+individual identifiers. In the revised convention a population named P1
+produces names P1I1, P1I2, and so on. The population name used by
+\code{st.get.simpop()} must itself contain only letters and digits so that
+the generated individual identifiers satisfy the marker-data/STvcf name
+rules. Original individual names that existed before simulation are not
+reconstructed; this name change is an intended feature of the current
+simulation-to-marker-data transfer.
+
+The SelectionTools marker structure stores integer allele states but not the
+original textual VCF REF/ALT labels. The converter therefore normalizes the
+observed non-missing allele states separately for each marker. States are
+ordered by their current integer values. The first state becomes
+\code{REF="1"}; further states become \code{ALT="2,3,..."}; genotypes are
+converted to VCF indices 0, 1, 2, ... in that order.
+
+For marker data originally loaded from STvcf, internal alleles are already 1
+for REF, 2 for ALT1, 3 for ALT2, and so on. Transfer to and from simulation
+preserves those integer states. For marker data created by other routes,
+distinct genotype states are retained but historical integer labels are
+normalized.
+
+An all-missing marker is retained with \code{REF="1"}, \code{ALT="."}, and
+missing genotypes. A marker with one observed non-missing state is likewise
+written with \code{ALT="."} and uses VCF allele index 0. If either homologue
+of a marker-data genotype is missing, the exported STvcf genotype is
+completely missing, consistent with the STvcf partial-missing convention.
+
+The two current marker-data allele arrays are retained in order as
+\code{allele1} and \code{allele2}. For data obtained through
+\code{st.get.simpop()}, they correspond to the two simulation homologues. No
+new phasing calculation is performed.
+
+The current SelectionTools marker representation permits at most 254
+biological allele states per marker. After normalization their VCF indices are
+therefore at most 253, so this converter writes raw STvcf allele matrices with
+raw value 255 for missing. Marker genotypes that violate the SelectionTools
+allele-range or missingness invariants are rejected.
+
+The linkage-map class is not part of STvcf. Exact map-position ties may have
+already been dispersed by the SelectionTools linkage-map or simulation
+machinery; this function returns the current stored positions and cannot
+reconstruct an earlier duplicate position that is no longer represented.
+
+Only marker genotype and genetic-map information are returned. Performance
+data, estimated effects, genomic relationship matrices, selection values,
+simulation GValue/PValue arrays, and other derived objects are outside STvcf.
+}
+\value{
+A \code{list} of class \code{"STvcf"} containing the current marker data, individual identifiers, marker metadata and chromosome-label mapping. If conversion fails, \code{NULL} is returned.
+}

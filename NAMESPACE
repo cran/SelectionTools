@@ -1,0 +1,19 @@
+useDynLib(SelectionTools)
+# Export all names
+
+exportPattern(".")
+
+importFrom("grDevices",
+           "dev.off", "pdf", "png")
+
+importFrom("graphics",
+           "axis", "box", "close.screen", "grid", "image",
+           "lines", "par", "points", "screen", "split.screen",
+           "text")
+
+importFrom("stats",
+           "cor", "dnorm", "nobs", "p.adjust", "qnorm",
+           "quantile", "rbinom", "runif", "sd", "var")
+
+importFrom("utils",
+           "capture.output", "head", "read.table", "write.table")

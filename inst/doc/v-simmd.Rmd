@@ -1,0 +1,583 @@
+---
+title: "Simulating Mendel's Experiments"
+author: "Philipp Heilmann"
+date: "2026-02-10"
+output:
+  pdf_document:
+    number_sections: true
+    latex_engine: pdflatex
+documentclass: scrartcl
+highlight: null
+header-includes:
+  - \usepackage[T1]{fontenc}
+  - \usepackage{lmodern}
+  - \usepackage{xcolor}
+  - \definecolor{ForestGreen}{RGB}{34,139,34}
+  - \usepackage{sectsty}
+  - \allsectionsfont{\color{ForestGreen}}
+  - \newcommand{\tab}{\hspace*{1em}}
+    # Make ALL syntax-highlight tokens the same color (blue)
+  - \definecolor{codegray}{RGB}{60,60,60}
+  - \renewcommand{\KeywordTok}[1]{\textcolor{codegray}{#1}}
+  - \renewcommand{\DataTypeTok}[1]{\textcolor{codegray}{#1}}
+  - \renewcommand{\DecValTok}[1]{\textcolor{codegray}{#1}}
+  - \renewcommand{\BaseNTok}[1]{\textcolor{codegray}{#1}}
+  - \renewcommand{\FloatTok}[1]{\textcolor{codegray}{#1}}
+  - \renewcommand{\CharTok}[1]{\textcolor{codegray}{#1}}
+  - \renewcommand{\StringTok}[1]{\textcolor{codegray}{#1}}
+  - \renewcommand{\CommentTok}[1]{\textcolor{codegray}{#1}}
+  - \renewcommand{\OtherTok}[1]{\textcolor{codegray}{#1}}
+  - \renewcommand{\AlertTok}[1]{\textcolor{codegray}{#1}}
+  - \renewcommand{\FunctionTok}[1]{\textcolor{codegray}{#1}}
+  - \renewcommand{\RegionMarkerTok}[1]{\textcolor{codegray}{#1}}
+  - \renewcommand{\ErrorTok}[1]{\textcolor{codegray}{#1}}
+  - \renewcommand{\NormalTok}[1]{\textcolor{codegray}{#1}}
+vignette: >
+  %\VignetteIndexEntry{Simultion of Mendel's Exeriments}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(comment = '' )
+library(SelectionTools)
+```
+
+# Introduction to Genetic Simulation
+## Form of seeds: Mendel’s experiments, one trait
+
+The SelectionTools contain simulation software. We start by simulating Mendel’s experiments. The first step of a simulation is to define the genome and locus positions that should be simulated. We have to define a data.frame that contains one locus per row. Each locus (i.e. each row) requires the chromosome the locus is on, it's position on the chromosome, a name and a class.\
+The locus name can be chosen arbitrary, and the class name describes whether the locus is a marker or a trait. The class name is important later for selection. An arbitrary number of loci can be defined, each in a  new row.
+
+\color{blue}
+```{r readin}
+map <- data.frame(chrom = 1,
+                  pos = 0.0,
+                  name = "form")
+define.genome(map)
+```
+\color{black}
+
+
+The number of chromosomes and their respective lengths are inferred from the data we provided.
+
+Now we define the parental lines of the cross. They have the names P1 and P2 and are homozygous for the two alleles 1 and 2, respectively. Alleles must be coded with numbers, not with characters. The 1 stands for round seeds and the 2 for wrinkled. We know from previous experiments that round is dominant over wrinkled.
+
+\color{blue}
+```{r popdef1}
+
+init.population("P1", homozygote(1))
+init.population("P2", homozygote(2))
+
+```
+\color{black}
+
+
+Then we cross the parental lines, the first argument of the cross command is the name of the newly generated population followed by the name of the two parental populations. The number at the end is the number of progenies.
+
+\color{blue}
+```{r cross}
+cross("F1","P1", "P2", 563)
+```
+\color{black}
+
+
+We now look at our populations. The first argument of the evaluate.genotype command is the name of the population, the second is the locus name that should be evaluated. P1 consists of one individual that carries at both homologous chromosomes at the locus form the allele 1.
+
+\color{blue}
+```{r eval1}
+evaluate.genotype2("P1","form")
+```
+\color{black}
+
+
+evaluate.genotype("P1","form")
+
+\color{blue}
+```{r eval2}
+evaluate.genotype2("P2","form")
+```
+\color{black}
+
+
+and F1 consists of 563 plants that carry one copy of allele 1 and one copy of allele 2. Because round is dominant, they are all round.
+
+\color{blue}
+```{r eval3}
+evaluate.genotype("F1","form")
+```
+\color{black}
+
+
+\tab \textit{\textbf{Mendel’s 1 law:} The progenies from crosses of homozygous lines are uniform and heterozygous.}
+
+We take a sample of 252 out of the 563 F1 plants
+
+\tab \texttt{sample.population ("SampleFromF1","F1",252)}
+
+and self these. From the selfing we get 7223 seeds.
+
+\tab \texttt{cross("F2","SampleFromF1","SampleFromF1",7323,self=1)}
+
+We count the wrinkled seeds and find 1853 of them.
+
+\tab \texttt{evaluate.genotype("F2","form")}
+
+\color{blue}
+```{r , echo=FALSE}
+sample.population ("SampleFromF1","F1",252)
+cross("F2","SampleFromF1","SampleFromF1",7323,self=1)
+
+```
+
+```{r}
+evaluate.genotype("F2","form")
+```
+\color{black}
+
+
+\tab \textit{\textbf{Mendel’s 2 law:} After selfing the F1s from crosses of homozygous lines, the progenies in the F2 are segregating.}
+
+On the genotypic level (which we simulate) the segregation ratio is 1:2:1. Depending on dominant/recessive or co-dominant inheritance this is a segregation of either 3:1 or 1:2:1 for the phenotypes.
+
+## Color and form of seeds: Mendel’s experiments, two raits
+
+We now consider two traits. We first assume that the two loci underlying the traits form and color are located on two different chromosomes and generate an F2 population:
+
+\color{blue}
+```{r}
+reset.all()
+
+map <- data.frame(chrom = 1:2, 
+                  pos = c(0.0, 0.0), 
+                  name = c("form","color")) 
+define.genome(map)
+
+init.population("P1",homozygote(1))
+init.population("P2",homozygote(2))
+cross("F1","P1","P2",10)
+cross("F2","F1","F1",1000)
+
+evaluate.genotype2("F2", map$name)
+```
+
+```{r}
+evaluate.genotype2("F2", map$name, mode=0)
+```
+\color{black}
+
+
+\tab \textit{\textbf{Mendel’s 3 law}: Genes are inherited independently.}
+
+## Backcrossing and recombination
+
+Bacrossing to the recessive parent is much easier to interpret:
+
+\color{blue}
+```{r, results='hide', message=FALSE, warning=FALSE}
+reset.all()
+
+map <- data.frame(chrom = 1:2, 
+                  pos = c(0.0, 0.0), 
+                  name = c("form","color"))
+define.genome(map)
+
+init.population("P1",homozygote(1))
+init.population("P2",homozygote(2))
+cross ("F1","P1","P2",563)
+cross ("BC1","F1","P2",1000)
+evaluate.genotype2("BC1", map$name)
+```
+\color{black}
+
+In our simulated BC1 population, we observe the four phenotypes with approximately the same frequencies:
+
+\color{blue}
+```{r, echo=FALSE}
+evaluate.genotype2("BC1", map$name)
+```
+\color{black}
+
+
+Now the two loci are on the same chromosome, the first at the telomere, and the second in a map distance of 0.1 M:
+
+\texttt{
+\tab map <- data.frame(chrom = c(1,1),\\
+\tab\tab\tab\tab\tab\tab\tab\tab  pos = c(0.0, 0.1),\\
+\tab\tab\tab\tab\tab\tab\tab\tab  name = c("form","color"),\\
+\tab\tab\tab\tab \tab\tab\tab\tab class = c("trait1","trait2"))\\
+\tab define.genome(map)\\
+\tab ...\\}
+
+\color{blue}
+```{r, results='hide', message=FALSE, warning=FALSE}
+reset.all()
+
+map <- data.frame(chrom = c(1,1), 
+                  pos = c(0.0, 0.0), 
+                  name = c("form","color"))
+define.genome(map)
+
+init.population("P1",homozygote(1))
+init.population("P2",homozygote(2))
+cross ("F1","P1","P2",563)
+cross ("BC1","F1","P2",1000)
+evaluate.genotype2("BC1", map$name)
+```
+
+```{r, echo=FALSE}
+evaluate.genotype2("BC1", map$name)
+```
+\color{black}
+
+
+\tab  \textit{\textbf{Recombination frequencies} can be estimated in backcross populations by
+summing up the frequency of recombinant gametes.}
+
+# Random Mating Populations
+
+## F2 Population
+
+We start with an F2 population of peas and look at the genotype frequencies and allele frequencies of the seed form.
+
+\color{blue}
+```{r}
+map <- data.frame(1,0.01,"form")
+define.genome(map)
+init.population("P1",homozygote(1))
+init.population("P2",homozygote(2))
+cross("F1","P1","P2",1)
+cross("F2","F1","F1",1000)
+evaluate.genotype2 ("F2","form")
+evaluate.allele.freq2("F2","form")
+```
+\color{black}
+
+
+We carry out random mating and investigate genotype and allele frequencies:
+
+\color{blue}
+```{r}
+
+cross("SYN1","F2","F2",1000)
+cross("SYN2","SYN1","SYN1",1000)
+cross("SYN3","SYN2","SYN2",1000)
+evaluate.genotype2("SYN3","form")
+evaluate.allele.freq2("SYN3","form")
+```
+\color{black}
+
+
+## Population of homozygous lines
+
+We start with a population of homozygous lines and look at the genotype and allele frequencies after one generation of random mating:
+
+\color{blue}
+```{r}
+remove.all.populations()
+init.population("P11",homozygote(1,500))
+init.population("P22",homozygote(2,500))
+append.population("ADM","P11")
+append.population("ADM","P22")
+evaluate.genotype2 ("ADM","form")
+evaluate.allele.freq2("ADM","form")
+```
+
+```{r}
+cross("SYN1","ADM","ADM",1000)
+evaluate.genotype("SYN1","form")
+evaluate.allele.freq("SYN1","form")
+```
+\color{black}
+
+
+\tab \textit{\textbf{Hardy-Weinberg proportions}: $p^2 : 2pq : q^2$ are reached in one generation of random mating, irrespective of the gentype frequencies in the base population.}
+
+## Arbitrary allele frequencies
+
+\color{blue}
+```{r}
+remove.all.populations()
+init.population("P11",homozygote(1,100))
+init.population("P22",homozygote(2,900))
+append.population("ADM","P11")
+append.population("ADM","P22")
+evaluate.genotype2 ("ADM","form")
+evaluate.allele.freq2("ADM","form")
+```
+
+```{r}
+cross("SYN1","ADM","ADM",1000)
+evaluate.genotype("SYN1","form")
+evaluate.allele.freq("SYN1","form")
+```
+
+```{r}
+cross("SYN1","ADM","ADM",1000)
+cross("SYN2","SYN1","SYN1",1000)
+cross("SYN3","SYN2","SYN2",1000)
+evaluate.genotype("SYN3","form")
+evaluate.allele.freq("SYN3","form")
+```
+\color{black}
+
+
+\tab \textit{\textbf{Hardy-Weinberg law} is valid for arbitrary allele frequencies $p$ and $q$.}
+
+# Populations under selection
+
+## Selection against a recessive allele
+
+We start with a population of peas in HWE in which the recessive allele ‘wrinkeld’, which is coded as allele ‘2’ has the allele frequency $q\approx0.1$
+
+\color{blue}
+```{r}
+reset.all()
+map <- data.frame(1,0.0,"form")
+define.genome(map)
+
+init.population("P11",homozygote(1,900))
+init.population("P22",homozygote(2,100))
+append.population("ADM","P11")
+append.population("ADM","P22")
+cross("SYN1","ADM","ADM",1000)
+evaluate.genotype2("SYN1","form")
+evaluate.allele.freq2("SYN1","form")
+```
+\color{black}
+
+
+We now want to select all round seeds. This means, we select against the recessive allele. For simulating selection, effects are required. An effect assigns values to alleles, for this assignment the class names of the loci are used.
+
+~~If an individual has at a locus that belongs to the class trait1 the allele 1 then it gets a uniform value of 1 added to its genotypic value. This effect definition is stored under name effect1. Often effects are defined for quantitative characters, there a population mean is needed. In our example we don’t need a population mean, this is the first 0 in the effect definition.~~
+
+With this effect definition, a genotypic value for each individual of the population can be calculated. Those individuals that carry two times the allele 1 at the locus form, get a 2, those having one copy of the allele get a 1, and those that don’t carry the allele 1 get a zero. We generate a new population called Allrounds that consists of individuals selected from SYN1 on basis of the effect called effect1. ~~The selection consists of all individuals that belong to the best two classes, this is the 2 at the end of the command. The best two classes are the homozygous individuals (carrying two copies of the allele 1), and the heterozygous (carrying one copy).~~
+
+We are interested in all genotypes that have the round phenotype. This is the case if the genotype is carrying allele 1 at least once. We pass the trait and the allele combinations that we want to select as a data.frame to the function. Here, 1|1 and 1|2 can result in round seeds. Effects are estimated automatically and then selection is carried out. The selected genotypes end up in a new population called "allrounds".
+
+\color{blue}
+```{r}
+sel.crit.form <- data.frame(
+  locus    =  c("form", "form") ,
+  allele1  = c(1,1),
+  allele2  = c(1,2)     
+)
+
+sel.crit.form
+select.genotypes("allrounds","SYN1",
+                 sel.crit.form)
+```
+\color{black}
+
+
+We look at the genotype of the selected plants:
+\color{blue}
+```{r}
+evaluate.genotype2("allrounds","form")
+```
+\color{black}
+
+
+We now grow the seeds and random mate the plants.
+
+\color{blue}
+```{r}
+cross ("SYNA","allrounds","allrounds",1000)
+evaluate.genotype2 ("SYNA","form")
+evaluate.allele.freq2("SYNA","form")
+```
+\color{black}
+
+
+The selection against wrinkeld seed was not working well! However, it is difficult to
+draw conclusions just from one simulation. We repeat our simulation 100 times:
+
+\color{blue}
+```{r, message=FALSE, warning=FALSE}
+reset.all()
+map <- data.frame(1,0.0,"form")
+define.genome(map)
+
+for (i in 1:100){
+  init.population("P11",homozygote(1,900))
+  init.population("P22",homozygote(2,100))
+  append.population("ADM","P11")
+  append.population("ADM","P22")
+  cross("SYN1","ADM","ADM",1000)
+  select.genotypes("allrounds","SYN1",
+                 sel.crit.form)  
+  cross ("SYNA","allrounds","allrounds",1000)
+  append.population("STORE","SYNA")
+}
+
+```
+\color{black}
+
+
+Now the numbers are easier to interpret:
+\color{blue}
+```{r}
+evaluate.genotype("STORE","form")
+evaluate.allele.freq("STORE","form")
+```
+\color{black}
+
+
+\tab \textit{\textbf{Selection against recessive alleles:} Even if strong selection is carried out against those individuals of a population, that show the phenotype of a recessive
+allele, this phenotype will reoccur in subsequent generations.}
+
+## Selection for fitness
+
+A human population live in a Malaria region. Assume the allele frequency of the sickle
+cell anemia gene is $f(S)\approx0.1$.
+
+\color{blue}
+```{r}
+reset.all()
+map <- data.frame(1,0.0,"SZA","trait1")
+define.genome(map)
+init.population("P11",homozygote(1,90))
+init.population("P22",homozygote(2,10))
+append.population("ADM","P11")
+append.population("ADM","P22")
+cross("SYN1","ADM","ADM",1000)
+evaluate.genotype("SYN1","SZA")
+evaluate.allele.freq("SYN1","SZA")
+```
+\color{black}
+
+
+We first split the population in three subpopulations, corresponding to the genotype.
+As selected genotypes are removed from the populations, we first remove both homozygous genotypes. What remains in the original dataset are the heterozygous genotypes.
+
+\color{blue}
+```{r}
+select.genotypes("R2","SYN1",data.frame("SZA",1,1))
+evaluate.genotype("R2","SZA")
+select.genotypes("R0","SYN1",data.frame("SZA",2,2))
+evaluate.genotype("R0","SZA")
+rename.population ("SYN1","R1")
+evaluate.genotype("R0","SZA")
+```
+\color{black}
+
+
+Under strong malaria pressure the probability that an individual contributes to the next
+generation are
+
+\color{blue}
+```{r}
+w2 <- 0.5 # Homozygous normal, allele 1
+w1 <- 1.0 # Heterozygous
+w0 <- 0.2 # Homozygous sickle cell anemia, allele 2
+```
+\color{black}
+
+
+Using random numbers for the binomial distribution generate the fraction of the population
+that contributes to the next generation
+
+\textbf{\color{red}{Hier fehlt irgendwas. Gleich wird n.inds benutzt, die werden aber nirgendwo generiert. Daher wird dieser Code gerade nicht ausgeführt.}}
+
+\color{blue}
+```{r, eval=FALSE}
+( nR2 <- n.inds$count[n.inds$PopName=="R2"])
+( nR1 <- n.inds$count[n.inds$PopName=="R1"])
+( nR0 <- n.inds$count[n.inds$PopName=="R0"])
+( sR2 <- rbinom(n=1,size=nR2,prob=w2) )
+( sR1 <- rbinom(n=1,size=nR1,prob=w1) )
+( sR0 <- rbinom(n=1,size=nR0,prob=w0) )
+sample.population("S2","R2",sR2)
+sample.population("S1","R1",sR1)
+sample.population("S0","R0",sR0)
+remove.population("Sx")
+append.population("Sx","S2")
+append.population("Sx","S1")
+append.population("Sx","S0")
+evaluate.genotype2 ("Sx","SZA")
+evaluate.allele.freq2("Sx","SZA")
+```
+\color{black}
+
+
+The next generation:
+
+\color{blue}
+```{r, eval=FALSE}
+cross ("SYNA","Sx","Sx",1000)
+evaluate.genotype2 ("SYNA","SZA")
+evaluate.allele.freq2("SYNA","SZA")
+```
+\color{black}
+
+
+# New functionality: Selecting multiple traits
+
+We have a large population of peas that show all different kinds of phenotypes.
+Their peas can either be yellow or green and they can be round or wrinkled. Additionally,
+their flowers can either be white, red or pink (when heterozygous).
+
+\color{blue}
+```{r}
+reset.all()
+sel.crit.wrinkeled <- data.frame(
+  locus    = "form" ,
+  allele1  = 2       ,
+  allele2  = 2     
+)
+
+sel.crit.yellow <- data.frame(
+  locus    = c ("color" , "color"),
+  allele1  = c (1       ,  1     ),
+  allele2  = c( 1       ,  2     )
+)
+
+sel.crit.pink <- data.frame(
+  locus    = "flower" ,
+  allele1  = 1       ,
+  allele2  = 2     
+)
+criteria <- rbind (sel.crit.yellow, sel.crit.wrinkeled, sel.crit.pink)
+```
+\color{black}
+
+
+We want to select: wrinkled, green peas with pink flowers. We create a population with three loci on three chromosomes:
+
+\color{blue}
+```{r}
+map <- data.frame(chrom = c(1,2,3),
+                  pos = c(0.01,0.05,0.1),
+                  name = c("form","color","flower"))
+define.genome(map)
+```
+\color{black}
+
+
+Some cycles of random mating:
+
+\color{blue}
+```{r}
+init.population("P1",homozygote(1))
+init.population("P2",homozygote(2))
+cross("F1","P1","P2",1)
+cross("F2","F1","F1",1000)
+cross("F3","F2","F2",1000)
+```
+\color{black}
+
+
+And now our selection:
+
+\color{blue}
+```{r}
+select.genotypes("Sel","F3", criteria)
+```
+
+```{r}
+evaluate.genotype2("F3", map$name)
+evaluate.genotype2("Sel", map$name)
+criteria
+```
+\color{black}
+
