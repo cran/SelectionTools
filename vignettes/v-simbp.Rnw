@@ -208,8 +208,8 @@ package.
 library ("SelectionTools")
 
 vignette.data <- new.env(parent = emptyenv())
-data("v-tropmaize-vcf", package = "SelectionTools", envir = vignette.data)
-data("v-tropmaize-phe", package = "SelectionTools", envir = vignette.data)
+data("v-tropmaize-vcf", package="SelectionTools", envir=vignette.data)
+data("v-tropmaize-phe", package="SelectionTools", envir=vignette.data)
 @
 The marker data and the linkage map are provided in VCF like
 data structure (see Section~\ref{sec:DataStructures} for details on
@@ -1048,445 +1048,141 @@ legend(10,3,legend=c("DH, high selection intensity",
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-\newpage
-
 \section{Data structures and VCF import and export}
 \label{sec:DataStructures}
 
-SelectionTools uses the compact \cde{STvcf} R representation as an exchange
-format for diploid marker genotypes together with the genetic linkage-map
-position of every marker.  The representation follows the VCF convention that
-allele index 0 denotes the reference allele and allele indices 1, 2, \ldots
-refer to alternative alleles.  It is deliberately not a complete VCF object.
-Only the information required for the SelectionTools marker-data and
-simulation workflow is retained.
+SelectionTools uses \cde{STvcf} as a compact exchange format for diploid
+marker genotypes together with genetic map positions.  It follows VCF allele
+indexing, with index 0 for the reference allele and indices 1, 2, \ldots for
+alternative alleles, but it is not intended to retain all fields of a VCF
+file.  The object contains only the information needed for transfer between
+R, the SelectionTools marker-data structures, and the simulation routines.
 
-An \cde{STvcf} object is a list of class \cde{STvcf} with exactly nine
-components:
+An \cde{STvcf} object is a list of class \cde{STvcf} with nine components:
+\cde{CHROM}, \cde{POS}, \cde{ID}, \cde{REF}, \cde{ALT},
+\cde{individual}, \cde{allele1}, \cde{allele2}, and
+\cde{CHROM.levels}.  \cde{CHROM} contains consecutive chromosome codes,
+\cde{POS} contains genetic positions in cM, and \cde{CHROM.levels} stores
+the corresponding chromosome labels.  The two allele matrices contain one
+VCF allele index for each homologue and each marker-individual combination.
+
+Marker and individual identifiers must be unique, nonempty alphanumeric ASCII
+strings shorter than 256 bytes.  Only diploid genotypes are supported.
+Multiallelic markers are allowed, with at most 253 ALT alleles per marker.
+The compact representation normally uses raw allele matrices; raw value 255
+denotes missing data.  Allele order is retained, but the original slash or
+vertical-bar separator is not retained, so STvcf does not imply statistical
+phase inference.
+
+Four functions provide the main conversion path:
 
 \begin{description}
-\item[\cde{CHROM}] Integer running chromosome codes.  The codes start at 1,
-are consecutive, and every code is used.
-\item[\cde{POS}] Double-precision genetic map positions in cM.  Positions
-must be finite and nonnegative.
-\item[\cde{ID}] Unique marker identifiers.
-\item[\cde{REF}] One reference-allele label for each marker.
-\item[\cde{ALT}] Either \cde{.} or a comma-separated list of alternative
-allele labels.
-\item[\cde{individual}] Unique individual identifiers.
-\item[\cde{allele1}] A marker-by-individual raw or integer matrix containing
-the first VCF allele index.
-\item[\cde{allele2}] A marker-by-individual raw or integer matrix containing
-the second VCF allele index.
-\item[\cde{CHROM.levels}] Character labels corresponding to the running
-chromosome codes.
+\item[\cde{st.dataframe.to.STvcf()}]
+converts a VCF-like R data frame to STvcf;
+\item[\cde{st.load.vcf.data()}]
+loads STvcf into a SelectionTools marker data set and installs its linkage map;
+\item[\cde{st.markerdata.to.STvcf()}]
+converts a SelectionTools marker data set back to STvcf; and
+\item[\cde{st.STvcf.to.dataframe()}]
+expands STvcf to a VCF-like data frame.
 \end{description}
 
-Marker and individual identifiers used by these interfaces contain only ASCII
-letters \cde{A--Z}, \cde{a--z}, and digits \cde{0--9}, must be nonempty and
-unique, and must contain fewer than 256 bytes.  Names are never silently
-modified.  In particular, dots, underscores, hyphens, whitespace,
-punctuation, and non-ASCII characters are not allowed.
+The detailed validation rules for these functions are given in their help
+pages.  The most important conventions are summarized below.
 
-The compact R representation uses two allele matrices rather than character
-strings such as \cde{0/1}.  If all allele indices that can occur are at most
-254, the matrices are raw matrices and raw value 255 represents missing data.
- Both matrices always have the
-same storage type.  This is only a storage optimization; it does
-not change genotype meaning.
+\subsection{Import from VCF-like data}
 
-The STvcf representation is compact in R and on disk.  When an object is
-loaded, the genotypes are expanded into the ordinary SelectionTools C marker
-and linkage-map structures.  STvcf therefore does not introduce a second
-internal analysis representation.
+For \cde{st.dataframe.to.STvcf()}, the first five columns must be
+\cde{CHROM} or \cde{\#CHROM}, \cde{POS}, \cde{ID}, \cde{REF}, and
+\cde{ALT}, in that order.  If a valid \cde{CM} metadata column is present,
+its values are used as genetic positions; otherwise \cde{POS} is interpreted
+as cM.  This distinction is important for ordinary VCF files, in which
+\cde{POS} usually denotes a physical base-pair position.
 
-Four functions are available for data conversion:
-\cde{st.dataframe.to.STvcf()} converts VCF-like tabular data to STvcf,
-\cde{st.STvcf.to.dataframe()} expands STvcf to a VCF-like data frame,
-\cde{st.load.vcf.data()} installs STvcf in a SelectionTools marker data set,
-and \cde{st.markerdata.to.STvcf()} converts an existing SelectionTools marker
-data set back to STvcf.  The examples in this section are shown as code only
-and are not evaluated while the vignette is built.
-
-
-\subsection{Convert VCF-like data frame to STvcf}
-
-\cde{st.dataframe.to.STvcf(data)} converts a wide diploid VCF-like R data
-frame to the compact STvcf representation used by
-\cde{st.load.vcf.data()}.  The converter is deliberately strict.  Its purpose
-is to create only objects that can subsequently be accepted by the
-SelectionTools marker-data and simulation-transfer path.  Invalid marker or
-individual names, malformed genotypes, inconsistent \cde{REF}/\cde{ALT}
-definitions, invalid genetic-map positions, and unsupported allele indices
-are rejected during conversion rather than being deferred to a later
-consumer.
-
-The first five columns are fixed by position and must occur in the following
-order:
-
-\begin{center}
-\cde{CHROM} or \cde{\#CHROM}, \cde{POS}, \cde{ID}, \cde{REF}, \cde{ALT}.
-\end{center}
-
-The positional convention is intentional.  Sample names such as
-\cde{POS}, \cde{INFO}, or \cde{FORMAT} are legal because they are
-alphanumeric, so fixed fields cannot safely be identified merely by searching
-all column names.  All data-frame column names must be non-missing and
-nonempty.  Duplicate column names are permitted only where a sample happens
-to have the same name as a fixed or metadata field; sample names themselves
-must be unique.
-
-Marker IDs are mandatory and unique.  Marker and sample names obey the common
-SelectionTools/STvcf name convention described above.  These restrictions are
-checked again by \cde{st.load.vcf.data()} and by the reverse marker-data
+A \cde{FORMAT} column is optional.  When present, it must define exactly one
+nonempty \cde{GT} field for every marker.  Only GT is retained; other FORMAT
+subfields and VCF metadata such as QUAL, FILTER, and INFO are not represented
+in STvcf.  Both \cde{0/1} and \cde{0|1} are accepted.  Missing and partially
+missing genotypes are normalized to the STvcf missing representation.
+REF/ALT definitions and all observed allele indices are checked during
 conversion.
 
-Input chromosome labels can be numeric or character.  They are replaced by
-running integer codes 1, 2, \ldots in order of first appearance, while the
-original labels are stored in \cde{CHROM.levels}.  An information message at
-level 0 reports this mapping.  Chromosome labels are not marker or individual
-identifiers and are therefore not subject to the alphanumeric identifier
-restriction.
+The converter is deliberately strict: it is intended to create only objects
+that can subsequently be loaded by SelectionTools.  Full rules for names,
+FORMAT layouts, missing values, REF/ALT definitions, and genotype syntax are
+documented in \cde{?st.dataframe.to.STvcf}.
 
-STvcf positions are genetic positions in centimorgan.  If a valid metadata
-column named \cde{CM} is supplied, it is used for the genetic position and the
-input \cde{POS} column is not used for mapping.  Otherwise \cde{POS} is
-interpreted as cM.  This distinction is important for conventional VCF data,
-where \cde{POS} normally contains a physical base-pair position.  Factor
-\cde{CM} or \cde{POS} columns are converted through their printed character
-values before numeric conversion, so factor level numbers can never
-accidentally become map positions.  Genetic positions are stored as R
-double-precision values without intentional rounding and must be finite and
-nonnegative.
-
-A \cde{FORMAT} column is recognized only when every marker-specific FORMAT
-definition is nonempty and contains exactly one nonempty \cde{GT} field.
-Empty FORMAT fields, empty FORMAT subfields, a trailing colon, and duplicated
-\cde{GT} fields are invalid.  The FORMAT definition may differ among markers.
-When FORMAT is present, columns between \cde{ALT} and \cde{FORMAT} may be the
-VCF metadata fields \cde{QUAL}, \cde{FILTER}, \cde{INFO}, and the
-SelectionTools-specific \cde{CM} field.  These metadata fields must be
-unique.  Every column after FORMAT is treated as a sample column irrespective
-of its name.  Thus sample identifiers such as \cde{POS}, \cde{INFO},
-\cde{CM}, and \cde{FORMAT} remain unambiguous.
-
-For each sample cell only the GT subfield specified by the marker-specific
-FORMAT definition is retained.  Other FORMAT subfields such as DP, AD, GQ,
-and phase-set fields are ignored and are not stored.  A non-missing sample
-field that is too short to contain the declared GT subfield, or that contains
-an empty GT subfield, is malformed and is rejected rather than converted to
-missing.
-
-If FORMAT is absent, all columns after the first five fixed fields are direct
-GT sample columns except for one special case.  An alphanumeric column named
-\cde{CM} whose complete contents are valid, finite, nonnegative numeric values
-is interpreted as the genetic-map position field rather than as a sample.
-This is the convention used to distinguish an optional CM column from a
-sample that itself is named CM.  More than one column that can be interpreted
-as FORMAT, or more than one valid CM column in the no-FORMAT layout, is
-rejected.
-
-\cde{REF} must contain exactly one non-missing allele label.  It may not be
-empty, \cde{.}, or comma-separated.  \cde{ALT} may be \cde{.}, meaning that
-no alternative allele is defined, or a comma-separated list.  Every ALT entry
-must be nonempty, may not be \cde{.}, must differ from REF, and must be unique
-within the marker.  A trailing comma is therefore invalid.  Definitions such
-as REF=A with ALT=A or ALT=C,C are rejected.
-
-Multiallelic markers are accepted.  VCF allele index 0 denotes REF, index 1
-the first ALT allele, index 2 the second ALT allele, and so on.  Every
-observed non-missing allele index must be present in the corresponding
-REF/ALT definition.  At most 65533 ALT alleles can be defined for a marker,
-matching the range that can subsequently be represented by the SelectionTools
-simulation transfer.  The SelectionTools marker-statistics backend permits at
-most 4096 observed allele states at one marker, including the missing state
-when it occurs; this observed-state limit is checked during conversion.
-
-Only diploid genotypes are supported.  Both slash and vertical-bar separators
-are accepted, for example \cde{0/1} and \cde{0|1}.  The supplied allele order
-is retained in \cde{allele1} and \cde{allele2}, but the separator itself is
-not stored.  Retaining the allele order is not a statistical phasing
-procedure and does not imply phase inference.  Phase-set boundaries and other
-phase metadata are outside the STvcf representation.
-
-Complete missingness can be represented by R \cde{NA}, an empty field,
-\cde{.}, \cde{./.}, \cde{.|.}, or the character value \cde{NA}.  Partially
-missing diploid genotypes such as \cde{0/.}, \cde{./1}, \cde{0|.}, and
-\cde{.|1} are normalized to complete missingness.  The non-missing member of
-such a partial pair must nevertheless be a syntactically valid nonnegative
-integer allele index within the marker's REF/ALT definition.  Malformed
-fields, including an empty allele component or a nonnumeric non-missing
-component, are rejected rather than being hidden by the partial-missing rule.
-
-The returned object has class \cde{STvcf} and the nine components listed at
-the beginning of this section.  Marker order and individual order are
-retained.  Marker ordering changes only later, when an STvcf object is
-installed in the internal SelectionTools linkage-map structure.
-
-The conversion is not a byte-for-byte VCF round trip.  QUAL, FILTER, INFO,
-FORMAT subfields other than GT, phase-set information, a physical POS field
-when CM is supplied, and the distinction between slash and vertical-bar GT
-separators are not retained.
-
-A small non-running example with physical POS and an explicit genetic CM
-column is:
+A small example is:
 
 \begin{Sinput}
 vcf <- data.frame(
-   CHROM  = c("1", "1", "2"),
-   POS    = c(102341, 284020, 91733),
-   ID     = c("M1", "M2", "M3"),
-   REF    = c("A", "C", "G"),
-   ALT    = c("G", "T", "A,C"),
-   CM     = c(1.25, 3.80, 0.60),
-   FORMAT = c("GT:DP", "GT:DP", "GT:DP"),
-   S1     = c("0/0:18", "0/1:21", "2/1:16"),
-   S2     = c("0|1:23", "./.:0",  "0/2:19"),
-   check.names = FALSE,
-   stringsAsFactors = FALSE
+   CHROM  = c("1", "1"),
+   POS    = c(102341, 284020),
+   ID     = c("M1", "M2"),
+   REF    = c("A", "C"),
+   ALT    = c("G", "T"),
+   CM     = c(1.25, 3.80),
+   FORMAT = c("GT", "GT"),
+   S1     = c("0/0", "0/1"),
+   S2     = c("0|1", "./."),
+   check.names = FALSE
 )
 
 x <- st.dataframe.to.STvcf(vcf)
 \end{Sinput}
 
+\subsection{Transfer between STvcf and SelectionTools}
 
-\subsection{Import STvcf into SelectionTools}
+\cde{st.load.vcf.data()} converts an STvcf object to the ordinary
+SelectionTools marker and linkage-map structures.  Thus STvcf is an exchange
+format and not a second internal analysis representation.  The object is
+validated again when it is loaded.  Marker statistics are then constructed
+from the imported marker set.  Multiallelic markers can be loaded, but the
+ordinary genomic-selection routines that use one design-matrix column per
+marker require an appropriate biallelic marker set.
 
-\cde{st.load.vcf.data(STvcf, data.set="default")} loads compact STvcf marker
-and linkage-map data directly into a SelectionTools marker data set without
-intermediate marker or map text files.  The STvcf object is an exchange
-representation; loading converts it to the existing SelectionTools marker and
-map structures rather than creating a parallel analysis representation.
+The reverse conversion is performed with
+\cde{st.markerdata.to.STvcf()}.  SelectionTools marker data do not retain the
+historical textual VCF REF and ALT labels.  Consequently, export normalizes
+the observed allele states at each marker and creates new VCF-style REF/ALT
+labels while preserving the genotype states and the current linkage-map
+positions.  Only marker genotypes and genetic-map information are part of
+STvcf; performance data, estimated effects, and other derived quantities are
+not exported.
 
-The C loader independently requires exactly the nine STvcf components and
-validates them again.  Thus manually assembled objects cannot bypass the
-interface rules.  In particular, marker and individual names must be unique,
-nonempty, contain only ASCII letters and digits, and contain fewer than 256
-bytes.  Dots, underscores, hyphens, whitespace, punctuation, and non-ASCII
-characters are rejected rather than sanitized.
-
-The required components have the following meaning when loaded:
-\cde{CHROM} contains consecutive running chromosome codes from 1;
-\cde{POS} contains finite, nonnegative double-precision cM positions;
-\cde{ID} contains marker identifiers; \cde{REF} contains one reference label;
-\cde{ALT} contains \cde{.} or a comma-separated ALT list;
-\cde{individual} contains individual identifiers; \cde{allele1} and
-\cde{allele2} are marker-by-individual raw or integer matrices; and
-\cde{CHROM.levels} contains the character labels associated with the running
-chromosome codes.
-
-VCF allele index 0 is translated to internal SelectionTools allele 1, index 1
-to internal allele 2, index 2 to internal allele 3, and so on.  Missing
-alleles become internal value -1.  Raw STvcf matrices use 255 for missing and
-can represent allele indices through 254.  Integer matrices use
-\cde{NA\_integer\_} for missing data.  The two allele matrices must have the
-same type.  Allele definitions and observed indices must fit the range of the
-diploid SelectionTools simulation transfer.
-
-REF and ALT are validated independently of the R converter.  A REF value
-repeated in ALT, a duplicated ALT value, an empty ALT token, a trailing comma,
-or a dot embedded inside an ALT list is rejected.  Thus a malformed manually
-constructed object cannot create separate internal integer alleles for
-identical textual allele labels.
-
-The marker-statistics backend permits at most 4096 observed states at one
-marker, counting missing when it occurs.  Multiallelic markers are valid input
-if they satisfy this limit.  The ordinary statistical genomic-selection
-functions that build one design-matrix column per marker are biallelic;
-multiallelic data must therefore be restricted to an appropriate biallelic
-marker set before those functions are used.  Monomorphic markers are likewise
-unsuitable for that ordinary biallelic design-matrix construction.
-
-Only diploid data are supported.  If either stored allele is missing, both
-internal alleles of that genotype are set to -1.  The order of two
-non-missing alleles is retained.  These two arrays become the two homologues
-when marker data are transferred to the simulation routines, but retaining
-the order does not constitute statistical phase inference.
-
-Every STvcf marker must have a genetic position.  Markers are installed in
-chromosome and cM order.  Exact position ties retain STvcf row order and are
-separated by small deterministic internal offsets because the existing
-SelectionTools linkage-map and simulation structures require distinct ordered
-positions.  The supplied STvcf object itself is not changed.  Consequently,
-\cde{st.get.map()} reports the map positions actually used internally, which
-may include these small tie-separating offsets.
-
-Normal SelectionTools marker statistics are constructed after conversion and
-are calculated from exactly the markers present in the STvcf object.  The
-compact raw or integer R matrices are expanded into the existing C genotype
-and marker-statistics structures during loading.
-
-Replacement of \cde{data.set} is transactional.  The previous contents of the
-named data set are replaced only after names, allele definitions, genotype
-matrices, linkage-map information, and marker statistics have all been
-validated and successfully constructed.  If loading fails, the previous
-contents remain intact.  Performance data are not installed by this function.
-The function is called for its effect and returns invisibly.
-
-The package contains the compact tropical-maize example
-\cde{v.tropmaize.vcf}.  A non-running example is:
+Simulation populations can be included in the same chain.  First use
+\cde{st.get.simpop()} to return a simulation population to a
+marker data set and then use \cde{st.markerdata.to.STvcf()}.  Individual
+identifiers created by \cde{st.get.simpop()} are new simulation-derived names,
+for example \cde{P1I1}, \cde{P1I2}, \ldots; original pre-simulation names are
+not reconstructed.
 
 \begin{Sinput}
-vignette.data <- new.env(parent = emptyenv())
-data("v-tropmaize-vcf", package = "SelectionTools", envir = vignette.data)
-st.load.vcf.data(vignette.data$v.tropmaize.vcf, data.set = "trop")
-\end{Sinput}
+data("v-tropmaize-vcf")
+st.load.vcf.data(v.tropmaize.vcf, data.set = "vcf01")
 
-
-\subsection{Export SelectionTools marker data to STvcf}
-
-\cde{st.markerdata.to.STvcf()} converts  marker
-genotypes and linkage map of an existing SelectionTools marker data set to the
-compact diploid STvcf representation.  This is the reverse marker-data step.
-Together with the  \cde{st.get.simpop()} function it permits a
-simulation population to be returned first to the ordinary SelectionTools
-marker-data set and then converted to STvcf.
-
-The marker data set must contain genotype data and a usable linkage map.  Each
-marker-matrix column must have exactly one map location.  Map-only
-locations are ignored.  Missing or duplicate marker locations, inconsistent
-marker and map names, invalid chromosome numbers, non-finite positions, and
-negative positions cause conversion to fail.
-
-The current marker order is retained.  Map positions are returned as the
-current double-precision cM values without intentional rounding.  Current
-numeric chromosome numbers are converted to running STvcf codes 1, 2, \ldots
-in order of first appearance; \cde{CHROM.levels} stores the corresponding
-numeric chromosome labels as character strings.
-
-Current marker and individual names become the STvcf identifiers and must
-satisfy the usual uniqueness, alphanumeric, and fewer-than-256-byte rules.
-Names are never silently changed by this conversion.
-
-There is one intentional naming consequence when the marker data originated
-from a simulation population.  \cde{st.get.simpop()} creates new marker-data
-individual identifiers rather than recovering names that may have existed
-before the population entered simulation.  For a simulation population named
-\cde{P1}, the resulting identifiers are \cde{P1I1}, \cde{P1I2}, and so on.
-The population name itself must contain only letters and digits, ensuring that
-the generated identifiers satisfy the STvcf name rules.  Population names
-containing dots, punctuation, whitespace, or other non-alphanumeric
-characters are rejected.  Reconstruction of the original pre-simulation
-individual names is not part of this transfer.
-
-SelectionTools marker data store integer allele states but do not retain the
-historical textual VCF REF and ALT labels.  Export therefore normalizes the
-observed non-missing states independently for every marker.  The states are
-sorted by their current integer values.  The first observed state becomes
-\cde{REF="1"}; further states become \cde{ALT="2,3,..."}; and genotypes are
-written as VCF indices 0, 1, 2, \ldots in that order.
-
-For marker data that were originally loaded from STvcf, the internal alleles
-are already 1 for REF, 2 for ALT1, 3 for ALT2, and so forth.  Transfer to and
-from simulation preserves these integer states.  For marker data created by
-other routes, all distinct observed genotype states are retained, but their
-historical integer labels are normalized during STvcf export.
-
-An all-missing marker is retained as \cde{REF="1"}, \cde{ALT="."}, with all
-genotypes missing.  A marker with exactly one observed non-missing state is
-also written with \cde{ALT="."}; that state uses VCF allele index 0.  If
-either homologue of a SelectionTools genotype is missing, the exported STvcf
-genotype is completely missing, consistent with the STvcf partial-missing
-convention.
-
-The current two marker-data allele arrays are retained in order as
-\cde{allele1} and \cde{allele2}.  For data obtained through
-\cde{st.get.simpop()} they correspond to the two simulation homologues.  No
-new phasing calculation is performed.
-
-Raw STvcf matrices are used when the normalized allele indices do not exceed
-254, with raw value 255 denoting missing data.  Otherwise integer matrices and
-\cde{NA\_integer\_} are used.  Marker allele values that cannot be represented
-by the simulation allele type, and marker state sets exceeding the existing
-4096-state marker-statistics capacity, are rejected.
-
-The linkage-map class is not part of STvcf.  Exact map-position ties may
-already have been dispersed by the SelectionTools linkage-map or simulation
-machinery.  This function returns the positions currently stored internally
-and cannot reconstruct an earlier duplicate position that is no longer
-represented.
-
-Only marker genotype and genetic-map information are returned.  Performance
-data, estimated effects, genomic relationship matrices, selection values,
-simulation GValue/PValue arrays, and other derived objects are not part of
-STvcf.  On success the result is a list of class \cde{STvcf} containing
-normalized VCF-style allele indices, the current marker and individual names,
-the current double-precision cM positions, and the chromosome-code mapping.
-If conversion fails, no STvcf object is returned.
-
-A conversion example is:
-
-\begin{Sinput}
-## Starting from the data set installed in the preceding example:
-x2 <- st.markerdata.to.STvcf(data.set = "trop")
+x2 <- st.markerdata.to.STvcf(data.set = "vcf01")
 df2 <- st.STvcf.to.dataframe(x2)
 
-## A simulation population can use the same reverse chain:
+## Reverse transfer from a simulation population:
 st.get.simpop("P1", data.set = "fromsim")
 sim.vcf <- st.markerdata.to.STvcf(data.set = "fromsim")
 \end{Sinput}
 
+\subsection{Export to a VCF-like data frame}
 
-\subsection{Convert STvcf to a VCF-like data frame}
+\cde{st.STvcf.to.dataframe()} returns the fixed columns \cde{CHROM},
+\cde{POS}, \cde{ID}, \cde{REF}, \cde{ALT}, and \cde{FORMAT}, followed by
+one genotype column per individual.  FORMAT is written as \cde{GT}.  Genotype
+alleles are written with VCF indices and a slash separator; missing genotypes
+are written as \cde{./.}.  Because STvcf does not retain QUAL, FILTER, INFO,
+non-GT FORMAT fields, phase-set information, or an original physical POS that
+was replaced by CM, these fields cannot be reconstructed.
 
-\cde{st.STvcf.to.dataframe(STvcf)} expands a compact STvcf list to a wide
-VCF-like R data frame with one marker per row and one genotype column per
-individual.  The object is validated before expansion.  It must contain
-exactly the nine documented components, each exactly once.  Extra, missing,
-duplicated, unnamed, or unknown components are rejected.  Component types and
-dimensions must agree, chromosome codes must be consecutive and used, genetic
-positions must be finite and nonnegative, allele indices must agree with the
-REF/ALT definitions, and marker and individual names must satisfy the same
-rules as \cde{st.load.vcf.data()}.
-
-Marker and individual identifiers are unique, shorter than 256 bytes, and
-contain only ASCII letters and digits.  REF may not be missing, empty,
-\cde{.}, or comma-separated.  ALT may be \cde{.} or a comma-separated list;
-its entries must be nonempty, unique, different from REF, and not \cde{.}.
-Malformed or duplicated allele labels, including an empty trailing ALT entry,
-are rejected.
-
-The returned data frame contains
-\cde{CHROM}, \cde{POS}, \cde{ID}, \cde{REF}, \cde{ALT}, and
-\cde{FORMAT}, followed by one sample column for every entry in
-\cde{STvcf\$individual}.  FORMAT is written as \cde{GT} for every marker.
-Including the FORMAT column is deliberate because it makes the sample
-boundary unambiguous even if an individual itself is named \cde{POS},
-\cde{INFO}, \cde{CM}, or \cde{FORMAT}.
-
-CHROM is expanded using \cde{CHROM.levels}.  POS is the current STvcf
-double-precision genetic position in cM and is written without intentional
-rounding.
-
-Genotypes are written with VCF allele indices: 0 for REF and 1, 2, \ldots for
-ALT alleles.  Allele order is retained.  Every non-missing genotype is written
-with a slash, for example \cde{0/1}; a vertical bar is never written because
-STvcf does not retain the original separator and must not imply inferred
-phasing.  If either stored allele is missing, the exported genotype is
-\cde{./.}.
-
-The two allele matrices must have the same storage type.  Raw matrices use raw
-255 for missing data and indices 0 through 254 for alleles.  Integer matrices
-use \cde{NA\_integer\_} for missing data.  Allele indices are validated
-against REF/ALT, the simulation-transfer range, and the 4096-observed-state
-marker limit.
-
-STvcf does not retain QUAL, FILTER, INFO, non-GT FORMAT fields, phase-set
-metadata, or a physical POS value that was superseded by CM, and these fields
-cannot be reconstructed.  For an object produced with
-\cde{st.dataframe.to.STvcf()}, expansion to a data frame and conversion back
-to STvcf preserve the STvcf information under the documented normalizations:
-GT separators are written as slash and missing genotypes are written as
-\cde{./.}.
-
-An example is:
-
-\begin{Sinput}
-df <- st.STvcf.to.dataframe(x)
-\end{Sinput}
+Conversion from a VCF-like data frame to STvcf and back therefore preserves
+the STvcf information, not the complete original VCF representation. 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-\newpage
 
 \section{References}
 

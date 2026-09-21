@@ -18,7 +18,7 @@ An invisible \code{list} returned by the underlying \code{.C} routine. The list 
 }
 
 \details{
-For each progeny, a parental individual is chosen and a haploid meiotic product is generated. The selected haploid chromosome set is then doubled so that both homologues of each progeny carry the same recombined haplotype.
+For each progeny, a parental individual is chosen randomly from the active individuals of the parental population and a haploid meiotic product is generated. The selected haploid chromosome set is then doubled so that both homologues of each progeny carry the same recombined haplotype.
 
 The simulation genome must be diploid. For positive \code{NoPg}, that many doubled-haploid progeny are generated. The special value \code{-1} uses the allocation of an existing progeny population and therefore requires an existing destination with positive allocation.
 

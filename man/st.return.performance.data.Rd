@@ -8,7 +8,7 @@ Return performance data from a SelectionTools data set.
 
 \usage{
 st.return.performance.data(out.filename = "y.vector", auxfiles = TRUE,
-                           data.set ="default")
+                           data.set = "default")
 }
 
 \arguments{
@@ -17,5 +17,8 @@ st.return.performance.data(out.filename = "y.vector", auxfiles = TRUE,
    \item{data.set}{Name of the SelectionTools data set.}
 }
 \value{
-Invisibly returns a \code{data.frame} with columns \code{i} (individual identifier) and \code{y} (performance value) when the data can be returned; otherwise \code{NULL}.
+Invisibly returns a \code{data.frame} with character column \code{i}
+(individual identifier) and numeric column \code{y} (performance value) when
+the data can be returned; otherwise \code{NULL}. Numeric-looking individual
+identifiers are retained as character strings.
 }

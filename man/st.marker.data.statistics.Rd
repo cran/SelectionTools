@@ -2,7 +2,7 @@
 %
 \name{st.marker.data.statistics}
 \alias{st.marker.data.statistics}
-\title{st.marker.data.statistics()}
+\title{Summarize a SelectionTools Marker Data Set}
 \description{
 Recomputes and optionally returns summary statistics for the current marker matrix.
 }
@@ -26,10 +26,34 @@ For each individual, the proportion of markers with a missing first allele is re
 
 The marker summary distinguishes stored missingness from biological allele codes. Missing data are not counted as a biological allele for restrictions such as \code{NoAll.MAX}. Biological allele codes are in the range 1 through 254.
 
-When requested, three files are produced: an individual summary, a marker summary, and a genotype matrix. The R wrapper reads these files back and removes the temporary files.
+The returned \code{individual.list} has columns \code{Name} and \code{InMis},
+where \code{InMis} is the individual missing-marker frequency.
+
+The returned \code{marker.list} contains \code{Name}, \code{NoAll},
+\code{MaMis}, and \code{ExHet}. \code{NoAll} is the number of observed
+non-missing biological alleles, \code{MaMis} is the marker missing-allele
+frequency, and \code{ExHet} is the expected heterozygosity. The remaining
+columns contain allele-copy counts. If missing alleles occur anywhere in the
+data set, column \code{AM} gives the number of missing allele copies at each
+marker. Columns \code{A1}, \code{A2}, and so on give the counts of the
+corresponding biological allele codes observed in the data set; a marker for
+which a particular code is absent has count zero in that column.
+
+The returned \code{genotypes} component is the complete marker-by-individual
+genotype table. Its first column identifies the marker and the remaining
+columns are named by individual. Diploid entries are printed as \code{allele1/allele2}. If the first
+stored allele is missing, the entry is printed as \code{--}.
+
+When requested, the three summaries are first produced in the R session
+temporary directory. The R wrapper reads them back and removes the temporary
+files before returning.
 }
 \value{
 Invisibly returns a named \code{list} containing the requested marker-data summaries. Depending on \code{ind}, \code{mar}, and \code{gen}, components are \code{individual.list}, \code{marker.list}, and/or \code{genotypes}, each a \code{data.frame}; \code{NULL} is returned if no result can be produced.
+}
+
+\seealso{
+\code{st.restrict.marker.data}, \code{st.plot.gene.diversity}
 }
 
 %

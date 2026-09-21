@@ -1,6 +1,6 @@
 Package: SelectionTools
-Version: 26.3
-Date: 2026-09-05
+Version: 26.4
+Date: 2026-09-07
 Title: Simulation and Data Analysis for Plant Breeders
 Authors@R: c(
     person("Matthias", "Frisch",
@@ -17,16 +17,18 @@ Description: Provides tools for simulation of plant breeding programs
 	     prediction (Hofheinz and Frisch (2014)
 	     <doi:10.1534/g3.113.010025>), linkage disequilibrium
 	     based haplotype construction, and planning of marker
-	     assisted back crossing programs.
+	     assisted back crossing programs.  It provides an integrated
+	     framework for simulation and analysis of plant breeding
+	     programs.
 Suggests: knitr, rmarkdown
 VignetteBuilder: knitr
 Depends: R (>= 4.0.0)
 License: CC0
 NeedsCompilation: yes
-Packaged: 2026-09-05 11:22:03 UTC; frisch-m
+Packaged: 2026-09-20 07:22:38 UTC; frisch-m
 Author: Matthias Frisch [aut, cre],
   Hans Peter Maurer [ctb],
   Philipp Heilmann [ctb]
 Maintainer: Matthias Frisch <matthias.frisch@uni-giessen.de>
 Repository: CRAN
-Date/Publication: 2026-09-15 10:40:21 UTC
+Date/Publication: 2026-09-21 10:10:15 UTC

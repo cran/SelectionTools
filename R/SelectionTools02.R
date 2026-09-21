@@ -139,10 +139,21 @@ plabsim$allele.missing.indicator <- 65535
 }
 
 "population.remove.all" <- function(){
-  y <- as.vector((population.list()$PopName))
-  allPops <- paste(y,collapse = " ")
-  population.remove(allPops)
+
+  b <- .C("list_populations_parameter",
+          lPopName = as.integer(0),
+          NoPops   = as.integer(0))
+
+  if (b$NoPops == 0L) {
+    info(1,"All populations removed")
+    return(invisible(NULL))
+  }
+
+  y <- population.list()$PopName
+  population.remove(y)
+
   info(1,"All populations removed")
+  invisible(NULL)
 }
 
 "population.rename" <- function(

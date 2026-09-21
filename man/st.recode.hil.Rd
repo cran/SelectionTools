@@ -2,9 +2,10 @@
 %
 \name{st.recode.hil}
 \alias{st.recode.hil}
-\title{st.recode.hil()}
+\title{Recode Defined Haplotype Blocks as Marker Loci}
 \description{
-  The function \emph{st.recode.hil} recodes the haplotype data for inbred populations.
+Recodes marker sequences within previously defined haplotype blocks and uses
+the resulting haplotype variants as alleles of new haplotype-block loci.
 }
 \usage{
 st.recode.hil(out.filename = "blocks", auxfiles = TRUE, data.set = "default")
@@ -14,22 +15,40 @@ st.recode.hil(out.filename = "blocks", auxfiles = TRUE, data.set = "default")
    \item{auxfiles}{Logical. If \code{TRUE}, the compiled result is written to the R session temporary directory, read back by the R wrapper, and removed before the function returns.}
    \item{data.set}{Name of data set that is used for recoding.}
 }
+
+\details{
+Haplotyping is a two-step procedure. First, \code{st.def.hblocks} defines the
+marker boundaries of the haplotype blocks. Then \code{st.recode.hil} compares
+the stored marker sequence on each homologue within each block and identifies
+identical haplotype sequences.
+
+Within a block, identical marker sequences receive the same haplotype allele
+code. Haplotype alleles are ordered by observed frequency, with the most
+frequent haplotype receiving the first code. A haplotype containing a missing
+marker allele is represented as missing after recoding. If a block would
+produce more than 254 distinct haplotype alleles, recoding stops with an error
+rather than merging or truncating haplotypes.
+
+The operation modifies \code{data.set}. After successful recoding, the
+original marker-level representation is replaced by a new marker data set in
+which the defined haplotype blocks are the loci and the observed haplotype
+variants are their alleles. Make a copy of a marker data set before
+haplotyping if the original marker-level representation is also required.
+
+The returned haplotype description identifies each block and haplotype allele
+and gives the sequence of original marker allele codes defining that
+haplotype. The external haplotype description uses \code{-1} for missing
+marker alleles.
+
+Using \code{st.plot.ggt} after recoding provides a graphical overview of
+haplotype-block sharing among individuals.
+}
+
 \value{
 Invisibly returns a \code{data.frame} with columns \code{Block}, \code{AlleleNr}, and \code{AlleleDef} describing recoded haplotype-block alleles when \code{auxfiles = TRUE} and the operation succeeds; otherwise \code{NULL}.
 }
 
-\details{The haplo block i of individual j at locus m is compared to the same haplo block
-          of the other individuals. If the haplo blocks of different individuals are identical
-          they get the same number. In extreme, there are as many different haplo blocks as individuals for
-          a given locus. If a haplotype block would result in more than 254 distinct haplotype alleles,
-          recoding stops with an error rather than merging or truncating haplotypes.\cr
-          Using the function \emph{st.plot.ggt} after the function \emph{st.recode.hil} gives a good graphical
-          overview, which haplo blocks are inherited from which parent. For plotting, the individuals are sorted
-          by their haplotype frequency. Thus, the parents are usually plotted on top in yellow and blue (default values).
-          The haplo blocks of the individuals are also plotted in yellow or blue, if they are completely identical
-          to a parent's haplo block. If they are plotted in a different color, a cross-over did occur and thus,
-          this haplo block is not identical one of the parent's haplo blocks.}
-
-%\note{
-%
-%}
+\seealso{
+\code{st.def.hblocks}, \code{st.calc.ld}, \code{st.plot.ggt},
+\code{st.plot.gene.diversity}
+}

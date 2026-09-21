@@ -20,6 +20,16 @@
 
 #include "SelectionToolsAllele.h"
 
+/* Include the OpenMP header before R headers.  Rinternals.h defines
+   match as Rf_match, while newer omp.h versions use match(...) in
+   OpenMP directives. */
+#ifdef _OPENMP
+  #ifndef ST
+    #define MT
+    #include <omp.h>
+  #endif
+#endif
+
 #include <R.h>
 #include <Rmath.h>
 #include <Rdefines.h>
@@ -34,15 +44,8 @@
 #endif
 
 
-#ifdef _OPENMP
-  #ifndef ST
-     #define MT
-  #endif
-#endif
 
-#ifdef MT
-   #include <omp.h> 
-#else
+#ifndef MT
   #define omp_get_thread_num() 0
   #define omp_set_num_threads(thr) {}
   #define omp_get_num_threads() 0

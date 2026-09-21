@@ -1,9 +1,9 @@
 \name{st_mixed}
 \alias{st_mixed}
-\title{Fit a single-kernel mixed model using the SelectionTools native implementation}
+\title{Fit a mixed linear model}
 
 \description{
-Fit a single-kernel mixed model using the SelectionTools native implementation.
+Fit a  mixed linear model for genomic prediction.
 }
 
 \usage{
@@ -35,10 +35,22 @@ st_mixed(y, id = NULL, Z, Z_ids = NULL, pool1 = NULL, pool2 = NULL,
    \item{model_type}{Function argument used by this operation.}
    \item{bootstrap}{Function argument used by this operation.}
 }
+
 \value{
-A named \code{list} returned by the native mixed-model implementation, or \code{NULL} if the native routine cannot construct a result. The component set depends on the selected mode.
 
-For the single-population mode the list contains \code{beta0} (intercept), \code{varcmp} (variance components), \code{ghat} (predicted genetic values), \code{yhat} (predicted response values), \code{missing_ids} (identifiers not matched to marker rows), \code{diag} (diagnostic counts and marker-coding information), and \code{retval} (compiled status code).
+A named \code{list} 
+or \code{NULL}  The
+component set depends on the selected mode.
 
-For hybrid modes the list contains \code{beta0}, \code{varcmp}, \code{yhat_obs} (predictions aligned to the observed-response vector), \code{diag}, \code{retval}, and \code{ridge}; a native implementation may additionally provide a \code{debug} component.
+For the population mode the list contains \code{beta0}
+(intercept), \code{varcmp} (variance components), \code{ghat} (predicted
+genetic values), \code{yhat} (predicted response values),
+\code{missing_ids} (identifiers not matched to marker rows), \code{diag}
+(diagnostic counts and marker-coding information), and \code{retval}
+(compiled status code).
+
+For hybrid modes the list contains \code{beta0}, \code{varcmp},
+\code{yhat_obs} (predictions aligned to the observed-response vector),
+\code{diag}, \code{retval}, and \code{ridge}.
+
 }

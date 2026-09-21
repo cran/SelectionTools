@@ -33,7 +33,7 @@ header-includes:
   - \renewcommand{\ErrorTok}[1]{\textcolor{codegray}{#1}}
   - \renewcommand{\NormalTok}[1]{\textcolor{codegray}{#1}}
 vignette: >
-  %\VignetteIndexEntry{Simultion of Mendel's Exeriments}
+  %\VignetteIndexEntry{Simulating Mendel's Exeriments}
   %\VignetteEngine{knitr::rmarkdown}
   %\VignetteEncoding{UTF-8}
 ---

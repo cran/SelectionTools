@@ -1230,7 +1230,9 @@ st.info <-  function( lev, msg )
   y <- NULL
   if  ( (auxfiles) && (-2 != c$retval ) )
     {
-      y <- read.table(file=per.filename,header=FALSE,skip=1)  
+      y <- read.table(file=per.filename, header=FALSE, skip=1,
+                      colClasses=c("character","numeric"),
+                      stringsAsFactors=FALSE)
       unlink(per.filename)
       names(y) <- c("i","y")
     }
@@ -1694,6 +1696,82 @@ st.info <-  function( lev, msg )
 }
 
 
+"read.vcf" <- function(vcffile, data.set="default")
+{
+   if (length(vcffile) != 1L || is.na(vcffile) ||
+       !is.character(vcffile) || !nzchar(vcffile))
+      stop("vcffile must be one non-empty character string")
+   if (length(data.set) != 1L || is.na(data.set) ||
+       !is.character(data.set) || !nzchar(data.set))
+      stop("data.set must be one non-empty character string")
+
+   input <- vcffile
+   if (grepl("\\.gz$", vcffile, ignore.case=TRUE)) {
+      input <- tempfile(fileext=".vcf")
+      on.exit(unlink(input), add=TRUE)
+
+      con.in <- gzfile(vcffile, open="rb")
+      on.exit(try(close(con.in), silent=TRUE), add=TRUE)
+      con.out <- file(input, open="wb")
+      on.exit(try(close(con.out), silent=TRUE), add=TRUE)
+
+      repeat {
+         z <- readBin(con.in, what="raw", n=1048576L)
+         if (!length(z)) break
+         writeBin(z, con.out)
+      }
+      close(con.in)
+      close(con.out)
+   }
+
+   status <- .Call("st_read_vcf", as.character(input),
+                   as.character(data.set))
+   if (!identical(status, 0L))
+      stop("read.vcf failed")
+   invisible(NULL)
+}
+
+
+"write.vcf" <- function(vcffile, data.set="default")
+{
+   if (length(vcffile) != 1L || is.na(vcffile) ||
+       !is.character(vcffile) || !nzchar(vcffile))
+      stop("vcffile must be one non-empty character string")
+   if (length(data.set) != 1L || is.na(data.set) ||
+       !is.character(data.set) || !nzchar(data.set))
+      stop("data.set must be one non-empty character string")
+
+   output <- vcffile
+   compressed <- grepl("\\.gz$", vcffile, ignore.case=TRUE)
+   if (compressed) {
+      output <- tempfile(fileext=".vcf")
+      on.exit(unlink(output), add=TRUE)
+   }
+
+   status <- .Call("st_write_vcf", as.character(output),
+                   as.character(data.set))
+   if (!identical(status, 0L))
+      stop("write.vcf failed")
+
+   if (compressed) {
+      con.in <- file(output, open="rb")
+      on.exit(try(close(con.in), silent=TRUE), add=TRUE)
+      con.out <- gzfile(vcffile, open="wb")
+      on.exit(try(close(con.out), silent=TRUE), add=TRUE)
+
+      repeat {
+         z <- readBin(con.in, what="raw", n=1048576L)
+         if (!length(z)) break
+         writeBin(z, con.out)
+      }
+      close(con.in)
+      close(con.out)
+   }
+
+   invisible(NULL)
+}
+
+
 "st.load.vcf.data" <- function(STvcf, data.set="default")
 {
    st.start.timer()
@@ -1999,15 +2077,32 @@ st.info <-  function( lev, msg )
                               data.set   = "default" )
 {
   st.start.timer()
-  retval <- 0;
-  c <- .C("gs_recode_ref_01_GV",
-          as.integer(reference),
-          as.integer(descending),
-          retval = as.integer(retval),
-          as.character(data.set)
-          )
-  st.stop.timer (info.level=1)
+  retval <- 0
 
+  if (is.character(reference)) {
+    if ((1L != length(reference)) || is.na(reference) || !nzchar(reference))
+      stop("reference must be one non-empty individual name or one positive integer position")
+    c <- .C("gs_recode_ref_name_01_GV",
+            as.character(reference),
+            as.integer(descending),
+            retval = as.integer(retval),
+            as.character(data.set)
+            )
+  } else {
+    if ((!is.numeric(reference) && !is.integer(reference)) ||
+        (1L != length(reference)) || is.na(reference) ||
+        !is.finite(reference) || (reference != floor(reference)) ||
+        (reference < 1) || (reference > .Machine$integer.max))
+      stop("reference must be one non-empty individual name or one positive integer position")
+    c <- .C("gs_recode_ref_01_GV",
+            as.integer(reference),
+            as.integer(descending),
+            retval = as.integer(retval),
+            as.character(data.set)
+            )
+  }
+
+  st.stop.timer (info.level=1)
 }
 
 "st.def.hblocks" <- function ( hap          =  5,
@@ -2110,13 +2205,7 @@ st.info <-  function( lev, msg )
                         z.min ,
                         z.max ,
                         cex.chrom,
-                        cex.ind  ,
-                        plt.png   ,
-                        plt.pdf   ,
-                        plt.name  ,
-                        plt.width ,
-                        plt.height,
-                        plt.ptsize
+                        cex.ind
                        )
 {
   m <- map
@@ -2124,42 +2213,8 @@ st.info <-  function( lev, msg )
   missing.allele <- c("-1", "--", "-", ".", "NA")
   #
   #
-   if ( TRUE == plt.pdf )
-     {
-       pdf( file=plt.name, width=plt.width, height=plt.height, pointsize=plt.ptsize)
-       plot.device <- grDevices::dev.cur()
-       oldpar <- graphics::par(no.readonly = TRUE)
-       on.exit({
-         dl <- grDevices::dev.list()
-         if (!is.null(dl) && plot.device %in% dl) {
-           if (grDevices::dev.cur() != plot.device)
-             grDevices::dev.set(plot.device)
-           try(graphics::par(oldpar), silent = TRUE)
-           grDevices::dev.off(plot.device)
-         }
-       }, add = TRUE)
-     }
-   else if ( TRUE == plt.png )
-     {
-       png( filename=plt.name, width=plt.width, height=plt.height, pointsize=plt.ptsize,
-            res=300, units = "in")
-       plot.device <- grDevices::dev.cur()
-       oldpar <- graphics::par(no.readonly = TRUE)
-       on.exit({
-         dl <- grDevices::dev.list()
-         if (!is.null(dl) && plot.device %in% dl) {
-           if (grDevices::dev.cur() != plot.device)
-             grDevices::dev.set(plot.device)
-           try(graphics::par(oldpar), silent = TRUE)
-           grDevices::dev.off(plot.device)
-         }
-       }, add = TRUE)
-     }
-   else {
-       oldpar <- graphics::par(no.readonly = TRUE)
-       on.exit(graphics::par(oldpar), add = TRUE)
-       # dev.new()
-     }
+   oldmar <- graphics::par("mar")
+   on.exit(graphics::par(mar=oldmar), add = TRUE)
   existing.screens <- split.screen()
   if (!identical(existing.screens, FALSE))
     stop("st.plot.ggt cannot be used while split-screen mode is active")
@@ -2362,25 +2417,18 @@ st.info <-  function( lev, msg )
                               "yellow4","darkblue","darkblue","darkgreen" ),
                         z.min        = 0,
                         z.max        = 12,
-                        plt.pdf      = FALSE,
-                        plt.png      = FALSE,
-                        plt.fname    = NULL,
-                        plt.width    = 10,
-                        plt.height   = 10,
-                        plt.ptsize   = 10
+                        sort.performance       = FALSE,
+                        show.performance       = FALSE,
+                        performance.decreasing = TRUE,
+                        performance.format     = "%4.2f"
                        )
 {
   st.input.dir <- get0("st.input.dir", envir = .GlobalEnv,
                        inherits = FALSE, ifnotfound = "")
-  st.output.dir <- get0("st.output.dir", envir = .GlobalEnv,
-                        inherits = FALSE, ifnotfound = "")
 
-  if ((TRUE == plt.pdf || TRUE == plt.png) && is.null(plt.fname))
-    stop("plt.fname must be supplied when file output is requested")
   st.start.timer()
 #
   if ( "" == st.input.dir )  ip <- "" else ip <- "/"
-  if ( "" == st.output.dir ) op <- "" else op <- "/"
 
   mfilename <- tempfile(
     pattern = "SelectionTools-ggt-",
@@ -2391,29 +2439,119 @@ st.info <-  function( lev, msg )
    mpo.filename <- paste0(mfilename, ".mpo")
    on.exit(unlink(c(mmp.filename, mpo.filename)), add = TRUE)
 
-  out.filename <- ""
-  if (TRUE == plt.pdf )
-    out.filename = paste(st.output.dir,op,plt.fname,".pdf",sep="")
-  else if (TRUE == plt.png )
-    out.filename = paste(st.output.dir,op,plt.fname,".png",sep="")
-#
-  tmp.ifilename <- ""
-  if ( "" != i.list[1] )  {
-    ind.filename <- tempfile(
-      pattern = "SelectionTools-ggt-individuals-",
+  if (!is.logical(sort.performance) || (1L != length(sort.performance)) ||
+      is.na(sort.performance))
+    stop("sort.performance must be TRUE or FALSE")
+  if (!is.logical(show.performance) || (1L != length(show.performance)) ||
+      is.na(show.performance))
+    stop("show.performance must be TRUE or FALSE")
+  if (!is.logical(performance.decreasing) ||
+      (1L != length(performance.decreasing)) ||
+      is.na(performance.decreasing))
+    stop("performance.decreasing must be TRUE or FALSE")
+  if (!is.character(performance.format) ||
+      (1L != length(performance.format)) ||
+      is.na(performance.format) || !nzchar(performance.format))
+    stop("performance.format must be one non-empty character string")
+
+  performance.data <- NULL
+  if (sort.performance || show.performance) {
+    per.filename <- tempfile(
+      pattern = "SelectionTools-ggt-performance-",
       tmpdir = tempdir()
     )
-    on.exit(unlink(ind.filename), add = TRUE)
-    write.table ( i.list,
-                  file=ind.filename,
-                  quote=FALSE,
-                  row.names = FALSE, col.names = FALSE)
-    tmp.ifilename <- ind.filename
-  } 
+    on.exit(unlink(per.filename), add = TRUE)
+    retval <- 0
+    c.per <- .C("gs_return_performance_data_01_GV",
+                as.character(per.filename),
+                as.integer(TRUE),
+                retval = as.integer(retval),
+                as.character(data.set))
+    if ((-2 == c.per$retval) || !file.exists(per.filename))
+      stop(paste("No performance data available for data set '",
+                 data.set,"'",sep=""))
+    performance.data <- read.table(
+      file=per.filename,
+      header=FALSE,
+      skip=1,
+      colClasses=c("character","numeric"),
+      stringsAsFactors=FALSE
+    )
+    unlink(per.filename)
+    names(performance.data) <- c("i","y")
+  }
 
-  if ( ( "" == i.list[1] ) && ( "" != ifilename )) {
+  tmp.ifilename <- ""
+  i.list.supplied <- !((1L == length(i.list)) && ("" == i.list[1]))
+
+  if (i.list.supplied) {
+    i.list <- as.character(i.list)
+  } else if ("" != ifilename) {
     i.list <- read.table( paste(st.input.dir,ip,ifilename,sep=""),
                           stringsAsFactors=FALSE)[,1]
+    i.list <- as.character(i.list)
+    i.list.supplied <- TRUE
+  }
+
+  if (sort.performance) {
+    if (i.list.supplied)
+      sorted.ind <- i.list
+    else
+      sorted.ind <- performance.data$i
+
+    custom.i.nme <- !((1L == length(i.nme)) && ("" == i.nme[1]))
+    sorted.i.nme <- NULL
+    if (custom.i.nme) {
+      if (length(i.nme) != length(sorted.ind))
+        stop(paste("When sort.performance=TRUE, i.nme must contain one",
+                   "label for each individual before sorting"))
+      sorted.i.nme <- i.nme
+    }
+
+    idx <- match(sorted.ind,performance.data$i)
+    missing.ind <- unique(sorted.ind[is.na(idx)])
+    if (0 < length(missing.ind))
+      stop(paste("Individual(s) not found in data set '",data.set,"': ",
+                 paste(missing.ind,collapse=", "),sep=""))
+
+    performance <- performance.data$y[idx]
+    if (performance.decreasing)
+      ord <- order(-performance,seq_along(performance))
+    else
+      ord <- order(performance,seq_along(performance))
+    sorted.ind <- sorted.ind[ord]
+    if (custom.i.nme) sorted.i.nme <- sorted.i.nme[ord]
+
+    n.ind <- length(sorted.ind)
+    f <- as.integer(f.ind)[1L]
+    l <- as.integer(l.ind)[1L]
+    if (is.na(f) || is.na(l))
+      stop("f.ind and l.ind must be integers")
+    if (n.ind < f) f <- n.ind
+    if (n.ind < l) l <- n.ind
+    if (0 < f) f <- f - 1L else if (0 > f) f <- 0L
+    if ((1 > l) || (n.ind < l)) l <- n.ind
+
+    if (f < l) {
+      keep <- seq.int(f + 1L,l)
+      sorted.ind <- sorted.ind[keep]
+      if (custom.i.nme) sorted.i.nme <- sorted.i.nme[keep]
+    } else {
+      sorted.ind <- character(0)
+      if (custom.i.nme) sorted.i.nme <- character(0)
+    }
+
+    if (0L == length(sorted.ind))
+      stop("No individuals selected for plotting")
+
+    i.list <- sorted.ind
+    if (custom.i.nme) i.nme <- sorted.i.nme
+    i.list.supplied <- TRUE
+    f.ind <- 0
+    l.ind <- 0
+  }
+
+  if (i.list.supplied) {
     ind.filename <- tempfile(
       pattern = "SelectionTools-ggt-individuals-",
       tmpdir = tempdir()
@@ -2424,7 +2562,7 @@ st.info <-  function( lev, msg )
                   quote=FALSE,
                   row.names = FALSE, col.names = FALSE)
     tmp.ifilename <- ind.filename
-  } 
+  }
   
   st.write.marker.data ( format     = "m",
                          mfilename  = mfilename,
@@ -2439,10 +2577,34 @@ st.info <-  function( lev, msg )
       return ();
     }
 
+  plotted.ind <- scan(mpo.filename,what=character(),nlines=1,quiet=TRUE)
+  if (i.list.supplied) {
+    missing.ind <- unique(i.list[!i.list %in% plotted.ind])
+    if (0 < length(missing.ind))
+      stop(paste("Individual(s) not found in data set '",data.set,"': ",
+                 paste(missing.ind,collapse=", "),sep=""))
+    if (!identical(i.list,plotted.ind))
+      stop("Requested individual list does not match plotted individuals")
+  }
+
   retval <- 0;
 
   m <- read.table(mmp.filename,stringsAsFactors=FALSE, check.names = FALSE,)
   p <- read.table(mpo.filename, check.names = FALSE)
+
+  if (show.performance &&
+      ((1L == length(i.nme)) && ("" == i.nme[1]))) {
+    idx <- match(plotted.ind,performance.data$i)
+    if (anyNA(idx))
+      stop("Performance data do not match plotted individuals")
+    name.width <- max(nchar(plotted.ind, type="width"))
+    i.nme <- paste0(sprintf("%*s",name.width,plotted.ind),": y=",
+                    sprintf(performance.format,performance.data$y[idx]))
+  }
+
+  if ( !((1 == length(i.nme)) && ("" == i.nme[1])) &&
+       (length(i.nme) != ncol(p)) )
+    stop("Number of individual names in i.nme does not match plotted individuals")
 
   unlink(mmp.filename)
   unlink(mpo.filename)
@@ -2479,15 +2641,8 @@ st.info <-  function( lev, msg )
                         z.min,
                         z.max,
                         cex.chrom,
-                        cex.ind  ,
-                        plt.png,
-                        plt.pdf,
-                        plt.name=out.filename,
-                        plt.width,
-                        plt.height,
-                        plt.ptsize 
+                        cex.ind
                )
-     if (( TRUE == plt.pdf ) | ( TRUE == plt.png )) st.info(1,paste("GGT file: ",out.filename,sep=""))
   st.stop.timer (info.level=1)
 }
 
@@ -3260,7 +3415,10 @@ st.genetic.distances <- function ( measure = "mrd", # "mrd" "rd" "euc"
            as.character(data.set)      )
   x <- NULL
   if  (-2 != c$retval ) {
-    x <-  read.table(file=x.filename,header=TRUE,stringsAsFactors=FALSE)
+    x <- read.table(file=x.filename, header=TRUE,
+                    colClasses=c("integer","integer","character","character",
+                                 rep("numeric",6L)),
+                    stringsAsFactors=FALSE)
     unlink(x.filename)
   }
   gs.stop.timer (info.level=1)
@@ -3664,42 +3822,53 @@ il.overlapping.library <- function ( n.c =  5  ,            # number of chromoso
 
 }
 
-  st.select.phen <- function (p, n=0, t=0,decreasing=TRUE,nsmall=1) {
-    p  <- p[ order( p$y, decreasing=decreasing), ]
-    if (t>0)  {
-      if (decreasing)  p <- p[p$y>t,] else p <- p[p$y<t,]
+  st.select.phen <- function (p=NULL, n=0, t=0, decreasing=TRUE,
+                                  nsmall=1, data.set=NULL) {
+    if (is.null(p)) {
+      if (is.null(data.set))
+        stop("either p or data.set must be supplied")
+      p <- st.return.performance.data(data.set=data.set)
+      if (is.null(p))
+        stop(paste("No performance data available for data set '",
+                   data.set,"'",sep=""))
     }
-    if ((n>0)&&(n<nrow(p))) {
-      p  <- p[1:n,]
-    }
-    p$descr <- paste(p$i,format(p$y,nsmall=nsmall))
-    return(p)
-  }
 
-st.simple.ggt.plot <- function ( data.set="default", ... ) {
-    f <- 1; i <- l <- 73;
-    nme <-st.marker.data.statistics(data.set=data.set)$individual.list$Name
-    max <- length(st.marker.data.statistics(data.set=data.set)$individual.list$Name)
-    m <- 1
-    repeat {
-      f.name <- sprintf ("%s_part%03i",data.set,m)
-      if (l>max) {fk <- (max-f+3) / (i+2) } else {fk<- 1}
-      st.plot.ggt ( ...,
-                    f.ind=f,
-                    l.ind=l,
-                    data.set=data.set ,
-                    plt.ptsize = 8,
-                    plt.height = 12*fk,
-                    plt.width = 8,
-                    d.t = 50,
-                    d.map = 100,
-                    plt.pdf=TRUE,
-                    plt.fname= f.name)
-      f <- f+i
-      l <- l+i
-      m <- m+1  
-      if (f>max) break;
+    if (!is.data.frame(p))
+      stop("p must be a data frame")
+
+    nms <- names(p)
+    if ("i" %in% nms) {
+      i.col <- "i"
+    } else if ("ii" %in% nms) {
+      i.col <- "ii"
+    } else {
+      stop("p must contain an individual column named 'i' or 'ii'")
     }
+
+    if ("y" %in% nms) {
+      y.col <- "y"
+    } else if ("yy" %in% nms) {
+      y.col <- "yy"
+    } else {
+      stop("p must contain a performance column named 'y' or 'yy'")
+    }
+
+    if (!is.numeric(p[[y.col]]))
+      stop("performance values must be numeric")
+
+    p <- p[order(p[[y.col]], decreasing=decreasing), , drop=FALSE]
+    if (t>0) {
+      if (decreasing) {
+        p <- p[p[[y.col]]>t, , drop=FALSE]
+      } else {
+        p <- p[p[[y.col]]<t, , drop=FALSE]
+      }
+    }
+    if ((n>0)&&(n<nrow(p)))
+      p <- p[seq_len(n), , drop=FALSE]
+
+    p$descr <- paste(p[[i.col]], format(p[[y.col]], nsmall=nsmall))
+    return(p)
   }
 
 st.mark.alleles <- function ( markers = NULL,      # Provide markers directly

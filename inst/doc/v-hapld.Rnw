@@ -1,0 +1,730 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{fancyvrb}
+\usepackage{color}
+
+
+%\VignetteIndexEntry{Linkage disequilibrium based haplotype blocks}
+
+% Base 35 fonts without embedding
+% This reduces the file size of the vignettes from 400kB to 200kB
+%\pdfmapfile{=pdftex35.map}
+%\usepackage{mathptmx}
+%\renewcommand{\sfdefault}{phv}
+%\renewcommand{\ttdefault}{pcr}\fvset{fontsize=\footnotesize}
+% Base 35 fonts without embedding
+
+% Well readable Latex fonts
+\usepackage{lmodern}
+
+% Page layout: symmetric left and right margins.
+\setlength{\textwidth}{14.5cm}
+\setlength{\oddsidemargin}{0.71cm}
+\setlength{\evensidemargin}{0.71cm}
+\setlength{\topmargin}{-0.54cm}
+\setlength{\headheight}{0pt}
+\setlength{\headsep}{0pt}
+\setlength{\textheight}{25.2cm}
+\setlength{\footskip}{1cm}
+
+% Colours used in headings and code listings.
+\definecolor{gr}{rgb}{0.5,0.5,0.5}
+\definecolor{ru}{rgb}{0.6,0.6,0.6}
+\definecolor{bl}{rgb}{0,0,1}
+\definecolor{fr}{rgb}{0,0.5,0}
+
+\newcommand{\dr}[1]{\textcolor{gr}{#1}}
+\newcommand{\gr}[1]{\textcolor{ru}{#1}}
+\newcommand{\bl}[1]{\textcolor{bl}{#1}}
+\newcommand{\fr}[1]{%
+   \textcolor{fr}{\sffamily\bfseries\small #1}}
+
+% Indentation of code listings.
+\newdimen\links
+\links=0.5truecm
+
+% Title block.
+\def\h#1#2{%
+   \vskip-1ex
+   \hrule height 1pt
+   \vspace{3ex}
+   \centerline{\sffamily\bfseries #1}
+   \vskip0.5ex
+   \centerline{\textit{#2}}
+   \vskip3ex
+   \hrule height 1pt
+   \vskip2ex}
+
+% Abbreviated date used in the footer.
+\def\today{%
+   \number\day\hskip1ex
+   \ifcase\month\or
+      Jan\or Feb\or Mar\or Apr\or May\or Jun\or
+      Jul\or Aug\or Sep\or Oct\or Nov\or Dec%
+   \fi
+   \space\number\year}
+
+% Standard-LaTeX headings and page style.
+
+\makeatletter
+
+\renewcommand{\section}{%
+   \@startsection{section}{1}{\z@}%
+      {-3.5ex \@plus -1ex \@minus -.2ex}%
+      {2.3ex \@plus .2ex}%
+      {\normalfont\large\sffamily\bfseries\color{fr}}}
+
+\renewcommand{\subsection}{%
+   \@startsection{subsection}{2}{\z@}%
+      {-3.25ex \@plus -1ex \@minus -.2ex}%
+      {1.5ex \@plus .2ex}%
+      {\normalfont\normalsize\sffamily\bfseries\color{fr}}}
+
+\renewcommand{\subsubsection}{%
+   \@startsection{subsubsection}{3}{\z@}%
+      {-3.25ex \@plus -1ex \@minus -.2ex}%
+      {1.5ex \@plus .2ex}%
+      {\normalfont\small\sffamily\bfseries\color{fr}}}
+
+\renewcommand{\paragraph}{%
+   \@startsection{paragraph}{4}{\z@}%
+      {3.25ex \@plus 1ex \@minus .2ex}%
+      {-1em}%
+      {\normalfont\normalsize\sffamily\bfseries\color{fr}}}
+
+\renewcommand*\l@section[2]{%
+   \ifnum\c@tocdepth>\z@
+      \addpenalty\@secpenalty
+      \addvspace{1em \@plus\p@}%
+      \setlength\@tempdima{1.5em}%
+      \begingroup
+         \parindent\z@
+         \rightskip\@pnumwidth
+         \parfillskip-\@pnumwidth
+         \leavevmode
+         \small\sffamily\bfseries
+         \advance\leftskip\@tempdima
+         \hskip-\leftskip
+         #1\nobreak\hfil
+         \nobreak\hb@xt@\@pnumwidth{\hss #2}\par
+	 \vspace{0.3em}
+      \endgroup
+   \fi}
+
+\def\ps@stvignette{%
+   \def\@oddhead{}%
+   \let\@evenhead\@oddhead
+   \def\@oddfoot{%
+      {\normalfont\scriptsize\jobname\quad\today}%
+      \hfil
+      {\normalfont\thepage}}%
+   \let\@evenfoot\@oddfoot
+}
+
+\makeatother
+
+\pagestyle{stvignette}
+
+\usepackage{Sweave}
+\usepackage{fvextra}
+
+\definecolor{codebackground}{gray}{0.96}
+
+\RecustomVerbatimEnvironment{Sinput}{Verbatim}{%
+   fontsize=\footnotesize,
+   fontfamily=tt,
+   fontseries=m,
+   fontshape=n,
+   xleftmargin=\links,
+   frame=single,
+   framerule=0pt,
+   framesep=2mm
+}
+
+\definecolor{cornflowerblue}{rgb}{0.392,0.584,0.929}
+\definecolor{dodgerblue}{rgb}{0.118,0.565,1.000}
+
+\RecustomVerbatimEnvironment{Soutput}{Verbatim}{%
+   fontsize=\footnotesize,
+   fontseries=m,
+   fontshape=n,
+   xleftmargin=\links,
+   frame=single,
+   framerule=0.4pt,
+   framesep=2mm,
+   rulecolor=\color{blue},
+   formatcom=\color{blue}
+}
+
+\begin{document}
+
+\begin{center}
+\begin{minipage}[c]{12cm}
+\vspace{2cm}
+\h
+{Linkage disequilibrium based haplotype blocks}
+{Matthias Frisch}
+\def\contentsname{\textcolor{black}{}}
+\tableofcontents
+\end{minipage}
+\end{center}
+\vspace{2cm}
+
+\newcommand{\cde}[1]{{\small\texttt{#1}}}
+
+\newpage
+
+
+\section{Calculate and plot linkage disequilibrium}
+
+We consider 264 tropical maize lines from CIMMYT's
+Drought Tolerance Maize for Africa project that were analyzed with 1135 SNP
+markers. Data from Crossa et al.\ (2010). The original marker data are
+available from the Genetics webpage. Thanks to Dr.\ Jose Crossa and
+Dr.\ Raman Babu for providing the map data and the permission to use
+this data set as an example for data analysis.
+%
+We load the package and the tropical maize data
+
+<<eval=FALSE>>=
+library("SelectionTools")
+
+vignette.data <- new.env(parent=emptyenv())
+data("v-tropmaize-vcf", package="SelectionTools", envir=vignette.data)
+st.load.vcf.data(vignette.data$v.tropmaize.vcf, data.set="base")
+@
+
+
+\subsection{Population structure}
+
+For the population-structure analysis we first make a separate copy of the
+complete data and apply the same marker and individual filters used in the
+<<eval=FALSE>>=
+st.copy.marker.data("clustering", "base")
+st.restrict.marker.data(NoAll.MAX=2, MaMis.MAX=0.1, data.set="clustering")
+st.restrict.marker.data(InMis.MAX=0.1, data.set="clustering")
+st.restrict.marker.data(ExHet.MIN=0.1, data.set="clustering")
+@
+ Rogers distances are calculated with
+<<eval=FALSE>>=
+dist.mat <- st.genetic.distances( measure="rd",
+                                  format="m",
+                                  data.set="clustering")
+@
+Four principal coordinates are obtained with
+\cde{cmdscale()}.  The percentages shown in the coordinate labels are computed
+from the eigenvalues returned by \cde{cmdscale()}.
+<<eval=FALSE>>=
+pco <- cmdscale( dist.mat,
+                 k  = 4,
+		 eig= TRUE)
+PC <- pco$points
+var.exp <- round(pco$eig / sum(pco$eig) * 100, 2)
+@
+Five groups are constructed by K-means clustering of the
+distance profiles.
+<<eval=FALSE>>=
+set.seed(1)
+clus <- kmeans(as.matrix(dist.mat), centers=5, nstart=25)
+clusters <- clus$cluster
+cl.c <- as.character(clusters)
+@
+and make a two dimensional principal coordinate plots
+<<eval=FALSE>>=
+cl <- function(i)
+  paste0("Coordinate ", i, " (", sprintf("%.2f", var.exp[i]), "%)")
+
+par(mfrow=c(2,2), mar=c(4,4,2,2))
+plot(PC[,1], PC[,2], pch=cl.c, col=clusters, xlab=cl(1), ylab=cl(2))
+plot(PC[,1], PC[,3], pch=cl.c, col=clusters, xlab=cl(1), ylab=cl(3))
+plot(PC[,2], PC[,3], pch=cl.c, col=clusters, xlab=cl(2), ylab=cl(3))
+plot(PC[,1], PC[,4], pch=cl.c, col=clusters, xlab=cl(1), ylab=cl(4))
+@
+\centerline{\includegraphics[width=1.05\hsize]{figures/ex-vis1a-01.pdf}}
+\medskip
+
+We look for the cluster that contains the line 142
+<<eval=FALSE>>=
+target.cluster <- unname(clusters["142"])
+target.ind <- names(clusters)[clusters == target.cluster]
+@
+Then we copy the base data set and restrict it to only
+those individuals belonging to the cluster to which line 142 is assigned to
+<<eval=FALSE>>=
+st.copy.marker.data("q3", "base")
+st.restrict.marker.data(ind.list=target.ind, data.set="q3")
+st.restrict.marker.data(MaMis.MAX=0.1, data.set="q3")
+st.restrict.marker.data(InMis.MAX=0.1, data.set="q3")
+st.restrict.marker.data(ExHet.MIN=0.1, data.set="q3")
+@
+We use this data set for our further analyses.
+
+\subsection{Calculate LD}
+
+Pairwise linkage disequilibrium is calculated within chromosomes with
+\cde{st.calc.ld()}. The current implementation provides the frequency-weighted
+multiallelic measures \cde{"r2"} and \cde{"Dp"}. The returned data frame
+contains the chromosome, the two locus positions within the chromosome, the
+marker names, and the LD value.
+
+<<eval=FALSE>>=
+ld <- st.calc.ld( ld.measure="r2",
+                  data.set="q3")
+ld[16042:16052,]
+@
+
+\begin{Verbatim}[frame=single,fontsize=\footnotesize,formatcom=\color{bl}]
+      Chrom Locus1 Locus2     Name1     Name2       LD
+16042     8     13     14 PZA033812 PZA033811 0.833895
+16043     8     13     15 PZA033812 PZB021143 0.833895
+16044     8     13     16 PZA033812 PZB000414 0.833895
+16045     8     13     17 PZA033812 PZA004173 0.820898
+16046     8     13     18 PZA033812 PZA004521 0.594679
+16047     8     13     19 PZA033812 PZA037361 0.466027
+16048     8     13     20 PZA033812 PZA035432 0.068560
+16049     8     13     21 PZA033812 PZB018831 0.038208
+16050     8     13     22 PZA033812 PZB018833 0.056772
+16051     8     13     23 PZA033812 PZA036382 0.006269
+16052     8     13     24 PZA033812 PZA036372 0.007459
+\end{Verbatim}
+
+\subsection{Plot LD}
+
+\cde{st.LDplot.ld()} converts the pairwise list for one chromosome into a
+matrix and the corresponding map positions are provided by \cde{st.LDplot.map}.
+The heat map is drawn with the SelectionTools function \cde{st.LDheatmap},
+which uses standard R graphics and requires no additional plotting package.
+
+<<eval=FALSE>>=
+chromosome <- 8
+l <- st.LDplot.ld(ld, chromosome)
+m <- st.LDplot.map(chromosome, data.set="q3")
+st.LDheatmap(l, m,
+             distances="genetical",
+             LDmeasure="r2",
+             title=paste("r2, Chrom.", chromosome),
+             col=heat.colors(20))
+@
+
+\centerline{\includegraphics[width=0.45\hsize]{figures/ex-hapLD-fig01.pdf}}
+\medskip
+The measure \cde{"Dp"} is calculated and plotted in the same
+way.
+
+<<eval=FALSE>>=
+ld <- st.calc.ld(ld.measure="Dp", data.set="q3")
+l <- st.LDplot.ld(ld, chrom=chromosome)
+m <- st.LDplot.map(chrom=chromosome, data.set="q3")
+st.LDheatmap(l, m,
+             distances="genetical",
+             LDmeasure="Dprime",
+             title=paste("Dprime, Chrom.", chromosome),
+             col=heat.colors(20))
+@
+
+\centerline{\includegraphics[width=0.45\hsize]{figures/ex-hapLD-fig03.pdf}}
+
+\section{Haplotype blocks}
+
+For repeated plotting we use the following utility function.
+<<eval=FALSE>>=
+LDplot <- function(ld.list, chrom, data.set, ld.measure="r2",
+                   title="", no.colors=20)
+{
+  l <- st.LDplot.ld(ld.list, chrom)
+  m <- st.LDplot.map(chrom, data.set)
+  if ("Dp" == ld.measure) LDmeasure <- "Dprime" else LDmeasure <- "r2"
+  st.LDheatmap(l, m,
+               distances="genetical",
+               LDmeasure=LDmeasure,
+               title=paste("Chrom.", chrom, title),
+               col=heat.colors(no.colors))
+}
+@
+For LD-based haploblock block construction,
+\cde{st.calc.ld()} is called first and stores
+the pairwise LD values in the selected data set. Haplotype blocks are then
+constructed separately for every chromosome. The algorithm proceeds
+as follows:
+
+\begin{enumerate}
+\item Among unassigned markers, find the adjacent marker pair with the greatest
+LD value exceeding \cde{ld.threshold}.
+\item Start a new block with this pair. If no such pair remains, each remaining
+unassigned marker becomes a single-marker block.
+\item Try to extend the block to the left and to the right. With
+\cde{ld.criterion="flanking"}, the criterion is the LD between the two
+markers flanking the candidate block. With \cde{"average"}, it is the
+average pairwise LD in the candidate block.
+\item Extend the side with the larger criterion if it is at least the threshold,
+and repeat until the block can no longer be extended.
+\item Repeat until all markers on the chromosome have been assigned to blocks.
+\end{enumerate}
+
+\noindent
+The following example uses a threshold of 0.8 and the flanking-marker
+criterion. The block boundaries are defined with \cde{st.def.hblocks()} and
+\cde{st.recode.hil()} replaces the marker representation by haplotype-block
+variants whose alleles are the observed phased marker sequences.
+
+<<eval=FALSE>>=
+st.copy.marker.data("t3", "q3")
+ld <- st.calc.ld(ld.measure="r2", data.set="t3")
+LDplot(ld, chrom=8, data.set="t3", no.colors=5, title="before building blocks")
+
+st.def.hblocks(ld.threshold=0.8,
+               ld.criterion="flanking",
+               data.set="t3")
+st.recode.hil(data.set="t3")
+
+ld <- st.calc.ld(ld.measure="r2", data.set="t3")
+LDplot(ld, chrom=8, data.set="t3", no.colors=5, title="after building blocks, r2=0.8")
+@
+
+\centerline{\includegraphics[width=0.48\hsize]{figures/ex-hapLD-fig05.pdf}\quad
+\includegraphics[width=0.48\hsize]{figures/ex-hapLD-fig06.pdf}}
+
+\medskip
+
+\noindent
+Lower thresholds result in larger blocks in this example. Each threshold is
+applied to a fresh copy of the original marker data set before haplotype
+recoding. Here we use an \cde{r2=0.6}
+
+<<eval=FALSE>>=
+st.copy.marker.data("t3r06", "q3")
+st.calc.ld(ld.measure="r2", data.set="t3r06")
+st.def.hblocks(ld.threshold=0.6,
+               ld.criterion="flanking",
+               data.set="t3r06")
+st.recode.hil(data.set="t3r06")
+ld06 <- st.calc.ld(ld.measure="r2", data.set="t3r06")
+LDplot(ld06, chrom=8, data.set="t3r06",
+       no.colors=5, title="after building blocks, r2=0.6")
+@
+and a threshold of 0.4
+<<eval=FALSE>>=
+st.copy.marker.data("t3r04", "q3")
+st.calc.ld(ld.measure="r2", data.set="t3r04")
+st.def.hblocks(ld.threshold=0.4,
+               ld.criterion="flanking",
+               data.set="t3r04")
+st.recode.hil(data.set="t3r04")
+ld04 <- st.calc.ld(ld.measure="r2", data.set="t3r04")
+LDplot(ld04, chrom=8, data.set="t3r04",
+       no.colors=5, title="after building blocks, r2=0.4")
+@
+
+\centerline{\includegraphics[width=0.48\hsize]{figures/ex-hapLD-fig07.pdf}\quad
+\includegraphics[width=0.48\hsize]{figures/ex-hapLD-fig08.pdf}}
+
+The \cde{tolerance} argument allows the extension decision to look beyond a
+candidate boundary. For the flanking criterion, SelectionTools uses the best
+flanking LD value found within up to \cde{tolerance} additional markers on
+the side being tested. This can bridge a marker with low LD when a marker just
+beyond it has sufficiently high LD.
+
+<<eval=FALSE>>=
+st.copy.marker.data("t3tol", "q3")
+st.calc.ld(ld.measure="r2", data.set="t3tol")
+st.def.hblocks(ld.threshold=0.8,
+               tolerance=1,
+               ld.criterion="flanking",
+               data.set="t3tol")
+st.recode.hil(data.set="t3tol")
+ldtol <- st.calc.ld(ld.measure="r2", data.set="t3tol")
+LDplot(ldtol, chrom=8, data.set="t3tol",
+       no.colors=5, title="after building blocks, r2=0.8, tolerance=1")
+@
+
+\centerline{\includegraphics[width=0.475\hsize]{figures/ex-hapLD-fig09.pdf}}
+
+\noindent
+Instead of LD between markers flanking the candidate block, the average
+pairwise LD within the candidate block can be used.
+
+<<eval=FALSE>>=
+st.copy.marker.data("t3avg", "q3")
+st.calc.ld(ld.measure="r2", data.set="t3avg")
+st.def.hblocks(ld.threshold=0.6,
+               ld.criterion="average",
+               data.set="t3avg")
+st.recode.hil(data.set="t3avg")
+ldavg <- st.calc.ld(ld.measure="r2", data.set="t3avg")
+LDplot(ldavg, chrom=8, data.set="t3avg",
+       no.colors=5, title="after building blocks, r2=0.6 average LD")
+@
+
+\centerline{\includegraphics[width=0.475\hsize]{figures/ex-hapLD-fig10.pdf}}
+
+\section{Details of building haplotype blocks}
+
+The following output illustrates the relationship between the LD table,
+original marker genotypes, the block definition returned by
+\cde{st.def.hblocks()}, and the haplotype alleles returned by
+\cde{st.recode.hil()}.
+
+<<eval=FALSE>>=
+options(width=120)
+st.copy.marker.data("t3detail", "q3")
+ld <- st.calc.ld(ld.measure="r2", data.set="t3detail")
+@
+
+\begin{Verbatim}[frame=single,fontsize=\footnotesize,formatcom=\color{bl}]
+> ld[8==ld$Chrom,][642:650,]
+      Chrom Locus1 Locus2     Name1     Name2       LD
+16041     8     12     60 PZA004817 PZA035371 0.018484
+16042     8     13     14 PZA033812 PZA033811 0.833895
+16043     8     13     15 PZA033812 PZB021143 0.833895
+16044     8     13     16 PZA033812 PZB000414 0.833895
+16045     8     13     17 PZA033812 PZA004173 0.820898
+16046     8     13     18 PZA033812 PZA004521 0.594679
+16047     8     13     19 PZA033812 PZA037361 0.466027
+16048     8     13     20 PZA033812 PZA035432 0.068560
+16049     8     13     21 PZA033812 PZB018831 0.038208
+\end{Verbatim}
+<<eval=FALSE>>=
+x1 <- st.marker.data.statistics(data.set="t3detail")
+@
+
+\begin{Verbatim}[frame=single,fontsize=\footnotesize,formatcom=\color{bl}]
+> x1$genotypes[459:463,1:15]
+    Mar/Ind  69 128 129 130 131 132 133 134 135 137 138 139 140 141
+459 PZA033812 2/2 2/2 1/1 2/2 2/2 2/2 2/2 1/1 1/1 2/2 1/1 2/2 1/1 2/2
+460 PZA033811 2/2 2/2 1/1 2/2 2/2 2/2 2/2 1/1 1/1 2/2 1/1 2/2 1/1 2/2
+461 PZB021143 1/1 1/1 2/2 1/1 1/1 1/1 1/1 2/2 2/2 1/1 2/2 1/1 2/2 1/1
+462 PZB000414 1/1 1/1 2/2 1/1 1/1 1/1 1/1 2/2 2/2 1/1 2/2 1/1 2/2 1/1
+463 PZA004173 1/1 1/1 2/2 1/1 1/1 1/1 1/1 2/2 2/2 1/1 2/2 1/1 2/2 1/1
+
+> x1$genotypes[459:463,39:44]
+    182 183 184 185 186 187
+459 2/2 2/2  -- 2/2 1/1 1/1
+460 2/2 2/2  -- 2/2 1/1 1/1
+461 1/1 1/1  -- 1/1 2/2 2/2
+462 1/1 1/1  -- 1/1 2/2 2/2
+463  -- 1/1 2/2 1/1 2/2 2/2
+\end{Verbatim}
+
+<<eval=FALSE>>=
+h <- st.def.hblocks(ld.threshold=0.8,
+                    ld.criterion="flanking",
+                    data.set="t3detail")
+@
+
+\begin{Verbatim}[frame=single,fontsize=\footnotesize,formatcom=\color{bl}]
+> h[8==h$Chrom,][10:20,]
+    Chrom       Pos    Name Class                                            Markers
+426     8  22.64331 b000425     b                                         PZB014751;
+427     8  22.97866 b000426     b                                         PZD000343;
+428     8  24.53067 b000427     b                                         PZA004817;
+429     8  44.55478 b000428     b PZA033812;PZA033811;PZB021143;PZB000414;PZA004173;
+430     8  79.18913 b000429     b                                         PZA004521;
+431     8  95.02281 b000430     b                                         PZA037361;
+432     8 109.16423 b000431     b                                         PZA035432;
+433     8 116.30544 b000432     b                                         PZB018831;
+434     8 116.30563 b000433     b                                         PZB018833;
+435     8 119.83192 b000434     b                               PZA036382;PZA036372;
+436     8 125.31375 b000435     b                               PZB005911;PZB005921;
+\end{Verbatim}
+
+<<eval=FALSE>>=
+r <- st.recode.hil(data.set="t3detail")
+@
+
+\begin{Verbatim}[frame=single,fontsize=\footnotesize,formatcom=\color{bl}]
+> r[1138:1147,]
+       Block AlleleNr     AlleleDef
+1138 b000427        3            -1
+1139 b000428        1     2;2;1;1;1
+1140 b000428        2     1;1;2;2;2
+1141 b000428        3 -1;-1;-1;-1;2
+1142 b000428        4    2;2;1;1;-1
+1143 b000429        1             2
+1144 b000429        2             1
+1145 b000429        3            -1
+1146 b000430        1             2
+1147 b000430        2             1
+\end{Verbatim}
+
+<<eval=FALSE>>=
+x2 <- st.marker.data.statistics(data.set="t3detail")
+@
+
+\begin{Verbatim}[frame=single,fontsize=\footnotesize,formatcom=\color{bl}]
+> x2$genotypes[429,1:15]
+    Mar/Ind  69 128 129 130 131 132 133 134 135 137 138 139 140 141
+429 b000428 1/1 1/1 2/2 1/1 1/1 1/1 1/1 2/2 2/2 1/1 2/2 1/1 2/2 1/1
+
+> x2$genotypes[429,39:44]
+    182 183 184 185 186 187
+429  -- 1/1  -- 1/1 2/2 2/2
+\end{Verbatim}
+
+\section{Using predefined haplotype definitions}
+
+Predefined block boundaries can be transferred to another marker data set with
+\cde{st.set.hblocks()}. The \cde{haplotype.list} argument can be the data frame
+returned by \cde{st.def.hblocks()} or a manually constructed data frame. The
+current wrapper uses the \cde{Markers} column to construct the positional block
+assignment. Consequently, the target data set must contain the corresponding
+markers in the same order and with the same total marker count; the function
+does not realign the block definition by marker name.
+
+<<eval=FALSE>>=
+# Use the globally filtered clustering data so both populations have the
+# same marker set and marker order. The comparison population is the
+# largest of the four clusters other than the target cluster.
+other.sizes <- table(clusters[clusters != target.cluster])
+other.cluster <- as.integer(names(other.sizes)[which.max(other.sizes)])
+other.ind <- names(clusters)[clusters == other.cluster]
+
+st.copy.marker.data("qtarget", "clustering")
+st.copy.marker.data("qother", "clustering")
+st.restrict.marker.data(ind.list=target.ind, data.set="qtarget")
+st.restrict.marker.data(ind.list=other.ind, data.set="qother")
+
+st.copy.marker.data("ttarget", "qtarget")
+st.copy.marker.data("tother", "qother")
+st.calc.ld(ld.measure="r2", data.set="ttarget")
+h <- st.def.hblocks(ld.threshold=0.8,
+                    tolerance=3,
+                    ld.criterion="flanking",
+                    data.set="ttarget")
+
+h2 <- st.set.hblocks(haplotype.list=h,
+                     hap.symbol="c",
+                     data.set="tother")
+
+st.recode.hil(data.set="tother")
+@
+
+
+\section{LD definitions implemented for homozygous data}
+
+For an allele $x$ at one locus and an allele $y$ at a second locus, let
+$f_x$ and $f_y$ denote allele frequencies and $f_{xy}$ the frequency of the
+corresponding haplotype. The gametic disequilibrium coefficient is
+\[
+D_{xy}=f_{xy}-f_xf_y.
+\]
+SelectionTools implements two normalized measures. For an allele pair,
+\[
+r^2_{xy}=\frac{D_{xy}^2}
+ {f_x(1-f_x)f_y(1-f_y)},
+\]
+and
+\[
+D'_{xy}=\left|\frac{D_{xy}}{D_{\max}}\right|,
+\]
+where the maximum possible magnitude is determined from the allele
+frequencies and the sign of $D_{xy}$. For multiallelic markers, the current
+implementation combines allele-pair values using the equilibrium-frequency
+weights $f_xf_y$:
+\[
+r^2=\sum_x\sum_y f_xf_y r^2_{xy},\qquad
+D'=\sum_x\sum_y f_xf_y D'_{xy}.
+\]
+The behavior and interpretation of different LD measures, including their
+dependence on allele frequencies, are reviewed by Hedrick (1987).
+
+\section{Gametic phase of the input data}
+
+\subsection{Known gametic phase}
+
+The options \cde{ld.measure="r2"} and \cde{ld.measure="Dp"} calculate
+haplotype frequencies directly from the two homologues stored in the marker
+data. Thus, the allele order in the input is interpreted as known gametic
+phase.
+
+If \cde{A/T} is recorded at the first locus and \cde{G/C} at the second
+locus, the first stored homologue contributes haplotype \cde{AG} and the
+second contributes \cde{TC}. The maternal or paternal label of a homologue
+is irrelevant for LD; what matters is that alleles belonging to the same
+homologue are stored together across loci. For completely homozygous inbred
+lines the phase is immaterial. The direct calculation also supports
+multiallelic loci.
+
+\subsection{Unknown gametic phase}
+
+For heterozygous material with unknown phase, SelectionTools provides the
+additional options
+\cde{ld.measure="r2-estimate-phases"} and
+\cde{ld.measure="Dp-estimate-phases"}. These options estimate two-locus
+haplotype frequencies for biallelic markers before calculating $r^2$ or
+$D'$. SelectionTools performs this maximum-likelihood estimation internally;
+Clayton and Leung (2007) discuss haplotype estimation for association data.
+
+For two biallelic loci with genotypes $AA$, $Aa$, $aa$ and $BB$, $Bb$, $bb$,
+the nine observable two-locus genotype classes can be written as
+\[
+\begin{array}{c|ccc}
+ & BB & Bb & bb \\\hline
+AA & a & b & c\\
+Aa & d & e & f\\
+aa & g & h & i
+\end{array}
+\]
+where $e$ denotes the double heterozygotes. SelectionTools estimates the four
+haplotype frequencies by maximum likelihood with an expectation-maximization
+algorithm. If the current frequency estimates are $h_{00}$, $h_{01}$,
+$h_{10}$, and $h_{11}$, the probability that a double heterozygote carries the
+coupling diplotype is
+\[
+q=\frac{h_{00}h_{11}}
+        {h_{00}h_{11}+h_{01}h_{10}}.
+\]
+The expectation step uses $q$ to split the double heterozygotes between the two
+possible diplotypes. The maximization step recalculates the four haplotype
+frequencies from the expected haplotype counts. The steps are repeated to
+convergence. Several deterministic starting values are tried and the converged
+solution with the greatest observed-data likelihood is retained. The resulting
+haplotype frequencies are then used in the same $r^2$ or $D'$ definitions
+described above.
+
+The phase-estimation algorithm requires exactly two biological alleles at
+every marker in the selected data set. Missing alleles are not counted as
+biological alleles. Individuals with missing data at either member of a
+marker pair are omitted from the corresponding two-locus genotype table.
+Consequently, preprocessing to retain polymorphic biallelic markers may be
+required:
+
+<<eval=FALSE>>=
+st.copy.marker.data("q3phase", "q3")
+st.restrict.marker.data(NoAll.MAX=2, data.set="q3phase")
+st.restrict.marker.data(ExHet.MIN=0.001, data.set="q3phase")
+
+ld.phase.r2 <- st.calc.ld(ld.measure="r2-estimate-phases",
+                          data.set="q3phase")
+ld.phase.Dp <- st.calc.ld(ld.measure="Dp-estimate-phases",
+                          data.set="q3phase")
+@
+
+The phase-estimation model is intended for heterozygous material for which
+the two-locus gametic phase is unknown. Its assumptions should be considered
+when interpreting LD in populations affected by strong departures from the
+random-mating setting underlying the estimator. Hedrick (1987) provides a
+general review of LD measures and their interpretation.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\section{References}
+
+\def\lit{\noindent\hangindent\parindent}
+
+\lit
+Crossa J, de los Campos G, P\'erez P, Gianola D, Burgue\~no J, et
+al. (2010) Prediction of genetic values of quantitative traits in
+plant breeding using pedigree and molecular markers. Genetics
+186:713--724.
+
+\lit
+Clayton D, Leung HT (2007) An R package for analysis of whole-genome
+association studies. Human Heredity 64:45--51.
+
+\lit
+Hedrick PW (1987) Gametic disequilibrium measures: proceed with
+caution. Genetics 117:331--341.
+
+\end{document}

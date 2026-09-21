@@ -39,8 +39,16 @@ such a destination population already exists with positive allocation.
 The four crossing schemes control whether the parent chosen from each
 parental population is random or deterministic. Deterministic selection
 cycles through the active individuals of the corresponding parent
-population. \code{self} controls selfing, and \code{mode} controls
-whether the mating logic applies self-incompatibility.
+population. For progeny number \eqn{n} (counted from 1), the one-based
+position of the deterministically selected parent in parental population
+\eqn{P} of size \eqn{S_P} is
+\deqn{i_P(n) = ((n-1) \bmod S_P) + 1.}
+Thus deterministic selection cycles through all active individuals and
+starts again with the first individual after the end of the parental
+population is reached. The rule is applied separately to each parental
+population, so the two populations may have different sizes.
+\code{self} controls selfing, and \code{mode} controls whether the mating
+logic applies self-incompatibility.
 
 Each progeny receives newly simulated chromosome segments produced by
 meiosis. Cached marker genotypes and evaluated genetic values are not

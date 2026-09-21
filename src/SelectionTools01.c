@@ -16,6 +16,16 @@
 
 #include "SelectionToolsAllele.h"
 
+/* Include the OpenMP header before R headers.  Rinternals.h defines
+   match as Rf_match, while newer omp.h versions use match(...) in
+   OpenMP directives. */
+#ifdef _OPENMP
+  #ifndef ST
+    #define MT
+    #include <omp.h>
+  #endif
+#endif
+
 #include <R.h>
 #include <Rmath.h>
 #include <Rdefines.h>
@@ -29,11 +39,6 @@
 #error "MAXTHREADS and ST_RNG_MAXTHREADS differ"
 #endif
 
-#ifdef _OPENMP
-  #ifndef ST
-     #define MT
-  #endif
-#endif
 
 #define GS_FREE(ptr) (free((ptr)), (ptr) = NULL)
 
@@ -46,9 +51,7 @@ SEXP st_has_openmp(void)
 #endif
 }
 
-#ifdef MT
-   #include <omp.h> 
-#else
+#ifndef MT
   #define omp_get_thread_num() 0
   #define omp_set_num_threads(thr) {}
   #define omp_get_num_threads() 0
@@ -85,7 +88,7 @@ typedef unsigned long int gs_UNSIGNED ;
 typedef double gs_FLOAT ;
 
 /* Type linkage map*/
-typedef struct
+typedef struct gs_mappoint_type
 {
   int          chrom;
   double       pos;
@@ -102,7 +105,7 @@ typedef struct
 } gs_usp;
 
 /* Parameters of a cross of two individuals*/
-typedef struct
+typedef struct gs_cross_type
 {
   gs_UNSIGNED p1;
   gs_UNSIGNED p2;
@@ -115,7 +118,7 @@ typedef struct
 } gs_cross_type;
  
 /* Chromosomes and recombination frequencies */
-typedef struct
+typedef struct gs_chrom_type
 {
   gs_UNSIGNED        NLocC;       // Number of loci on the chromosome
   gs_mappoint_type** first_loc;   // Pointer to the first locus 
@@ -128,7 +131,7 @@ typedef struct
 
 /* Data set */
 
-typedef struct {
+typedef struct gs_varset_type {
   
   char name[gs_MAXSTR];
   char msg [3*gs_MAXSTR];
@@ -5989,6 +5992,1211 @@ static int st_markerdata_allele_index(const GS_ALLELE_TYPE *alleles,
 }
 
 
+/* ----------------------------------------------------------------------- */
+/* Direct VCF I/O for Beagle interchange                                   */
+/* ----------------------------------------------------------------------- */
+
+#define ST_VCF_POSITION_SCALE 1000000.0
+
+static int st_vcf_token_name_valid(const char *name)
+{
+  const unsigned char *p = (const unsigned char *)name;
+
+  if ((NULL == name) || ('\0' == name[0]))
+    return 0;
+
+  for (; '\0' != *p; p++)
+    if ((*p <= 32u) || (127u == *p))
+      return 0;
+
+  return 1;
+}
+
+
+static char *st_vcf_strdup(const char *s)
+{
+  size_t n;
+  char *out;
+
+  if (NULL == s)
+    return NULL;
+
+  n = strlen(s) + 1u;
+  out = malloc(n);
+  if (NULL != out)
+    memcpy(out,s,n);
+  return out;
+}
+
+
+/* Read one complete line from an ordinary VCF file. */
+static int st_vcf_getline(FILE *fp, char **line, size_t *capacity)
+{
+  size_t used = 0u;
+
+  if ((NULL == fp) || (NULL == line) || (NULL == capacity))
+    return -1;
+
+  if ((*capacity < 8192u) || (NULL == *line))
+    {
+      char *tmp = realloc(*line,8192u);
+      if (NULL == tmp)
+        return -1;
+      *line = tmp;
+      *capacity = 8192u;
+    }
+
+  (*line)[0] = '\0';
+  for (;;)
+    {
+      size_t avail_size;
+      int avail;
+      char *z;
+      size_t added;
+
+      if (used + 2u >= *capacity)
+        {
+          size_t next = (*capacity > SIZE_MAX / 2u) ? 0u : 2u * (*capacity);
+          char *tmp;
+
+          if ((0u == next) || (next > (size_t)INT_MAX))
+            next = (size_t)INT_MAX;
+          if (next <= *capacity)
+            return -1;
+          tmp = realloc(*line,next);
+          if (NULL == tmp)
+            return -1;
+          *line = tmp;
+          *capacity = next;
+        }
+
+      avail_size = *capacity - used;
+      avail = (avail_size > (size_t)INT_MAX) ? INT_MAX : (int)avail_size;
+      z = fgets(*line + used,avail,fp);
+      if (NULL == z)
+        {
+          if (used > 0u)
+            break;
+          if (feof(fp))
+            return 0;
+          return -1;
+        }
+
+      added = strlen(*line + used);
+      used += added;
+      if ((used > 0u) && ('\n' == (*line)[used - 1u]))
+        break;
+      if (feof(fp))
+        break;
+    }
+
+  while ((used > 0u) &&
+         (('\n' == (*line)[used - 1u]) || ('\r' == (*line)[used - 1u])))
+    (*line)[--used] = '\0';
+
+  return 1;
+}
+
+
+static int st_vcf_split_tabs(char *line, char ***field, size_t *capacity,
+                             size_t *nfield)
+{
+  size_t n = 1u;
+  size_t len;
+
+  if ((NULL == line) || (NULL == field) || (NULL == capacity) ||
+      (NULL == nfield))
+    return -1;
+
+  len = strlen(line);
+  for (size_t i = 0u; i < len; i++)
+    if ('\t' == line[i])
+      n++;
+
+  if (n > *capacity)
+    {
+      char **tmp;
+      if (n > SIZE_MAX / sizeof(**field))
+        return -1;
+      tmp = realloc(*field,n * sizeof(**field));
+      if (NULL == tmp)
+        return -1;
+      *field = tmp;
+      *capacity = n;
+    }
+
+  n = 0u;
+  (*field)[n++] = line;
+  for (size_t i = 0u; i < len; i++)
+    if ('\t' == line[i])
+      {
+        line[i] = '\0';
+        (*field)[n++] = line + i + 1u;
+      }
+
+  *nfield = n;
+  return 0;
+}
+
+
+static int st_vcf_format_gt_index(const char *format, size_t *gt_index)
+{
+  const char *start;
+  const char *p;
+  size_t index = 0u;
+  int found = 0;
+
+  if ((NULL == format) || ('\0' == format[0]) ||
+      (0 == strcmp(format,".")) || (NULL == gt_index))
+    return -1;
+
+  start = format;
+  for (p = format;; p++)
+    if ((':' == *p) || ('\0' == *p))
+      {
+        size_t len = (size_t)(p - start);
+        if (0u == len)
+          return -1;
+        if ((2u == len) && ('G' == start[0]) && ('T' == start[1]))
+          {
+            if (found)
+              return -1;
+            *gt_index = index;
+            found = 1;
+          }
+        if ('\0' == *p)
+          break;
+        index++;
+        start = p + 1;
+      }
+
+  return found ? 0 : -1;
+}
+
+
+static int st_vcf_subfield(const char *sample, size_t wanted,
+                           const char **start_out, size_t *len_out)
+{
+  const char *start;
+  const char *p;
+  size_t index = 0u;
+
+  if ((NULL == sample) || (NULL == start_out) || (NULL == len_out))
+    return -1;
+
+  start = sample;
+  for (p = sample;; p++)
+    if ((':' == *p) || ('\0' == *p))
+      {
+        if (index == wanted)
+          {
+            *start_out = start;
+            *len_out = (size_t)(p - start);
+            return 0;
+          }
+        if ('\0' == *p)
+          break;
+        index++;
+        start = p + 1;
+      }
+
+  return -1;
+}
+
+
+static int st_vcf_parse_allele_index(const char *s, size_t n,
+                                     gs_UNSIGNED n_alt,
+                                     int *missing, gs_UNSIGNED *value)
+{
+  unsigned long v = 0ul;
+
+  if ((NULL == s) || (0u == n) || (NULL == missing) || (NULL == value))
+    return -1;
+
+  if ((1u == n) && ('.' == s[0]))
+    {
+      *missing = 1;
+      *value = 0u;
+      return 0;
+    }
+
+  for (size_t i = 0u; i < n; i++)
+    {
+      unsigned int d;
+      if ((s[i] < '0') || (s[i] > '9'))
+        return -1;
+      d = (unsigned int)(s[i] - '0');
+      if (v > (ULONG_MAX - d) / 10ul)
+        return -1;
+      v = 10ul * v + d;
+    }
+
+  if ((gs_UNSIGNED)v > n_alt)
+    return -1;
+
+  *missing = 0;
+  *value = (gs_UNSIGNED)v;
+  return 0;
+}
+
+
+static int st_vcf_parse_gt(const char *gt, size_t len, gs_UNSIGNED n_alt,
+                           GS_ALLELE_TYPE *a1, GS_ALLELE_TYPE *a2)
+{
+  size_t sep = SIZE_MAX;
+  int miss1, miss2;
+  gs_UNSIGNED v1, v2;
+
+  if ((NULL == gt) || (NULL == a1) || (NULL == a2) || (0u == len))
+    return -1;
+
+  if ((1u == len) && ('.' == gt[0]))
+    {
+      *a1 = GS_ALLELE_MISSING;
+      *a2 = GS_ALLELE_MISSING;
+      return 0;
+    }
+
+  for (size_t i = 0u; i < len; i++)
+    if (('/' == gt[i]) || ('|' == gt[i]))
+      {
+        if (SIZE_MAX != sep)
+          return -1;
+        sep = i;
+      }
+
+  if ((SIZE_MAX == sep) || (0u == sep) || (sep + 1u >= len))
+    return -1;
+
+  if ((0 != st_vcf_parse_allele_index(gt,sep,n_alt,&miss1,&v1)) ||
+      (0 != st_vcf_parse_allele_index(gt + sep + 1u,len - sep - 1u,
+                                      n_alt,&miss2,&v2)))
+    return -1;
+
+  if (miss1 || miss2)
+    {
+      *a1 = GS_ALLELE_MISSING;
+      *a2 = GS_ALLELE_MISSING;
+      return 0;
+    }
+
+  if ((v1 >= (gs_UNSIGNED)GS_ALLELE_MAX) ||
+      (v2 >= (gs_UNSIGNED)GS_ALLELE_MAX))
+    return -1;
+
+  *a1 = (GS_ALLELE_TYPE)(v1 + 1u);
+  *a2 = (GS_ALLELE_TYPE)(v2 + 1u);
+  return 0;
+}
+
+
+static int st_vcf_parse_pos(const char *text, unsigned long long *pos)
+{
+  char *end = NULL;
+  unsigned long long value;
+
+  if ((NULL == text) || ('\0' == text[0]) || (NULL == pos) ||
+      ('-' == text[0]) || ('+' == text[0]))
+    return -1;
+
+  errno = 0;
+  value = strtoull(text,&end,10);
+  if ((0 != errno) || (end == text) || ('\0' != *end) || (0ull == value))
+    return -1;
+
+  *pos = value;
+  return 0;
+}
+
+
+static int st_vcf_allele_label(gs_UNSIGNED index, char *buffer,
+                               size_t capacity)
+{
+  static const char base[4] = {'A','C','G','T'};
+  char rev[32];
+  size_t n = 0u;
+  gs_UNSIGNED value;
+
+  if ((NULL == buffer) || (capacity < 2u))
+    return -1;
+
+  if (index < 4u)
+    {
+      buffer[0] = base[index];
+      buffer[1] = '\0';
+      return 0;
+    }
+
+  /* Longer alleles begin with REF='A', which is a valid VCF indel form. */
+  value = index - 4u;
+  do
+    {
+      if (n >= sizeof(rev))
+        return -1;
+      rev[n++] = base[value & 3u];
+      value >>= 2u;
+    }
+  while (value > 0u);
+
+  if (n + 2u > capacity)
+    return -1;
+  buffer[0] = 'A';
+  for (size_t i = 0u; i < n; i++)
+    buffer[1u + i] = rev[n - i - 1u];
+  buffer[n + 1u] = '\0';
+  return 0;
+}
+
+
+static int st_vcf_generated_marker_name(char *buffer, size_t capacity,
+                                        gs_UNSIGNED index)
+{
+  int n;
+
+  if ((NULL == buffer) || (0u == capacity))
+    return -1;
+
+  n = snprintf(buffer,capacity,"M%lu",(unsigned long)(index + 1u));
+  if ((n < 1) || ((size_t)n >= capacity))
+    return -1;
+  return 0;
+}
+
+
+static int st_vcf_map_pool_add(size_t *total, const char *s)
+{
+  size_t n;
+
+  if ((NULL == total) || (NULL == s))
+    return -1;
+  n = strlen(s) + 1u;
+  if (*total > SIZE_MAX - n)
+    return -1;
+  *total += n;
+  return 0;
+}
+
+
+SEXP st_read_vcf(SEXP filename, SEXP dataset)
+{
+  gs_varset_type *gv;
+  gs_varset_type tmp;
+  FILE *fp = NULL;
+  char *line = NULL;
+  size_t line_capacity = 0u;
+  char **field = NULL;
+  size_t field_capacity = 0u;
+  char **sample_name = NULL;
+  gs_UNSIGNED no_ind = 0u, no_mar = 0u;
+  size_t map_string_size = 0u;
+  double position_scale = ST_VCF_POSITION_SCALE;
+  int have_header = 0;
+  int failed = 0;
+  int status = -2;
+  gs_name_index_type *index = NULL;
+  char **chrom_name = NULL;
+  size_t chrom_capacity = 0u;
+  gs_UNSIGNED no_chrom = 0u;
+  size_t map_string_offset = 0u;
+  unsigned long long previous_raw_pos = 0ull;
+  int previous_chrom = 0;
+
+  if ((STRSXP != TYPEOF(filename)) || (1 != XLENGTH(filename)) ||
+      (NA_STRING == STRING_ELT(filename,0)) ||
+      ('\0' == CHAR(STRING_ELT(filename,0))[0]) ||
+      (STRSXP != TYPEOF(dataset)) || (1 != XLENGTH(dataset)) ||
+      (NA_STRING == STRING_ELT(dataset,0)) ||
+      ('\0' == CHAR(STRING_ELT(dataset,0))[0]))
+    return ScalarInteger(-2);
+
+  gv = gs_fdta((char *)CHAR(STRING_ELT(dataset,0)));
+  gs_tmp_init_from(&tmp,gv);
+
+  fp = fopen(CHAR(STRING_ELT(filename,0)),"rb");
+  if (NULL == fp)
+    {
+      gs_info(gv,-2,"Cannot open VCF file");
+      failed = 1;
+      goto cleanup;
+    }
+
+  /* First pass: validate the VCF skeleton and size native storage. */
+  for (;;)
+    {
+      int lr = st_vcf_getline(fp,&line,&line_capacity);
+      size_t nfield = 0u;
+
+      if (0 == lr)
+        break;
+      if (lr < 0)
+        {
+          gs_info(gv,-2,"Error reading VCF file");
+          failed = 1;
+          goto cleanup;
+        }
+      if ('\0' == line[0])
+        continue;
+
+      if (0 == strncmp(line,"##SelectionToolsPositionScale=",30))
+        {
+          char *end = NULL;
+          double scale = strtod(line + 30,&end);
+          if ((end != line + 30) && ('\0' == *end) && isfinite(scale) &&
+              (scale > 0.0))
+            position_scale = scale;
+          continue;
+        }
+
+      if (0 == strncmp(line,"##",2))
+        continue;
+
+      if ('#' == line[0])
+        {
+          if (have_header)
+            {
+              gs_info(gv,-2,"VCF contains more than one column header");
+              failed = 1;
+              goto cleanup;
+            }
+          if (0 != st_vcf_split_tabs(line,&field,&field_capacity,&nfield))
+            {
+              failed = 1;
+              goto cleanup;
+            }
+          if ((nfield < 10u) || (0 != strcmp(field[0],"#CHROM")) ||
+              (0 != strcmp(field[1],"POS")) || (0 != strcmp(field[2],"ID")) ||
+              (0 != strcmp(field[3],"REF")) || (0 != strcmp(field[4],"ALT")) ||
+              (0 != strcmp(field[5],"QUAL")) || (0 != strcmp(field[6],"FILTER")) ||
+              (0 != strcmp(field[7],"INFO")) || (0 != strcmp(field[8],"FORMAT")))
+            {
+              gs_info(gv,-2,"VCF header must contain standard columns through FORMAT and at least one sample");
+              failed = 1;
+              goto cleanup;
+            }
+          if (nfield - 9u > (size_t)gs_UNSIGNED_MAX)
+            {
+              gs_info(gv,-2,"Too many VCF samples");
+              failed = 1;
+              goto cleanup;
+            }
+          no_ind = (gs_UNSIGNED)(nfield - 9u);
+          sample_name = calloc((size_t)no_ind,sizeof(*sample_name));
+          if (NULL == sample_name)
+            {
+              gs_info(gv,-2,"Memory allocation error");
+              failed = 1;
+              goto cleanup;
+            }
+          for (gs_UNSIGNED i = 0u; i < no_ind; i++)
+            {
+              const char *name = field[9u + i];
+              if (!st_vcf_token_name_valid(name) || (strlen(name) >= gs_MAXNME))
+                {
+                  gs_info(gv,-2,"Invalid or overlong VCF sample name");
+                  failed = 1;
+                  goto cleanup;
+                }
+              sample_name[i] = st_vcf_strdup(name);
+              if (NULL == sample_name[i])
+                {
+                  gs_info(gv,-2,"Memory allocation error");
+                  failed = 1;
+                  goto cleanup;
+                }
+            }
+          have_header = 1;
+          continue;
+        }
+
+      if (!have_header)
+        {
+          gs_info(gv,-2,"VCF data encountered before #CHROM header");
+          failed = 1;
+          goto cleanup;
+        }
+
+      if (0 != st_vcf_split_tabs(line,&field,&field_capacity,&nfield))
+        {
+          failed = 1;
+          goto cleanup;
+        }
+      if (nfield != (size_t)no_ind + 9u)
+        {
+          gs_info(gv,-2,"VCF record has the wrong number of columns");
+          failed = 1;
+          goto cleanup;
+        }
+      {
+        unsigned long long pos;
+        gs_UNSIGNED n_alt;
+        size_t gt_index;
+        char generated[64];
+        const char *id = field[2];
+
+        if (('\0' == field[0][0]) ||
+            (0 != st_vcf_parse_pos(field[1],&pos)) ||
+            ('\0' == field[3][0]) || (0 == strcmp(field[3],".")) ||
+            (0 != st_stvcf_alleles(field[3],field[4],&n_alt)) ||
+            (0 != st_vcf_format_gt_index(field[8],&gt_index)))
+          {
+            gs_info(gv,-2,"Invalid CHROM/POS/REF/ALT/FORMAT field in VCF");
+            failed = 1;
+            goto cleanup;
+          }
+
+        if (0 == strcmp(id,"."))
+          {
+            if (0 != st_vcf_generated_marker_name(generated,sizeof(generated),no_mar))
+              {
+                failed = 1;
+                goto cleanup;
+              }
+            id = generated;
+          }
+        else if (!st_vcf_token_name_valid(id) || (strlen(id) >= gs_MAXNME))
+          {
+            gs_info(gv,-2,"Invalid or overlong VCF marker ID");
+            failed = 1;
+            goto cleanup;
+          }
+
+        if ((0 != st_vcf_map_pool_add(&map_string_size,id)) ||
+            (0 != st_vcf_map_pool_add(&map_string_size,"m")))
+          {
+            gs_info(gv,-2,"VCF map string storage too large");
+            failed = 1;
+            goto cleanup;
+          }
+      }
+
+      if (no_mar == gs_UNSIGNED_MAX)
+        {
+          gs_info(gv,-2,"Too many VCF markers");
+          failed = 1;
+          goto cleanup;
+        }
+      no_mar++;
+    }
+
+  if (!have_header || (0u == no_ind) || (0u == no_mar))
+    {
+      gs_info(gv,-2,"VCF contains no samples or no markers");
+      failed = 1;
+      goto cleanup;
+    }
+
+  if (0 != fclose(fp))
+    {
+      fp = NULL;
+      gs_info(gv,-2,"Error closing VCF file");
+      failed = 1;
+      goto cleanup;
+    }
+  fp = NULL;
+
+  tmp.NoInd = no_ind;
+  tmp.NoMar = no_mar;
+  tmp.NLoc = no_mar;
+  tmp.map_str_N = map_string_size;
+  tmp.IndName = gs_malloc_array((size_t)no_ind,sizeof(*tmp.IndName));
+  tmp.MarName = gs_malloc_array((size_t)no_mar,sizeof(*tmp.MarName));
+  tmp.map_S = gs_malloc_array((size_t)no_mar,sizeof(*tmp.map_S));
+  tmp.map_str_S = gs_malloc_array(tmp.map_str_N,sizeof(*tmp.map_str_S));
+  tmp.map = gs_malloc_array((size_t)no_mar,sizeof(*tmp.map));
+  tmp.mdl = gs_malloc_array((size_t)no_mar,sizeof(*tmp.mdl));
+  if ((NULL == tmp.IndName) || (NULL == tmp.MarName) ||
+      (NULL == tmp.map_S) || (NULL == tmp.map_str_S) ||
+      (NULL == tmp.map) || (NULL == tmp.mdl) ||
+      (0 != gs_alloc_genotype_matrix(&tmp,no_mar,no_ind)))
+    {
+      gs_info(gv,-2,"Memory allocation error");
+      failed = 1;
+      goto cleanup;
+    }
+
+  for (gs_UNSIGNED i = 0u; i < no_ind; i++)
+    {
+      size_t len = strlen(sample_name[i]);
+      strcpy(tmp.IndName[i],sample_name[i]);
+      if ((int)len > tmp.MaxIL) tmp.MaxIL = (int)len;
+    }
+  if ((0 != gs_make_name_index(tmp.IndName,tmp.NoInd,&index)) ||
+      gs_name_index_has_duplicates(index,tmp.NoInd))
+    {
+      gs_info(gv,-2,"Duplicate or invalid VCF sample names");
+      failed = 1;
+      goto cleanup;
+    }
+  free(index);
+  index = NULL;
+
+  fp = fopen(CHAR(STRING_ELT(filename,0)),"rb");
+  if (NULL == fp)
+    {
+      gs_info(gv,-2,"Cannot reopen VCF file");
+      failed = 1;
+      goto cleanup;
+    }
+
+  {
+    gs_UNSIGNED marker = 0u;
+    int saw_header = 0;
+
+    for (;;)
+      {
+        int lr = st_vcf_getline(fp,&line,&line_capacity);
+        size_t nfield = 0u;
+
+        if (0 == lr)
+          break;
+        if (lr < 0)
+          {
+            gs_info(gv,-2,"Error reading VCF file");
+            failed = 1;
+            goto cleanup;
+          }
+        if ('\0' == line[0])
+          continue;
+        if (0 == strncmp(line,"##",2))
+          continue;
+        if ('#' == line[0])
+          {
+            saw_header = 1;
+            continue;
+          }
+        if (!saw_header || (marker >= no_mar) ||
+            (0 != st_vcf_split_tabs(line,&field,&field_capacity,&nfield)) ||
+            (nfield != (size_t)no_ind + 9u))
+          {
+            gs_info(gv,-2,"Invalid VCF structure on second pass");
+            failed = 1;
+            goto cleanup;
+          }
+
+        {
+          unsigned long long raw_pos;
+          gs_UNSIGNED n_alt;
+          size_t gt_index;
+          char generated[64];
+          const char *id = field[2];
+          int chrom_code;
+          double genetic_pos;
+          gs_mappoint_type source_point;
+
+          if ((0 != st_vcf_parse_pos(field[1],&raw_pos)) ||
+              (0 != st_stvcf_alleles(field[3],field[4],&n_alt)) ||
+              (0 != st_vcf_format_gt_index(field[8],&gt_index)))
+            {
+              gs_info(gv,-2,"Invalid VCF record on second pass");
+              failed = 1;
+              goto cleanup;
+            }
+
+          if (0 == strcmp(id,"."))
+            {
+              if (0 != st_vcf_generated_marker_name(generated,sizeof(generated),marker))
+                {
+                  failed = 1;
+                  goto cleanup;
+                }
+              id = generated;
+            }
+
+          if ((0u == no_chrom) ||
+              (0 != strcmp(chrom_name[no_chrom - 1u],field[0])))
+            {
+              for (gs_UNSIGNED c = 0u; c < no_chrom; c++)
+                if (0 == strcmp(chrom_name[c],field[0]))
+                  {
+                    gs_info(gv,-2,"VCF chromosome records must be contiguous");
+                    failed = 1;
+                    goto cleanup;
+                  }
+
+              if ((size_t)no_chrom >= chrom_capacity)
+                {
+                  size_t next = (0u == chrom_capacity) ? 8u : 2u * chrom_capacity;
+                  char **z;
+                  if ((next <= chrom_capacity) ||
+                      (next > SIZE_MAX / sizeof(*chrom_name)))
+                    {
+                      failed = 1;
+                      goto cleanup;
+                    }
+                  z = realloc(chrom_name,next * sizeof(*chrom_name));
+                  if (NULL == z)
+                    {
+                      failed = 1;
+                      goto cleanup;
+                    }
+                  chrom_name = z;
+                  chrom_capacity = next;
+                }
+              chrom_name[no_chrom] = st_vcf_strdup(field[0]);
+              if (NULL == chrom_name[no_chrom])
+                {
+                  failed = 1;
+                  goto cleanup;
+                }
+              no_chrom++;
+              previous_raw_pos = 0ull;
+              previous_chrom = (int)no_chrom;
+            }
+
+          chrom_code = (int)no_chrom;
+          if ((raw_pos < previous_raw_pos) && (chrom_code == previous_chrom))
+            {
+              gs_info(gv,-2,"VCF positions must be nondecreasing within chromosome");
+              failed = 1;
+              goto cleanup;
+            }
+          previous_raw_pos = raw_pos;
+          previous_chrom = chrom_code;
+
+          genetic_pos = (position_scale > 0.0) ?
+            (((double)raw_pos - 1.0) / position_scale) : (double)raw_pos;
+          if (!isfinite(genetic_pos) || (genetic_pos < 0.0))
+            {
+              gs_info(gv,-2,"VCF position cannot be represented as a genetic map position");
+              failed = 1;
+              goto cleanup;
+            }
+
+          strcpy(tmp.MarName[marker],id);
+          if ((int)strlen(id) > tmp.MaxML) tmp.MaxML = (int)strlen(id);
+          source_point.chrom = chrom_code;
+          source_point.pos = genetic_pos;
+          source_point.name = id;
+          source_point.class = "m";
+          source_point.nr = marker;
+          if (0 != gs_copy_map_point_to_pool(&(tmp.map_S[marker]),
+                                             &source_point,marker,
+                                             tmp.map_str_S,tmp.map_str_N,
+                                             &map_string_offset))
+            {
+              gs_info(gv,-2,"Invalid VCF map string storage");
+              failed = 1;
+              goto cleanup;
+            }
+          tmp.map[marker] = &(tmp.map_S[marker]);
+          tmp.mdl[marker] = marker;
+
+          for (gs_UNSIGNED i = 0u; i < no_ind; i++)
+            {
+              const char *gt = NULL;
+              size_t gt_len = 0u;
+              GS_ALLELE_TYPE a1, a2;
+              size_t idx = (size_t)marker * (size_t)no_ind + i;
+
+              if ((0 != st_vcf_subfield(field[9u + i],gt_index,&gt,&gt_len)) ||
+                  (0u == gt_len) ||
+                  (0 != st_vcf_parse_gt(gt,gt_len,n_alt,&a1,&a2)))
+                {
+                  gs_info(gv,-2,"Invalid diploid GT field in VCF");
+                  failed = 1;
+                  goto cleanup;
+                }
+              tmp.All1[idx] = a1;
+              tmp.All2[idx] = a2;
+            }
+        }
+        marker++;
+      }
+
+    if (marker != no_mar)
+      {
+        gs_info(gv,-2,"VCF marker count changed between passes");
+        failed = 1;
+        goto cleanup;
+      }
+  }
+
+  if (map_string_offset != tmp.map_str_N)
+    {
+      gs_info(gv,-2,"Invalid VCF map string storage");
+      failed = 1;
+      goto cleanup;
+    }
+
+  if (0 != st_stvcf_separate_map_ties(gv,tmp.map,tmp.NLoc))
+    {
+      failed = 1;
+      goto cleanup;
+    }
+
+  if ((0 != gs_make_name_index(tmp.MarName,tmp.NoMar,&index)) ||
+      gs_name_index_has_duplicates(index,tmp.NoMar))
+    {
+      gs_info(gv,-2,"Duplicate VCF marker IDs");
+      failed = 1;
+      goto cleanup;
+    }
+  free(index);
+  index = NULL;
+
+  {
+    int srv = 0;
+    char *empty = "";
+    char **empty_p = &empty;
+    int zero = 0;
+    int *zero_p = &zero;
+
+    gs_marker_stats_01(&tmp,empty_p,empty_p,empty_p,
+                       zero_p,zero_p,zero_p,zero_p,&srv);
+    if (-2 == srv)
+      {
+        failed = 1;
+        goto cleanup;
+      }
+  }
+
+  gs_tmp_commit(gv,&tmp);
+  status = 0;
+
+ cleanup:
+  if (NULL != fp) fclose(fp);
+  free(line);
+  free(field);
+  free(index);
+  if (NULL != sample_name)
+    {
+      for (gs_UNSIGNED i = 0u; i < no_ind; i++)
+        free(sample_name[i]);
+      free(sample_name);
+    }
+  if (NULL != chrom_name)
+    {
+      for (gs_UNSIGNED c = 0u; c < no_chrom; c++)
+        free(chrom_name[c]);
+      free(chrom_name);
+    }
+  if (failed)
+    gs_reset(&tmp);
+  return ScalarInteger(status);
+}
+
+
+typedef struct
+{
+  FILE *plain;
+} st_vcf_output;
+
+
+static int st_vcf_output_open(st_vcf_output *out, const char *filename)
+{
+  memset(out,0,sizeof(*out));
+  out->plain = fopen(filename,"wb");
+  return (NULL == out->plain) ? -1 : 0;
+}
+
+
+static int st_vcf_output_write(st_vcf_output *out, const char *text,
+                               size_t n)
+{
+  return (fwrite(text,1u,n,out->plain) == n) ? 0 : -1;
+}
+
+
+static int st_vcf_output_printf(st_vcf_output *out, const char *format, ...)
+{
+  char stack[4096];
+  char *buffer = stack;
+  size_t capacity = sizeof(stack);
+  va_list ap;
+  int n;
+  int rc;
+
+  va_start(ap,format);
+  n = vsnprintf(buffer,capacity,format,ap);
+  va_end(ap);
+  if (n < 0)
+    return -1;
+
+  if ((size_t)n >= capacity)
+    {
+      capacity = (size_t)n + 1u;
+      buffer = malloc(capacity);
+      if (NULL == buffer)
+        return -1;
+      va_start(ap,format);
+      n = vsnprintf(buffer,capacity,format,ap);
+      va_end(ap);
+      if ((n < 0) || ((size_t)n >= capacity))
+        {
+          free(buffer);
+          return -1;
+        }
+    }
+
+  rc = st_vcf_output_write(out,buffer,(size_t)n);
+  if (buffer != stack)
+    free(buffer);
+  return rc;
+}
+
+
+static int st_vcf_output_close(st_vcf_output *out)
+{
+  int rc = (NULL == out->plain) ? 0 : fclose(out->plain);
+  out->plain = NULL;
+  return (0 == rc) ? 0 : -1;
+}
+
+
+SEXP st_write_vcf(SEXP filename, SEXP dataset)
+{
+  gs_varset_type *gv;
+  st_vcf_output out;
+  gs_UNSIGNED *order = NULL;
+  gs_mappoint_type **point_by_marker = NULL;
+  unsigned char *seen = NULL;
+  GS_ALLELE_TYPE *alleles = NULL;
+  gs_UNSIGNED norder = 0u;
+  long long previous_bp = 0ll;
+  int previous_chrom = -1;
+  int opened = 0;
+  int failed = 0;
+  int status = -2;
+
+  memset(&out,0,sizeof(out));
+
+  if ((STRSXP != TYPEOF(filename)) || (1 != XLENGTH(filename)) ||
+      (NA_STRING == STRING_ELT(filename,0)) ||
+      ('\0' == CHAR(STRING_ELT(filename,0))[0]) ||
+      (STRSXP != TYPEOF(dataset)) || (1 != XLENGTH(dataset)) ||
+      (NA_STRING == STRING_ELT(dataset,0)) ||
+      ('\0' == CHAR(STRING_ELT(dataset,0))[0]))
+    return ScalarInteger(-2);
+
+  gv = gs_fdta((char *)CHAR(STRING_ELT(dataset,0)));
+  if ((0u == gv->NoInd) || (0u == gv->NoMar) ||
+      (NULL == gv->IndName) || (NULL == gv->MarName) ||
+      (NULL == gv->All1) || (NULL == gv->All2) ||
+      (0u == gv->NLoc) || (NULL == gv->map) || (NULL == gv->mdl))
+    {
+      gs_info(gv,-2,"No complete marker data/linkage map available for VCF output");
+      return ScalarInteger(-2);
+    }
+
+  order = gs_malloc_array((size_t)gv->NoMar,sizeof(*order));
+  point_by_marker = gs_malloc_array((size_t)gv->NoMar,
+                                    sizeof(*point_by_marker));
+  seen = calloc((size_t)gv->NoMar,sizeof(*seen));
+  alleles = gs_malloc_array((size_t)gs_MAXALL,sizeof(*alleles));
+  if ((NULL == order) || (NULL == point_by_marker) ||
+      (NULL == seen) || (NULL == alleles))
+    {
+      gs_info(gv,-2,"Memory allocation error");
+      failed = 1;
+      goto cleanup;
+    }
+
+  for (gs_UNSIGNED l = 0u; l < gv->NLoc; l++)
+    {
+      gs_UNSIGNED m = gv->mdl[l];
+      if (gs_UNSIGNED_MAX == m)
+        continue;
+      if ((m >= gv->NoMar) || (NULL == gv->map[l]) || seen[m] ||
+          (0 != strcmp(gv->map[l]->name,gv->MarName[m])) ||
+          (gv->map[l]->chrom < 1) || !isfinite(gv->map[l]->pos) ||
+          (gv->map[l]->pos < 0.0))
+        {
+          gs_info(gv,-2,"Marker data do not have one valid map position per marker");
+          failed = 1;
+          goto cleanup;
+        }
+      seen[m] = 1u;
+      point_by_marker[m] = gv->map[l];
+      order[norder++] = m;
+    }
+  if (norder != gv->NoMar)
+    {
+      gs_info(gv,-2,"Marker data do not have one map position per marker");
+      failed = 1;
+      goto cleanup;
+    }
+
+  for (gs_UNSIGNED i = 0u; i < gv->NoInd; i++)
+    if (!st_vcf_token_name_valid(gv->IndName[i]))
+      {
+        gs_info(gv,-2,"Invalid sample name for VCF output");
+        failed = 1;
+        goto cleanup;
+      }
+  for (gs_UNSIGNED m = 0u; m < gv->NoMar; m++)
+    if (!st_vcf_token_name_valid(gv->MarName[m]) ||
+        (strlen(gv->MarName[m]) >= gs_MAXNME))
+      {
+        gs_info(gv,-2,"Invalid marker name for VCF output");
+        failed = 1;
+        goto cleanup;
+      }
+
+  if (0 != st_vcf_output_open(&out,CHAR(STRING_ELT(filename,0))))
+    {
+      gs_info(gv,-2,"Cannot open VCF output file");
+      failed = 1;
+      goto cleanup;
+    }
+  opened = 1;
+
+  if ((0 != st_vcf_output_printf(&out,"##fileformat=VCFv4.3\n")) ||
+      (0 != st_vcf_output_printf(&out,"##source=SelectionTools\n")) ||
+      (0 != st_vcf_output_printf(&out,
+          "##SelectionToolsPositionScale=1000000\n")) ||
+      (0 != st_vcf_output_printf(&out,
+          "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n")) ||
+      (0 != st_vcf_output_printf(&out,
+          "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT")))
+    {
+      failed = 1;
+      goto cleanup;
+    }
+  for (gs_UNSIGNED i = 0u; i < gv->NoInd; i++)
+    if (0 != st_vcf_output_printf(&out,"\t%s",gv->IndName[i]))
+      {
+        failed = 1;
+        goto cleanup;
+      }
+  if (0 != st_vcf_output_printf(&out,"\n"))
+    {
+      failed = 1;
+      goto cleanup;
+    }
+
+  for (gs_UNSIGNED k = 0u; k < norder; k++)
+    {
+      gs_UNSIGNED m = order[k];
+      gs_mappoint_type *point = point_by_marker[m];
+      gs_UNSIGNED n_alleles = 0u;
+      int has_missing = 0;
+      long long bp;
+
+      if (NULL == point)
+        {
+          failed = 1;
+          goto cleanup;
+        }
+
+      if (0 != st_markerdata_observed_alleles(gv,m,alleles,
+                                              &n_alleles,&has_missing))
+        {
+          gs_info(gv,-2,"Invalid marker alleles for VCF output");
+          failed = 1;
+          goto cleanup;
+        }
+      (void)has_missing;
+
+      if (point->pos > ((double)LLONG_MAX - 2.0) / ST_VCF_POSITION_SCALE)
+        {
+          gs_info(gv,-2,"Genetic position is too large for Beagle VCF scaling");
+          failed = 1;
+          goto cleanup;
+        }
+      bp = llround(point->pos * ST_VCF_POSITION_SCALE) + 1ll;
+      if ((point->chrom == previous_chrom) && (bp <= previous_bp))
+        bp = previous_bp + 1ll;
+      if (bp < 1ll)
+        {
+          failed = 1;
+          goto cleanup;
+        }
+      previous_chrom = point->chrom;
+      previous_bp = bp;
+
+      {
+        char label[40];
+        if ((0 != st_vcf_allele_label(0u,label,sizeof(label))) ||
+            (0 != st_vcf_output_printf(&out,"%d\t%lld\t%s\t%s\t",
+                                        point->chrom,bp,gv->MarName[m],label)))
+          {
+            failed = 1;
+            goto cleanup;
+          }
+      }
+      if (n_alleles <= 1u)
+        {
+          if (0 != st_vcf_output_printf(&out,"."))
+            {
+              failed = 1;
+              goto cleanup;
+            }
+        }
+      else
+        for (gs_UNSIGNED a = 1u; a < n_alleles; a++)
+          {
+            char label[40];
+            if ((0 != st_vcf_allele_label(a,label,sizeof(label))) ||
+                (0 != st_vcf_output_printf(&out,(1u == a) ? "%s" : ",%s",
+                                            label)))
+              {
+                failed = 1;
+                goto cleanup;
+              }
+          }
+
+      if (0 != st_vcf_output_printf(&out,"\t.\tPASS\t.\tGT"))
+        {
+          failed = 1;
+          goto cleanup;
+        }
+
+      for (gs_UNSIGNED i = 0u; i < gv->NoInd; i++)
+        {
+          size_t idx = (size_t)m * (size_t)gv->NoInd + i;
+          GS_ALLELE_TYPE a1 = gv->All1[idx];
+          GS_ALLELE_TYPE a2 = gv->All2[idx];
+
+          if ((GS_ALLELE_MISSING == a1) || (GS_ALLELE_MISSING == a2))
+            {
+              if (0 != st_vcf_output_printf(&out,"\t./."))
+                {
+                  failed = 1;
+                  goto cleanup;
+                }
+            }
+          else
+            {
+              int i1 = st_markerdata_allele_index(alleles,n_alleles,a1);
+              int i2 = st_markerdata_allele_index(alleles,n_alleles,a2);
+              if ((i1 < 0) || (i2 < 0) ||
+                  (0 != st_vcf_output_printf(&out,"\t%d/%d",i1,i2)))
+                {
+                  gs_info(gv,-2,"Allele normalization failed during VCF output");
+                  failed = 1;
+                  goto cleanup;
+                }
+            }
+        }
+      if (0 != st_vcf_output_printf(&out,"\n"))
+        {
+          failed = 1;
+          goto cleanup;
+        }
+    }
+
+  if (0 != st_vcf_output_close(&out))
+    {
+      opened = 0;
+      gs_info(gv,-2,"Error closing VCF output file");
+      failed = 1;
+      goto cleanup;
+    }
+  opened = 0;
+  status = 0;
+
+ cleanup:
+  if (opened)
+    st_vcf_output_close(&out);
+  free(order);
+  free(point_by_marker);
+  free(seen);
+  free(alleles);
+  if (failed && (0 == status)) status = -2;
+  return ScalarInteger(status);
+}
+
+
 SEXP st_load_vcf_data(SEXP stvcf, SEXP dataset)
 {
   gs_varset_type *gv;
@@ -6972,7 +8180,8 @@ void gs_recode_ref_01 ( gs_varset_type* gv ,
   gs_UNSIGNED  i, j, idx, idx_R;
   int a,b,c,d;
 
-  if ( *reference < 1 ) {
+  if ( ( *reference < 1 ) ||
+       ( (gs_UNSIGNED) *reference > gv->NoInd ) ) {
       gs_info(gv,-2, "Invalid reference individual");
       *retval = -2; return ;
   }
@@ -7083,6 +8292,44 @@ void gs_recode_ref_01_GV ( int* reference,
 		     descending,
 		     retval            ) ;
 
+}
+
+void gs_recode_ref_name_01_GV ( char** reference_name,
+                                int* descending,
+                                int* retval,
+                                char** set_name )
+{
+  gs_varset_type *gv = gs_fdta(*set_name);
+  gs_UNSIGNED i;
+  int reference = 0;
+
+  if ( (NULL == reference_name) ||
+       (NULL == *reference_name) ||
+       ('\0' == (*reference_name)[0]) )
+    {
+      gs_info(gv,-2,"Invalid reference individual");
+      *retval = -2;
+      return;
+    }
+
+  for (i=0; i<gv->NoInd; i++)
+    if (0 == strcmp(gv->IndName[i],*reference_name))
+      {
+        reference = (int) i + 1;
+        break;
+      }
+
+  if (0 == reference)
+    {
+      snprintf(gv->msg,sizeof(gv->msg),
+               "Reference individual not found: %s",
+               *reference_name);
+      gs_info(gv,-2,gv->msg);
+      *retval = -2;
+      return;
+    }
+
+  gs_recode_ref_01(gv,&reference,descending,retval);
 }
 
 gs_FLOAT gs_avg_ld ( gs_chrom_type * chrom,
@@ -13294,6 +14541,338 @@ gs_FLOAT gs_ld_dprime ( gs_varset_type *gv ,
 
 }
 
+
+/* ------------------------------------------------------------------------- */
+/* LD from unphased biallelic genotypes.                                    */
+/*                                                                           */
+/* The two phase-estimating LD modes use a native two-locus maximum-         */
+/* likelihood calculation.  For each marker pair, the nine observable       */
+/* diploid genotype classes are counted without using the order of All1 and  */
+/* All2 as phase information.  The ambiguous double heterozygotes are split  */
+/* between the two possible diplotypes by an expectation-maximization (EM)   */
+/* algorithm under Hardy-Weinberg equilibrium.  Several deterministic        */
+/* starting values are tried and the converged solution with the greatest   */
+/* observed-data likelihood is retained.                                     */
+/* ------------------------------------------------------------------------- */
+
+static int gs_ld_unphased_marker_alleles(const gs_varset_type *gv,
+                                         gs_UNSIGNED marker,
+                                         GS_ALLELE_TYPE allele[2])
+{
+  gs_UNSIGNED n = 0;
+
+  if ((NULL == gv) || (NULL == gv->NoAll) || (NULL == gv->All) ||
+      (marker >= gv->NoMar) || (NULL == gv->All[marker]))
+    return 0;
+
+  for (gs_UNSIGNED k = 0; k < gv->NoAll[marker]; k++)
+    {
+      GS_ALLELE_TYPE a = gv->All[marker][k];
+
+      if (GS_ALLELE_MISSING == a)
+        continue;
+
+      if (2 <= n)
+        return 0;
+
+      allele[n++] = a;
+    }
+
+  return (2 == n);
+}
+
+
+static int gs_ld_unphased_data_are_biallelic(const gs_varset_type *gv)
+{
+  GS_ALLELE_TYPE allele[2];
+
+  if ((NULL == gv) || (0 == gv->NoMar))
+    return 0;
+
+  for (gs_UNSIGNED m = 0; m < gv->NoMar; m++)
+    if (!gs_ld_unphased_marker_alleles(gv, m, allele))
+      return 0;
+
+  return 1;
+}
+
+
+static int gs_ld_unphased_dosage(GS_ALLELE_TYPE a1,
+                                 GS_ALLELE_TYPE a2,
+                                 const GS_ALLELE_TYPE allele[2])
+{
+  int d = 0;
+
+  if ((GS_ALLELE_MISSING == a1) || (GS_ALLELE_MISSING == a2))
+    return -1;
+
+  if ((a1 != allele[0]) && (a1 != allele[1]))
+    return -2;
+  if ((a2 != allele[0]) && (a2 != allele[1]))
+    return -2;
+
+  if (a1 == allele[1]) d++;
+  if (a2 == allele[1]) d++;
+
+  return d;
+}
+
+
+static int gs_ld_unphased_table(const gs_varset_type *gv,
+                                gs_UNSIGNED ii,
+                                gs_UNSIGNED jj,
+                                gs_UNSIGNED table[9])
+{
+  GS_ALLELE_TYPE ai[2];
+  GS_ALLELE_TYPE aj[2];
+
+  if (!gs_ld_unphased_marker_alleles(gv, ii, ai) ||
+      !gs_ld_unphased_marker_alleles(gv, jj, aj))
+    return 0;
+
+  for (int k = 0; k < 9; k++)
+    table[k] = 0;
+
+  for (gs_UNSIGNED ind = 0; ind < gv->NoInd; ind++)
+    {
+      size_t xi = (size_t)ii * (size_t)gv->NoInd + (size_t)ind;
+      size_t xj = (size_t)jj * (size_t)gv->NoInd + (size_t)ind;
+      int di = gs_ld_unphased_dosage(gv->All1[xi], gv->All2[xi], ai);
+      int dj = gs_ld_unphased_dosage(gv->All1[xj], gv->All2[xj], aj);
+
+      /* Missing genotypes are omitted pairwise. */
+      if ((-1 == di) || (-1 == dj))
+        continue;
+
+      if ((di < 0) || (dj < 0))
+        return 0;
+
+      table[3 * di + dj]++;
+    }
+
+  return 1;
+}
+
+
+static double gs_ld_unphased_loglik(const gs_UNSIGNED table[9],
+                                    const double h[4])
+{
+  double p[9];
+  double ll = 0.0;
+
+  p[0] = h[0] * h[0];
+  p[1] = 2.0 * h[0] * h[1];
+  p[2] = h[1] * h[1];
+  p[3] = 2.0 * h[0] * h[2];
+  p[4] = 2.0 * (h[0] * h[3] + h[1] * h[2]);
+  p[5] = 2.0 * h[1] * h[3];
+  p[6] = h[2] * h[2];
+  p[7] = 2.0 * h[2] * h[3];
+  p[8] = h[3] * h[3];
+
+  for (int k = 0; k < 9; k++)
+    if (0 < table[k])
+      {
+        if (!(p[k] > 0.0) || !isfinite(p[k]))
+          return -HUGE_VAL;
+        ll += (double)table[k] * log(p[k]);
+      }
+
+  return ll;
+}
+
+
+static int gs_ld_unphased_em(const gs_UNSIGNED table[9],
+                             double initial_coupling,
+                             double h[4],
+                             double *loglik)
+{
+  const int max_iter = 10000;
+  const double tol = 1.0e-13;
+  double fixed[4];
+  double total_ind = 0.0;
+  double double_het = (double)table[4];
+  double total_hap;
+  double p = initial_coupling;
+
+  for (int k = 0; k < 9; k++)
+    total_ind += (double)table[k];
+
+  if (!(total_ind > 0.0))
+    return 0;
+
+  total_hap = 2.0 * total_ind;
+
+  /* Haplotype copies contributed by genotype classes with known phase. */
+  fixed[0] = 2.0 * (double)table[0] + (double)table[1] + (double)table[3];
+  fixed[1] = 2.0 * (double)table[2] + (double)table[1] + (double)table[5];
+  fixed[2] = 2.0 * (double)table[6] + (double)table[3] + (double)table[7];
+  fixed[3] = 2.0 * (double)table[8] + (double)table[5] + (double)table[7];
+
+  if (p < 0.0) p = 0.0;
+  if (p > 1.0) p = 1.0;
+
+  h[0] = (fixed[0] + double_het * p) / total_hap;
+  h[1] = (fixed[1] + double_het * (1.0 - p)) / total_hap;
+  h[2] = (fixed[2] + double_het * (1.0 - p)) / total_hap;
+  h[3] = (fixed[3] + double_het * p) / total_hap;
+
+  if (0.0 == double_het)
+    {
+      *loglik = gs_ld_unphased_loglik(table, h);
+      return isfinite(*loglik);
+    }
+
+  for (int iter = 0; iter < max_iter; iter++)
+    {
+      double coupling = h[0] * h[3];
+      double repulsion = h[1] * h[2];
+      double denom = coupling + repulsion;
+      double next[4];
+      double q;
+      double delta = 0.0;
+
+      if (!(denom > 0.0) || !isfinite(denom))
+        return 0;
+
+      q = coupling / denom;
+
+      next[0] = (fixed[0] + double_het * q) / total_hap;
+      next[1] = (fixed[1] + double_het * (1.0 - q)) / total_hap;
+      next[2] = (fixed[2] + double_het * (1.0 - q)) / total_hap;
+      next[3] = (fixed[3] + double_het * q) / total_hap;
+
+      for (int k = 0; k < 4; k++)
+        {
+          double d = fabs(next[k] - h[k]);
+          if (d > delta) delta = d;
+          h[k] = next[k];
+        }
+
+      if (delta <= tol)
+        {
+          *loglik = gs_ld_unphased_loglik(table, h);
+          return isfinite(*loglik);
+        }
+    }
+
+  return 0;
+}
+
+
+static int gs_ld_unphased_haplotypes(const gs_UNSIGNED table[9],
+                                     double h[4])
+{
+  /* Starting values describe the fraction of double heterozygotes initially
+     assigned to the coupling diplotype.  Multiple starts protect against
+     stationary boundary or saddle-point solutions. */
+  static const double starts[] =
+    {0.0, 0.01, 0.10, 0.25, 0.50, 0.75, 0.90, 0.99, 1.0};
+  double best_ll = -HUGE_VAL;
+  double best_h[4] = {0.0, 0.0, 0.0, 0.0};
+  int found = 0;
+
+  for (size_t s = 0; s < sizeof(starts)/sizeof(starts[0]); s++)
+    {
+      double candidate[4];
+      double ll;
+
+      if (!gs_ld_unphased_em(table, starts[s], candidate, &ll))
+        continue;
+
+      if ((!found) || (ll > best_ll))
+        {
+          best_ll = ll;
+          for (int k = 0; k < 4; k++)
+            best_h[k] = candidate[k];
+          found = 1;
+        }
+    }
+
+  if (!found)
+    return 0;
+
+  for (int k = 0; k < 4; k++)
+    h[k] = best_h[k];
+
+  return 1;
+}
+
+
+static int gs_ld_unphased_measures(const gs_varset_type *gv,
+                                   gs_UNSIGNED ii,
+                                   gs_UNSIGNED jj,
+                                   double *r2,
+                                   double *dprime)
+{
+  gs_UNSIGNED table[9];
+  double h[4];
+  double pa0, pa1, pb0, pb1;
+  double D, denom, dmax;
+
+  *r2 = 0.0;
+  *dprime = 0.0;
+
+  if (!gs_ld_unphased_table(gv, ii, jj, table))
+    return 0;
+  if (!gs_ld_unphased_haplotypes(table, h))
+    return 0;
+
+  pa0 = h[0] + h[1];
+  pa1 = h[2] + h[3];
+  pb0 = h[0] + h[2];
+  pb1 = h[1] + h[3];
+
+  denom = pa0 * pa1 * pb0 * pb1;
+  if (!(denom > 0.0))
+    return 1;
+
+  D = h[0] - pa0 * pb0;
+  *r2 = D * D / denom;
+
+  if (D < 0.0)
+    dmax = fmin(pa0 * pb0, pa1 * pb1);
+  else
+    dmax = fmin(pa0 * pb1, pa1 * pb0);
+
+  if (dmax > 0.0)
+    *dprime = fabs(D) / dmax;
+
+  /* Protect against harmless floating-point overshoot at the boundaries. */
+  if (*r2 < 0.0) *r2 = 0.0;
+  if (*r2 > 1.0 && *r2 < 1.0 + 1.0e-12) *r2 = 1.0;
+  if (*dprime < 0.0) *dprime = 0.0;
+  if (*dprime > 1.0 && *dprime < 1.0 + 1.0e-12) *dprime = 1.0;
+
+  return 1;
+}
+
+
+static gs_FLOAT gs_ld_rsquare_unphased(gs_varset_type *gv,
+                                       gs_UNSIGNED ii,
+                                       gs_UNSIGNED jj)
+{
+  double r2, dprime;
+
+  if (!gs_ld_unphased_measures(gv, ii, jj, &r2, &dprime))
+    return 0.0;
+
+  return (gs_FLOAT)r2;
+}
+
+
+static gs_FLOAT gs_ld_dprime_unphased(gs_varset_type *gv,
+                                      gs_UNSIGNED ii,
+                                      gs_UNSIGNED jj)
+{
+  double r2, dprime;
+
+  if (!gs_ld_unphased_measures(gv, ii, jj, &r2, &dprime))
+    return 0.0;
+
+  return (gs_FLOAT)dprime;
+}
+
 void gs_calc_ld_01 ( gs_varset_type *gv  ,
 		     char** ld_measure   ,
 		     char** out_filename ,
@@ -13318,9 +14897,31 @@ void gs_calc_ld_01 ( gs_varset_type *gv  ,
       gs_ld = gs_ld_rsquare;
     }
 
+  else if ( 0 == strcmp(*ld_measure,"r2-estimate-phases"))
+    {
+      if (gs_ld_unphased_data_are_biallelic(gv))
+        gs_ld = gs_ld_rsquare_unphased;
+      else
+        {
+          gs_info(gv,-2,"Phase-estimating LD requires exactly two biological alleles at every marker");
+          *retval = -2; return;
+        }
+    }
+
   else if ( 0 == strcmp(*ld_measure,"Dp"))
     {
       gs_ld = gs_ld_dprime;
+    }
+
+  else if ( 0 == strcmp(*ld_measure,"Dp-estimate-phases"))
+    {
+      if (gs_ld_unphased_data_are_biallelic(gv))
+        gs_ld = gs_ld_dprime_unphased;
+      else
+        {
+          gs_info(gv,-2,"Phase-estimating LD requires exactly two biological alleles at every marker");
+          *retval = -2; return;
+        }
     }
 
   else 

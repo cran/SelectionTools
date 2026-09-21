@@ -27,11 +27,26 @@ st.write.marker.data(format = "m", lfilename = NULL, mfilename = NULL,
 }
 
 \details{
-Format \code{"l"} writes list records consisting of individual, marker, and allele. A heterozygous genotype is written as two allele records. The internal append variant \code{"a"} appends list records to the list output file without writing a new header.
+Format \code{"l"} writes list records consisting of individual, marker,
+and allele. A heterozygous genotype is written as two allele records. The
+output file uses suffix \file{.lpo}. The internal append variant
+\code{"a"} appends list records to the list output file without writing a
+new header.
 
-Format \code{"m"} writes a marker-major genotype matrix. When a linkage map is available, a corresponding map file is also written. Genotypes are written with an explicit slash between the two allele codes, which preserves multi-digit allele numbers unambiguously.
+Format \code{"m"} writes a marker-major genotype matrix to a file with
+suffix \file{.mpo}. When a linkage map is available, a corresponding map file
+with suffix \file{.mmp} is also written. Genotypes are written with an
+explicit slash between the two allele codes, which preserves multi-digit
+allele numbers unambiguously.
 
-Format \code{"n"} writes the Plabsim/NTSys group of files: allele-incidence marker data, map data in Morgan units, and chromosome-length information. Individual names are adapted to the restrictions of this representation and \code{add.inum} is appended to the written name. Marker names containing a period are not suitable for this output because the period separates marker name and allele number. Name transformations that would make two output individuals indistinguishable are rejected.
+Format \code{"n"} writes the Plabsim/NTSys group of files: allele-incidence
+marker data in \file{.npo}, map data in Morgan units in \file{.nmp}, and
+genome parameters (chromosome lengths in Morgan) in \file{.ngp}. Individual
+names are adapted to the restrictions of this representation and
+\code{add.inum} is appended to the written name. Marker names containing a
+period are not suitable for this output because the period separates marker
+name and allele number. Name transformations that would make two output
+individuals indistinguishable are rejected.
 
 The writer does not modify the in-memory marker data set. In particular, writing a data set without a linkage map uses the marker matrix directly and does not create a synthetic map or alter map dimensions. Unsupported format codes are rejected.
 

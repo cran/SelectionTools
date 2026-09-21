@@ -6,8 +6,8 @@
 library ("SelectionTools")
 
 vignette.data <- new.env(parent = emptyenv())
-data("v-tropmaize-vcf", package = "SelectionTools", envir = vignette.data)
-data("v-tropmaize-phe", package = "SelectionTools", envir = vignette.data)
+data("v-tropmaize-vcf", package="SelectionTools", envir=vignette.data)
+data("v-tropmaize-phe", package="SelectionTools", envir=vignette.data)
 
 
 ###################################################
@@ -642,13 +642,13 @@ mean(get.population.gvalue("base")$gvalue)
 
 
 ###################################################
-### code chunk number 61: v-simbp.Rnw:1557-1557
+### code chunk number 61: v-simbp.Rnw:1253-1253
 ###################################################
 
 
 
 ###################################################
-### code chunk number 62: v-simbp.Rnw:1560-1560 (eval = FALSE)
+### code chunk number 62: v-simbp.Rnw:1256-1256 (eval = FALSE)
 ###################################################
 ## 
 

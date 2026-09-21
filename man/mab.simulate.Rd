@@ -254,9 +254,46 @@ mab.simulate(simulation.name, simulation.run, repetitions = 1000,
 }
 
 \value{
-On successful completion, invisibly returns a named \code{list} containing both the simulation definition and the simulation summaries. The parameter part includes \code{simulation.name}, \code{simulation.run}, \code{repetitions}, \code{recurrent.parent}, \code{donor.parent}, \code{linkage.map}, \code{target.loci}, \code{flanking.loci}, \code{recipient.loci}, \code{gen.type}, \code{population.size}, \code{sel.strategy}, \code{no.selected}, \code{no.preselected}, \code{reg.chr}, \code{reg.begin}, \code{reg.end}, and \code{success.factor}.
+On successful completion, invisibly returns a named \code{list} containing
+both the simulation definition and the simulation summaries. The parameter
+part includes \code{simulation.name}, \code{simulation.run},
+\code{repetitions}, \code{recurrent.parent}, \code{donor.parent},
+\code{linkage.map}, \code{target.loci}, \code{flanking.loci},
+\code{recipient.loci}, \code{gen.type}, \code{population.size},
+\code{sel.strategy}, \code{no.selected}, \code{no.preselected},
+\code{reg.chr}, \code{reg.begin}, \code{reg.end}, and
+\code{success.factor}.
 
-Depending on the requested analyses, result components include \code{TargetAlleles}, \code{RPG.gw}, numbered \code{RPG.reg} components, \code{DonorSegments.gw}, numbered \code{DonorSegments.reg} components, numbered \code{LinkageDrag} components, \code{SM}, and \code{HT}. Validation failures return \code{NULL} invisibly. The same list is saved in the explicitly supplied \code{result.file}.
+Depending on the requested analyses, the result part can contain:
+\describe{
+  \item{\code{TargetAlleles}}{Summary of the frequency of target alleles in the selected plants over
+  the generations of the backcrossing program.}
+  \item{\code{RPG.gw}}{Summary of recurrent-parent genome content of the
+  selected plants over the whole genome.}
+  \item{\code{RPG.reg1}, \code{RPG.reg2}, \dots}{Recurrent-parent genome
+  content in chromosome regions defined by \code{reg.chr}, \code{reg.begin},
+  and \code{reg.end}; the suffix identifies the region.}
+  \item{\code{DonorSegments.gw}}{Number of donor chromosome segments in the
+  selected individuals over the whole genome. Segments are counted per
+  homologue, so the two homologues of each chromosome in a diploid individual
+  are counted separately.}
+  \item{\code{DonorSegments.reg1}, \code{DonorSegments.reg2}, \dots}{Number
+  of donor chromosome segments within separately evaluated chromosome
+  regions.}
+  \item{\code{LinkageDrag1}, \code{LinkageDrag2}, \dots}{Length of the donor
+  chromosome segment attached to each target locus. Target loci are evaluated
+  separately and linkage drag is averaged over the two homologues.}
+  \item{\code{SM}}{Summary of the number of marker data points attributed to
+  single-marker assays. In the implemented accounting these arise from
+  selection steps using flanking-marker assays.}
+  \item{\code{HT}}{Summary of the number of marker data points attributed to
+  high-throughput assays, including genome-wide background selection and
+  selection for a low number of donor segments as specified by the selection
+  strategy.}
+}
+
+Validation failures return \code{NULL} invisibly. The same list is saved in
+the explicitly supplied \code{result.file}.
 }
 
 \seealso{

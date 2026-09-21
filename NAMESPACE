@@ -13,7 +13,8 @@ importFrom("graphics",
 
 importFrom("stats",
            "cor", "dnorm", "nobs", "p.adjust", "qnorm",
-           "quantile", "rbinom", "runif", "sd", "var")
+           "quantile", "rbinom", "runif", "sd", "var", "setNames")
 
 importFrom("utils",
            "capture.output", "head", "read.table", "write.table")
+

@@ -24,9 +24,13 @@ st.plot.gene.diversity(data.set ="default", plt.pdf = FALSE,
 \details{
 The gene diversity (expected heterozygosity) at a marker is calculated as
 \deqn{1-\sum_i p_i^2,}
-where \eqn{p_i} is the frequency of allele \eqn{i} at that marker. The values
-used for plotting are obtained from \code{st.marker.data.statistics()}. The
-average gene diversity for each chromosome is printed at the top of the plot.
+where \eqn{p_i} is the frequency of allele \eqn{i} at that marker. Gene
+diversity ranges from 0 to 1. It is 0 when a marker is fixed and increases as
+allele frequencies become more even; for a given number of alleles it is
+maximized when the alleles have equal frequencies, and its maximum approaches
+1 as the number of equally frequent alleles increases. The values used for
+plotting are obtained from \code{st.marker.data.statistics()}. The average
+gene diversity for each chromosome is printed at the top of the plot.
 }
 
 \value{

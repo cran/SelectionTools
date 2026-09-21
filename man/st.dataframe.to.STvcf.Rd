@@ -60,18 +60,21 @@ name. This allows sample identifiers such as \code{POS}, \code{INFO},
 \code{CM}, or \code{FORMAT} without ambiguity.
 
 A FORMAT column is recognized only when every marker-specific definition
-contains exactly one non-empty GT field. Empty FORMAT fields and duplicated GT
-entries are invalid. The FORMAT definition may vary among markers. The GT
-subfield is extracted from every sample cell. Other subfields, including DP,
-AD, GQ, and phase-set fields, are ignored and are not retained. A non-missing
-sample field that is too short to contain the GT subfield defined by FORMAT,
-or that contains an empty GT subfield, is rejected as malformed rather than
-being converted to missing. If FORMAT is absent, columns after the first five
-fixed fields are direct GT sample columns, except that an alphanumeric column
-named CM whose complete contents
-are valid finite nonnegative numeric values is interpreted as the genetic CM
-field. This rule is the convention used to distinguish an optional CM field
-from a sample that itself is named CM.
+contains exactly one non-empty GT field. Empty FORMAT fields, empty FORMAT
+subfields, trailing colons, and duplicated GT entries are invalid. The FORMAT
+definition may vary among markers. If more than one column can be interpreted
+as FORMAT, conversion is rejected. FORMAT must be followed by at least one
+sample column. The GT subfield is extracted from every sample cell. Other
+subfields, including DP, AD, GQ, and phase-set fields, are ignored and are not
+retained. A non-missing sample field that is too short to contain the GT
+subfield defined by FORMAT, or that contains an empty GT subfield, is rejected
+as malformed rather than being converted to missing. If FORMAT is absent,
+columns after the first five fixed fields are direct GT sample columns, except
+that an alphanumeric column named CM whose complete contents are valid finite
+nonnegative numeric values is interpreted as the genetic CM field. If more
+than one column can be interpreted as CM, conversion is rejected. This rule is
+the convention used to distinguish an optional CM field from a sample that
+itself is named CM.
 
 Genetic positions are stored as R double-precision numeric values without
 intentional rounding. Factor CM or POS columns are converted through their
