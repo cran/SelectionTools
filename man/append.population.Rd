@@ -11,14 +11,50 @@ append.population(NameP1, NameP2)
 }
 
 \arguments{
-   \item{NameP1}{Population which takes up the copied individuals}
-   \item{NameP2}{The population to be appended}
+   \item{NameP1}{Character string naming the destination population.
+   If it does not exist, it is created.}
+   \item{NameP2}{Character string naming the source population.
+   This population is not modified.}
 }
+
 \value{
-Returns the same invisible implementation-level \code{list} as \code{population.append()}. The function is a compatibility wrapper and the meaningful result is the delegated population operation.
+Returns NameP1 and NameP2. Usually called for side effects.
 }
 
 \details{
-The individuals of \code{NameP2} are copied to the end of \code{NameP1}; \code{NameP2} is not modified. Raw chromosome data are copied for every appended individual. Cached genotype and genetic-value categories are retained only when they can remain complete and internally consistent for all active individuals of the destination; otherwise the corresponding derived category is cleared.
+The individuals of \code{NameP2} are copied to the end of
+\code{NameP1}. Existing individuals in \code{NameP1} are retained,
+and \code{NameP2} is not modified.
+
+The source population must exist and contain at least one individual.
+The source and destination population names must differ.
 }
 
+\examples{
+# Define the genome and linkage map
+map <- data.frame(
+   chrom = 1,
+   pos = 0.5,
+   name = "form",
+   class = "trait1"
+)
+define.genome(map)
+
+# Create two populations with different alleles
+init.population("P1", homozygote(1, NoInd = 3))
+init.population("P2", homozygote(2, NoInd = 2))
+
+# Combine copies of both populations in a new population
+append.population("Combined", "P1")
+append.population("Combined", "P2")
+
+# Combined contains three individuals with genotype 1/1
+# and two individuals with genotype 2/2.
+# The original populations P1 and P2 are retained.
+evaluate.genotype("Combined", "form")
+population.list()
+}
+
+\seealso{
+\code{\link{population.append}}, which is called by this wrapper.
+}

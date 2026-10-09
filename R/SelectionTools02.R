@@ -1766,8 +1766,23 @@ population.transfer <- function(
   }
 
 "rng.init" <-
-  function() {
-    c <- .C("rng_init")
+  function(seed = NULL) {
+    if (is.null(seed))
+      return(invisible(.C("rng_init", PACKAGE = "SelectionTools")))
+    if (!is.numeric(seed) || is.complex(seed) || length(seed) != 1L || is.na(seed) ||
+        !is.finite(seed) || seed != trunc(seed) ||
+        seed < -.Machine$integer.max || seed > .Machine$integer.max)
+      stop("seed must be NULL or a single finite integer in R's seed range")
+    set.seed(as.integer(seed))
+    # Fixed-size draws make initialization independent of thread count.
+    seeds <- as.integer(floor(stats::runif(257L) * 1073741824))
+    seeds[-1L] <- seeds[-1L] + 1L
+    result <- .C("rng_init_seed", seeds, as.integer(length(seeds)),
+                 retval = integer(1L),
+                 PACKAGE = "SelectionTools")
+    if (result$retval != 0L)
+      stop("Could not initialize internal random-number generators")
+    invisible(result)
   }
 
 # Random numbers

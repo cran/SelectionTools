@@ -26,11 +26,12 @@ read.vcf(vcffile, data.set = "default")
 
 \details{
 The native parser reads the VCF \code{GT} subfield and ignores other FORMAT,
-INFO, QUAL, and FILTER information.  Diploid phased (\code{|}) and unphased
-(\code{/}) GT fields are accepted.  The two allele indices are stored in their
-input order; SelectionTools marker data do not maintain a separate VCF phase
-flag.  If either allele of a diploid genotype is missing, the complete diploid
-genotype is stored as missing.
+INFO, QUAL, and FILTER information. Diploid phased (\code{|}) and unphased
+(\code{/}) GT fields are accepted. The two allele indices are stored in their
+input order. A marker data set is recorded as phased only when genotype
+separators are consistently \code{|}; mixed \code{|} and \code{/} input is
+accepted but recorded as unphased. If either allele of a diploid genotype is
+missing, the complete diploid genotype is stored as missing.
 
 VCF REF/ALT allele indices are normalized to the compact SelectionTools allele
 codes used internally.  Marker and sample names are retained.  The VCF

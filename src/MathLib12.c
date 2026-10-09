@@ -263,3 +263,11 @@ void st_rng_cleanup(void) {
       st_rng_base_seed = 0;
    }
 }
+
+/* Reuse the original stream derivation; reset all buffered state first.
+   The caller must be on the serial thread, outside any parallel region. */
+void st_rng_set_seed(uint32_t seed) {
+   st_rng_cleanup();
+   st_rng_base_seed = seed & ST_RNG_MASK;
+   st_rng_base_ready = 1;
+}

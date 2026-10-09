@@ -97,10 +97,12 @@ SelectionTools marker data set; missing data use a separate internal state.
 
 Only diploid genotypes are supported. Both \code{"/"} and \code{"|"} are
 accepted. The supplied allele order is retained in \code{allele1} and
-\code{allele2}, but the separator itself is not stored. Retaining allele order
-is not a statistical phasing procedure and must not be interpreted as phase
-inference. Phase-set boundaries and other phase metadata are not represented
-in STvcf.
+\code{allele2}. The returned STvcf object carries a logical \code{phased}
+attribute. It is \code{TRUE} only when genotype separators are consistently
+\code{|}; mixed \code{|} and \code{/} input is retained but marked unphased.
+Retaining allele order is not a statistical phasing procedure and must not be
+interpreted as phase inference. Phase-set boundaries and other phase metadata
+are not represented in STvcf.
 
 Accepted complete-missing representations include R \code{NA}, an empty
 field, \code{"."}, \code{"./."}, \code{".|."}, \code{"-1"},
@@ -129,10 +131,11 @@ individual order are retained. Marker ordering is changed only when the STvcf
 object is installed in the internal SelectionTools linkage-map structure.
 
 The conversion is not a byte-for-byte VCF round trip. QUAL, FILTER, INFO,
-FORMAT subfields other than GT, phase-set information, physical POS when CM
-is supplied, and the distinction between slash and vertical-bar separators
-are not stored.
+FORMAT subfields other than GT, phase-set information, and physical POS when
+CM is supplied are not stored. The data-set level distinction between
+consistently phased \code{|} genotypes and unphased/mixed genotypes is retained
+in the logical \code{phased} attribute.
 }
 \value{
-A \code{list} of class \code{"STvcf"} containing marker metadata, individual identifiers, two compact allele matrices, and the chromosome-label mapping. Positions are stored as double-precision values.
+A \code{list} of class \code{"STvcf"} containing marker metadata, individual identifiers, two compact allele matrices, and the chromosome-label mapping. Positions are stored as double-precision values. The logical attribute \code{phased} records whether the input GT separators were consistently phased.
 }

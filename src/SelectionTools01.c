@@ -30,6 +30,7 @@
 #include <Rmath.h>
 #include <Rdefines.h>
 #include <Rinternals.h>
+#include "SelectionToolsDataSet.h"
 
 #define MAXTHREADS 256
 
@@ -79,23 +80,7 @@ SEXP st_has_openmp(void)
 #define ERR_F {gs_info(gv,-2,"File open error");*retval=-2;return;}
 #define ERR_M {gs_info(gv,-2,"Memory allocation error");*retval=-2;return;}
 
-/* Global variables and definitions  */
-typedef unsigned long int gs_UNSIGNED ;
-# define gs_UNSIGNED_MAX ULONG_MAX
-
-// typedef __float128 gs_FLOAT ;
-// typedef __float80 gs_FLOAT ;
-typedef double gs_FLOAT ;
-
-/* Type linkage map*/
-typedef struct gs_mappoint_type
-{
-  int          chrom;
-  double       pos;
-  const char  *name;
-  const char  *class;
-  gs_UNSIGNED  nr;          // Number of the data line
-} gs_mappoint_type;
+/* Global variables and definitions */
 
 /* Pair of two unsigned values */
 typedef struct
@@ -103,156 +88,6 @@ typedef struct
   gs_UNSIGNED a;
   gs_UNSIGNED n;
 } gs_usp;
-
-/* Parameters of a cross of two individuals*/
-typedef struct gs_cross_type
-{
-  gs_UNSIGNED p1;
-  gs_UNSIGNED p2;
-  gs_FLOAT    gd;  // Genetic distance of the parents
-  gs_FLOAT    mu;  // Expected value of the cross
-  gs_FLOAT    mi;  // Minimum value of the cross
-  gs_FLOAT    ma;  // Maximum value of the cross
-  gs_FLOAT    va;  // Variance of the cross
-  gs_FLOAT    es;  // Expectation of the selected fraction
-} gs_cross_type;
- 
-/* Chromosomes and recombination frequencies */
-typedef struct gs_chrom_type
-{
-  gs_UNSIGNED        NLocC;       // Number of loci on the chromosome
-  gs_mappoint_type** first_loc;   // Pointer to the first locus 
-  gs_UNSIGNED        first_loc_i; // Index of the first locus 
-  gs_FLOAT*          rf;          // Matrix of recombination frequencies
-  gs_FLOAT*          q;           // Matrix of conditional probabilites
-  gs_FLOAT*          ld;          // Matrix of LD measures
-} gs_chrom_type;
-
-
-/* Data set */
-
-typedef struct gs_varset_type {
-  
-  char name[gs_MAXSTR];
-  char msg [3*gs_MAXSTR];
-  int info_level;
-
-  /* Variables initialized by gs_read_markerdata */
-
-  int MaxIL;        /* Maximum length of an individual name */
-  int MaxML;        /* Maximum length of an marker name */
-
-  gs_UNSIGNED  
-    NoInd ,   /* Number of individuals                   */
-    NoMar ;   /* Number of markers                       */
-
-  char (*IndName) [gs_MAXNME]; /* Individual names*/ 
-  char (*MarName) [gs_MAXNME]; /* Marker names*/ 
-
-  GS_ALLELE_TYPE * All1  ; /* Genotypic data */
-  GS_ALLELE_TYPE * All2  ; /* Genotypic data */
-  gs_FLOAT  * genv  ; /* Genotypic value */
-  gs_FLOAT  * genv1  ; /* Genotypic value first homologue chrom*/
-  gs_FLOAT  * genv2  ; /* Genotypic value second homologue chrom*/
-
-  /* Variables initiaized by gs_marker_stats*/
-
-  gs_UNSIGNED (*NoAll)  ;             /* Number of allele per Marker */
-  GS_ALLELE_TYPE *All_S;              /* Allele names, storage */
-  GS_ALLELE_TYPE **All;               /* Allele names, marker access */
-  gs_UNSIGNED *AllCnt_S;              /* Allele count, storage */
-  gs_UNSIGNED **AllCnt;               /* Allele count, marker access */
-
-  double (*Pic) ; /* Pic value */
-  double (*Mis) ; /* Frequency of Missing values per marker */
-
-  double (*IndMis) ; /* Frequency of missing markers per ind */
-
-  /* Variables for gs_build_Z and gs_build_X */
-
-  double* Z ;   /* Design matrix */
-  double* V ;   /* ZZ'           */
-  double* y ;   /* Phenotype     */
-
-  gs_UNSIGNED NoEff ;          /* Number of effects  */
-  char (*EffNme) [gs_MAXNME] ; /* Marker names */ 
-  int *EffAll ;                /* Allele number of the effect */
-  int *CmpAll ;                /* Allele number complementary allele */
-
-  double aa; double aA; double AA; /* Coding alleles */
-  double an; double nn; double nA; /* Coding alleles */
-
-  /* Variables for gs_build_A */
-  /* to solve Ax=b */
-
-  gs_UNSIGNED dimu ;
-  gs_UNSIGNED dimA ;
-  double*  A ;   
-  double*  u ;   
-  double*  b ;
-  double*  As;      // Save the value of A and b when using 
-  double*  bs ;     // in place matrix operations
-
-  /* Variables for the transformed model */
-
-  double*  GI ;  // G-star inverted: inv(ZZ')  
-  double*  a ;   // Solution vector for the transformed model   
-
-  /* p-value for test of u */
-  double*  p;
-
-  /* Shrinkage factor */
-  double* ladi ;
-
-  /* Variables for gs_validation */
-  double* est ;
-
-  /* Variables for gs_single_marker_reg_01 and _aov_01*/
-  double* SMsqm ;
-  double* SMsqe ;
-  double* SMF   ;
-  double* SMp   ;
-  double* SMvar ;
-
-  /* Variables for variance component estimation */
-  double* sigma;
-  double  sigma_e;
-
-  /* Linkage map */  
-  gs_UNSIGNED         NLoc;       // Number of loci in the map
-  gs_mappoint_type  * map_S;      // Array for storage
-  char              * map_str_S;  // Storage for map names and classes
-  size_t              map_str_N;  // Number of bytes in map_str_S
-  gs_mappoint_type ** map;        // Pointers for access
-  gs_UNSIGNED       * mdl;        // Index of the data line for a mappoint
-
-  /* Storage of recoded of haploblock alleles */
-  GS_ALLELE_TYPE * Ref1  ; 
-  GS_ALLELE_TYPE * Ref2  ; 
-
-  /* Linkage map of haplotypes */
-  gs_UNSIGNED         NHap  ;      // Number of haplotype blocks
-  gs_mappoint_type  * Hap_S ;      // Array for storage
-  char              * Hap_str_S;   // Storage for haplotype names/classes
-  size_t              Hap_str_N;   // Number of bytes in Hap_str_S
-  gs_UNSIGNED  * h_u;              // Lower border of block 
-  gs_UNSIGNED  * h_o;          // Upper border
-  gs_UNSIGNED  * h_n;          // No. of loci in the block
-
-  /* Parameters of a cross */
-  gs_UNSIGNED      NCrs;   // Number of crosses
-  gs_cross_type  * crs_S;  // Array for storage
-  gs_cross_type  **crs;    // Array of pointers for access
-
-  /* Chromosomes and recombination frequencies, ld values */
-  gs_UNSIGNED NChrom;      // Number of chromosomes
-  gs_chrom_type * chrom ;  // Array of chromosome parameters
-
-  /* Temprary storage for iterations without free */
-  double *t0,*t1,*t2,*t3,*t4,*t5,*t6,*t7,*t8,*t9;
-  gs_UNSIGNED *u0;   
-} gs_varset_type;
-
 
 /* Standard variable set is accessed with pointer */
 gs_varset_type GV =  {
@@ -263,6 +98,7 @@ gs_varset_type GV =  {
   .MaxML      = 0, 
   .NoInd      = 0,  
   .NoMar      = 0,  
+  .phased     = 0,
   .IndName    = NULL,
   .MarName    = NULL,
   .All1       = NULL,
@@ -513,6 +349,7 @@ void gs_reset(gs_varset_type *gv)
    gv->MaxML      = 0;
    gv->NoInd      = 0;
    gv->NoMar      = 0;
+   gv->phased     = 0;
 
    GS_FREE(gv->IndName);
    GS_FREE(gv->MarName);
@@ -623,6 +460,7 @@ void gs_init( gs_varset_type *gv )
   gv->MaxML      = 0; 
   gv->NoInd      = 0;  
   gv->NoMar      = 0;  
+  gv->phased     = 0;
   gv->IndName    = NULL;
   gv->MarName    = NULL;
   gv->All1       = NULL;
@@ -1948,6 +1786,787 @@ void gs_remove_newline(char*);
 int gs_determine_alleles (GS_ALLELE_TYPE*, GS_ALLELE_TYPE*, const char*);
 
 
+/* ------------------------------------------------------------------------- */
+/* Named marker-data set management                                          */
+/* ------------------------------------------------------------------------- */
+
+static gs_varset_type *st_find_data_set_no_create(const char *set_name)
+{
+  if ((NULL == set_name) || ('\0' == set_name[0]))
+    return NULL;
+
+  if (0 == strcmp(set_name,"default"))
+    return gv;
+
+  for (gs_UNSIGNED i = 0; i < gs_ndta; i++)
+    if ((NULL != gs_data[i]) &&
+        (0 == strcmp(set_name,gs_data[i]->name)))
+      return gs_data[i];
+
+  return NULL;
+}
+
+static int st_ram_add(size_t *total, size_t count, size_t element_size)
+{
+  size_t bytes;
+  if ((NULL == total) ||
+      (0 != gs_size_mul(count,element_size,&bytes)) ||
+      (0 != gs_size_add(*total,bytes,total)))
+    return -1;
+  return 0;
+}
+
+static int st_ram_add_square(size_t *total, size_t n, size_t element_size)
+{
+  size_t count;
+  if (0 != gs_size_mul(n,n,&count)) return -1;
+  return st_ram_add(total,count,element_size);
+}
+
+/* Core memory is deliberately restricted to marker data and linkage map.
+ * Everything else owned by the data set is classified as work memory and can
+ * be discarded by st.compact.data.set(). */
+static double st_data_set_ram_core_mb(const gs_varset_type *x)
+{
+  size_t bytes = 0, n = 0;
+  if (NULL == x) return NA_REAL;
+
+#define ST_RAM_ADD_IF(PTR,COUNT,TYPE) \
+  do { if ((NULL != (PTR)) && (0 != st_ram_add(&bytes,(size_t)(COUNT),sizeof(TYPE)))) \
+         return NA_REAL; } while (0)
+
+  ST_RAM_ADD_IF(x->IndName,x->NoInd,*x->IndName);
+  ST_RAM_ADD_IF(x->MarName,x->NoMar,*x->MarName);
+  if (0 != gs_size_mul((size_t)x->NoMar,(size_t)x->NoInd,&n))
+    return NA_REAL;
+  ST_RAM_ADD_IF(x->All1,n,*x->All1);
+  ST_RAM_ADD_IF(x->All2,n,*x->All2);
+
+  ST_RAM_ADD_IF(x->map_S,x->NLoc,*x->map_S);
+  ST_RAM_ADD_IF(x->map_str_S,x->map_str_N,*x->map_str_S);
+  ST_RAM_ADD_IF(x->map,x->NLoc,*x->map);
+  ST_RAM_ADD_IF(x->mdl,x->NLoc,*x->mdl);
+
+#undef ST_RAM_ADD_IF
+  return (double)bytes / (1024.0 * 1024.0);
+}
+
+/* Estimated dynamically owned work/result payload.  Sizes are derived from
+ * the dimensions used by the allocation sites in this source file.  Allocator
+ * overhead is intentionally excluded. */
+static double st_data_set_ram_work_mb(const gs_varset_type *x)
+{
+  size_t bytes = 0, n = 0, total_all = 0;
+  size_t dim_max, sigma_n;
+  if (NULL == x) return NA_REAL;
+
+#define ST_RAM_ADD_IF(PTR,COUNT,TYPE) \
+  do { if ((NULL != (PTR)) && (0 != st_ram_add(&bytes,(size_t)(COUNT),sizeof(TYPE)))) \
+         return NA_REAL; } while (0)
+#define ST_RAM_ADD_SQ_IF(PTR,N,TYPE) \
+  do { if ((NULL != (PTR)) && (0 != st_ram_add_square(&bytes,(size_t)(N),sizeof(TYPE)))) \
+         return NA_REAL; } while (0)
+
+  if (0 != gs_size_mul((size_t)x->NoMar,(size_t)x->NoInd,&n))
+    return NA_REAL;
+  ST_RAM_ADD_IF(x->genv,n,*x->genv);
+  ST_RAM_ADD_IF(x->genv1,n,*x->genv1);
+  ST_RAM_ADD_IF(x->genv2,n,*x->genv2);
+
+  ST_RAM_ADD_IF(x->NoAll,x->NoMar,*x->NoAll);
+  ST_RAM_ADD_IF(x->All,x->NoMar,*x->All);
+  ST_RAM_ADD_IF(x->AllCnt,x->NoMar,*x->AllCnt);
+  if (NULL != x->NoAll)
+    for (gs_UNSIGNED m = 0; m < x->NoMar; m++)
+      if (0 != gs_size_add(total_all,(size_t)x->NoAll[m],&total_all))
+        return NA_REAL;
+  ST_RAM_ADD_IF(x->All_S,total_all,*x->All_S);
+  ST_RAM_ADD_IF(x->AllCnt_S,total_all,*x->AllCnt_S);
+  ST_RAM_ADD_IF(x->Pic,x->NoMar,*x->Pic);
+  ST_RAM_ADD_IF(x->Mis,x->NoMar,*x->Mis);
+  ST_RAM_ADD_IF(x->IndMis,x->NoInd,*x->IndMis);
+
+  ST_RAM_ADD_IF(x->Z,n,*x->Z);
+  ST_RAM_ADD_SQ_IF(x->V,x->NoInd,*x->V);
+  ST_RAM_ADD_IF(x->y,x->NoInd,*x->y);
+
+  ST_RAM_ADD_IF(x->EffNme,x->NoEff,*x->EffNme);
+  ST_RAM_ADD_IF(x->EffAll,x->NoEff,*x->EffAll);
+  ST_RAM_ADD_IF(x->CmpAll,x->NoEff,*x->CmpAll);
+
+  ST_RAM_ADD_SQ_IF(x->A,x->dimA,*x->A);
+  ST_RAM_ADD_IF(x->u,x->dimu,*x->u);
+  ST_RAM_ADD_IF(x->b,x->dimA,*x->b);
+  ST_RAM_ADD_SQ_IF(x->As,x->dimA,*x->As);
+  ST_RAM_ADD_IF(x->bs,x->dimA,*x->bs);
+  ST_RAM_ADD_SQ_IF(x->GI,x->NoInd,*x->GI);
+  ST_RAM_ADD_IF(x->a,x->dimA,*x->a);
+  ST_RAM_ADD_IF(x->p,x->dimu,*x->p);
+  ST_RAM_ADD_IF(x->ladi,x->NoMar,*x->ladi);
+  ST_RAM_ADD_IF(x->est,x->NoInd,*x->est);
+  ST_RAM_ADD_IF(x->SMsqm,x->NoMar,*x->SMsqm);
+  ST_RAM_ADD_IF(x->SMsqe,x->NoMar,*x->SMsqe);
+  ST_RAM_ADD_IF(x->SMF,x->NoMar,*x->SMF);
+  ST_RAM_ADD_IF(x->SMp,x->NoMar,*x->SMp);
+  ST_RAM_ADD_IF(x->SMvar,x->NoMar,*x->SMvar);
+  sigma_n = (size_t)x->dimA;
+  if (sigma_n < (size_t)x->NoMar + 1u) sigma_n = (size_t)x->NoMar + 1u;
+  ST_RAM_ADD_IF(x->sigma,sigma_n,*x->sigma);
+
+  ST_RAM_ADD_IF(x->Ref1,n,*x->Ref1);
+  ST_RAM_ADD_IF(x->Ref2,n,*x->Ref2);
+  ST_RAM_ADD_IF(x->Hap_S,x->NHap,*x->Hap_S);
+  ST_RAM_ADD_IF(x->Hap_str_S,x->Hap_str_N,*x->Hap_str_S);
+  ST_RAM_ADD_IF(x->h_u,x->NHap,*x->h_u);
+  ST_RAM_ADD_IF(x->h_o,x->NHap,*x->h_o);
+  ST_RAM_ADD_IF(x->h_n,x->NHap,*x->h_n);
+  ST_RAM_ADD_IF(x->crs_S,x->NCrs,*x->crs_S);
+  ST_RAM_ADD_IF(x->crs,x->NCrs,*x->crs);
+
+  ST_RAM_ADD_IF(x->chrom,x->NChrom,*x->chrom);
+  if (NULL != x->chrom)
+    for (gs_UNSIGNED c = 0; c < x->NChrom; c++)
+      {
+        ST_RAM_ADD_SQ_IF(x->chrom[c].rf,x->chrom[c].NLocC,*x->chrom[c].rf);
+        ST_RAM_ADD_SQ_IF(x->chrom[c].q,x->chrom[c].NLocC,*x->chrom[c].q);
+        ST_RAM_ADD_SQ_IF(x->chrom[c].ld,x->chrom[c].NLocC,*x->chrom[c].ld);
+      }
+
+  dim_max = (x->NoInd > x->NoMar) ? (size_t)x->NoInd : (size_t)x->NoMar;
+  ST_RAM_ADD_IF(x->t0,x->dimA,*x->t0);
+  ST_RAM_ADD_IF(x->t1,1,*x->t1);
+  ST_RAM_ADD_IF(x->t2,dim_max,*x->t2);
+  ST_RAM_ADD_IF(x->t3,dim_max,*x->t3);
+  ST_RAM_ADD_SQ_IF(x->t4,x->dimA,*x->t4);
+  ST_RAM_ADD_SQ_IF(x->t5,x->NoInd,*x->t5);
+  ST_RAM_ADD_SQ_IF(x->t6,x->NoInd,*x->t6);
+  /* t7/t8 are retained for compatibility but currently have no persistent
+   * allocation sites in this source. */
+  ST_RAM_ADD_SQ_IF(x->t9,x->NoInd,*x->t9);
+  {
+    size_t u0_n = (x->dimA > x->NoInd) ? (size_t)x->dimA : (size_t)x->NoInd;
+    ST_RAM_ADD_IF(x->u0,u0_n,*x->u0);
+  }
+
+#undef ST_RAM_ADD_SQ_IF
+#undef ST_RAM_ADD_IF
+  return (double)bytes / (1024.0 * 1024.0);
+}
+
+/* Discard every allocation except marker data/names and linkage map. */
+static void st_compact_data_set_native(gs_varset_type *x)
+{
+  if (NULL == x) return;
+
+  GS_FREE(x->genv); GS_FREE(x->genv1); GS_FREE(x->genv2);
+  GS_FREE(x->NoAll); GS_FREE(x->All_S); GS_FREE(x->All);
+  GS_FREE(x->AllCnt_S); GS_FREE(x->AllCnt);
+  GS_FREE(x->Pic); GS_FREE(x->Mis); GS_FREE(x->IndMis);
+  GS_FREE(x->Z); GS_FREE(x->V); GS_FREE(x->y);
+
+  x->NoEff = 0;
+  GS_FREE(x->EffNme); GS_FREE(x->EffAll); GS_FREE(x->CmpAll);
+  x->aa = 0; x->aA = 1; x->AA = 2;
+  x->an = 0.5; x->nn = 1; x->nA = 1.5;
+
+  x->dimu = 0; x->dimA = 0;
+  GS_FREE(x->A); GS_FREE(x->u); GS_FREE(x->b);
+  GS_FREE(x->As); GS_FREE(x->bs); GS_FREE(x->GI); GS_FREE(x->a);
+  GS_FREE(x->p); GS_FREE(x->ladi); GS_FREE(x->est);
+  GS_FREE(x->SMsqm); GS_FREE(x->SMsqe); GS_FREE(x->SMF);
+  GS_FREE(x->SMp); GS_FREE(x->SMvar); GS_FREE(x->sigma);
+  x->sigma_e = 0;
+
+  GS_FREE(x->Ref1); GS_FREE(x->Ref2);
+  x->NHap = 0;
+  GS_FREE(x->Hap_S); GS_FREE(x->Hap_str_S); x->Hap_str_N = 0;
+  GS_FREE(x->h_u); GS_FREE(x->h_o); GS_FREE(x->h_n);
+  x->NCrs = 0;
+  GS_FREE(x->crs_S); GS_FREE(x->crs);
+
+  if (NULL != x->chrom)
+    for (gs_UNSIGNED c = 0; c < x->NChrom; c++)
+      {
+        GS_FREE(x->chrom[c].rf);
+        GS_FREE(x->chrom[c].q);
+        GS_FREE(x->chrom[c].ld);
+      }
+  x->NChrom = 0;
+  GS_FREE(x->chrom);
+
+  GS_FREE(x->t0); GS_FREE(x->t1); GS_FREE(x->t2); GS_FREE(x->t3);
+  GS_FREE(x->t4); GS_FREE(x->t5); GS_FREE(x->t6); GS_FREE(x->t7);
+  GS_FREE(x->t8); GS_FREE(x->t9); GS_FREE(x->u0);
+}
+
+static void st_data_set_summary_row(const gs_varset_type *x,
+                                    R_xlen_t row,
+                                    SEXP name_s, SEXP no_mar_s,
+                                    SEXP no_ind_s, SEXP hzy_s,
+                                    SEXP mm_s, SEXP phased_s,
+                                    SEXP map_s, SEXP no_chr_s,
+                                    SEXP eff_s, SEXP pv_s, SEXP gv_s,
+                                    SEXP ram_core_s, SEXP ram_work_s)
+{
+  double complete = 0.0, heterozygous = 0.0, missing = 0.0, total = 0.0;
+  gs_UNSIGNED no_chr = 0;
+
+  SET_STRING_ELT(name_s,row,mkChar(x->name));
+  REAL(no_mar_s)[row] = (double)x->NoMar;
+  REAL(no_ind_s)[row] = (double)x->NoInd;
+
+  if ((0 < x->NoMar) && (0 < x->NoInd) &&
+      (NULL != x->All1) && (NULL != x->All2))
+    {
+      size_t n;
+      if (0 == gs_size_mul((size_t)x->NoMar,(size_t)x->NoInd,&n))
+        {
+          total = (double)n;
+          for (size_t z = 0; z < n; z++)
+            {
+              GS_ALLELE_TYPE a = x->All1[z];
+              GS_ALLELE_TYPE b = x->All2[z];
+              if ((GS_ALLELE_MISSING == a) || (GS_ALLELE_MISSING == b))
+                missing += 1.0;
+              else
+                {
+                  complete += 1.0;
+                  if (a != b) heterozygous += 1.0;
+                }
+            }
+        }
+    }
+
+  REAL(hzy_s)[row] = (complete > 0.0) ? heterozygous / complete : NA_REAL;
+  REAL(mm_s)[row] = (total > 0.0) ? missing / total : NA_REAL;
+  LOGICAL(phased_s)[row] = x->phased ? TRUE : FALSE;
+  LOGICAL(map_s)[row] = ((0 < x->NLoc) && (NULL != x->map)) ? TRUE : FALSE;
+
+  if ((0 < x->NLoc) && (NULL != x->map))
+    {
+      int have_previous = 0;
+      int previous = 0;
+      for (gs_UNSIGNED l = 0; l < x->NLoc; l++)
+        if (NULL != x->map[l])
+          {
+            int chrom = x->map[l]->chrom;
+            if (!have_previous || (chrom != previous))
+              {
+                no_chr++;
+                previous = chrom;
+                have_previous = 1;
+              }
+          }
+    }
+  REAL(no_chr_s)[row] = (double)no_chr;
+
+  LOGICAL(eff_s)[row] = ((0 < x->NoEff) && (NULL != x->u)) ? TRUE : FALSE;
+  LOGICAL(pv_s)[row] = (NULL != x->y) ? TRUE : FALSE;
+  LOGICAL(gv_s)[row] = ((NULL != x->genv) || (NULL != x->genv1) ||
+                        (NULL != x->genv2)) ? TRUE : FALSE;
+  REAL(ram_core_s)[row] = st_data_set_ram_core_mb(x);
+  REAL(ram_work_s)[row] = st_data_set_ram_work_mb(x);
+}
+
+SEXP st_data_set_list(void)
+{
+  static const char *names[] = {"data.set","no.markers","no.individuals",
+                                "heterozygosity","missing.markers",
+                                "phased","map","no.chromosomes","effects",
+                                "phenotypic.value","genotypic.value",
+                                "ram.core","ram.work"};
+  enum { NCOL = 13 };
+  R_xlen_t n = 0, row = 0;
+
+  if ((0 < gv->NoMar) || (0 < gv->NoInd)) n++;
+  for (gs_UNSIGNED i = 0; i < gs_ndta; i++)
+    if ((0 < gs_data[i]->NoMar) || (0 < gs_data[i]->NoInd)) n++;
+  SEXP ans = PROTECT(allocVector(VECSXP,NCOL));
+  SEXP nms = PROTECT(allocVector(STRSXP,NCOL));
+  SEXP row_names = PROTECT(allocVector(INTSXP,2));
+  SEXP name_s = PROTECT(allocVector(STRSXP,n));
+  SEXP no_mar_s = PROTECT(allocVector(REALSXP,n));
+  SEXP no_ind_s = PROTECT(allocVector(REALSXP,n));
+  SEXP hzy_s = PROTECT(allocVector(REALSXP,n));
+  SEXP mm_s = PROTECT(allocVector(REALSXP,n));
+  SEXP phased_s = PROTECT(allocVector(LGLSXP,n));
+  SEXP map_s = PROTECT(allocVector(LGLSXP,n));
+  SEXP no_chr_s = PROTECT(allocVector(REALSXP,n));
+  SEXP eff_s = PROTECT(allocVector(LGLSXP,n));
+  SEXP pv_s = PROTECT(allocVector(LGLSXP,n));
+  SEXP gv_s = PROTECT(allocVector(LGLSXP,n));
+  SEXP ram_core_s = PROTECT(allocVector(REALSXP,n));
+  SEXP ram_work_s = PROTECT(allocVector(REALSXP,n));
+
+  if ((0 < gv->NoMar) || (0 < gv->NoInd))
+    st_data_set_summary_row(gv,row++,name_s,no_mar_s,no_ind_s,hzy_s,mm_s,
+                            phased_s,map_s,no_chr_s,eff_s,pv_s,gv_s,
+                            ram_core_s,ram_work_s);
+  for (gs_UNSIGNED i = 0; i < gs_ndta; i++)
+    if ((0 < gs_data[i]->NoMar) || (0 < gs_data[i]->NoInd))
+      st_data_set_summary_row(gs_data[i],row++,name_s,no_mar_s,no_ind_s,
+                              hzy_s,mm_s,phased_s,map_s,no_chr_s,eff_s,pv_s,
+                              gv_s,ram_core_s,ram_work_s);
+
+  SET_VECTOR_ELT(ans,0,name_s);
+  SET_VECTOR_ELT(ans,1,no_mar_s);
+  SET_VECTOR_ELT(ans,2,no_ind_s);
+  SET_VECTOR_ELT(ans,3,hzy_s);
+  SET_VECTOR_ELT(ans,4,mm_s);
+  SET_VECTOR_ELT(ans,5,phased_s);
+  SET_VECTOR_ELT(ans,6,map_s);
+  SET_VECTOR_ELT(ans,7,no_chr_s);
+  SET_VECTOR_ELT(ans,8,eff_s);
+  SET_VECTOR_ELT(ans,9,pv_s);
+  SET_VECTOR_ELT(ans,10,gv_s);
+  SET_VECTOR_ELT(ans,11,ram_core_s);
+  SET_VECTOR_ELT(ans,12,ram_work_s);
+  for (int j = 0; j < NCOL; j++) SET_STRING_ELT(nms,j,mkChar(names[j]));
+  setAttrib(ans,R_NamesSymbol,nms);
+  if (0 < n)
+    {
+      INTEGER(row_names)[0] = NA_INTEGER;
+      INTEGER(row_names)[1] = -(int)n;
+      setAttrib(ans,R_RowNamesSymbol,row_names);
+    }
+  else
+    {
+      SEXP empty_row_names = PROTECT(allocVector(INTSXP,0));
+      setAttrib(ans,R_RowNamesSymbol,empty_row_names);
+      UNPROTECT(1);
+    }
+  {
+    SEXP cls = PROTECT(mkString("data.frame"));
+    setAttrib(ans,R_ClassSymbol,cls);
+    UNPROTECT(1);
+  }
+
+  UNPROTECT(16);
+  return ans;
+}
+
+SEXP st_compact_data_set(SEXP dataset)
+{
+  const char *name;
+  gs_varset_type *x;
+  double before, after;
+
+  if ((STRSXP != TYPEOF(dataset)) || (1 != XLENGTH(dataset)) ||
+      (NA_STRING == STRING_ELT(dataset,0)) ||
+      ('\0' == CHAR(STRING_ELT(dataset,0))[0]))
+    Rf_error("data.set must be one non-empty character string");
+
+  name = CHAR(STRING_ELT(dataset,0));
+  x = st_find_data_set_no_create(name);
+  if (NULL == x) Rf_error("Data set '%s' does not exist",name);
+
+  before = st_data_set_ram_work_mb(x);
+  st_compact_data_set_native(x);
+  after = st_data_set_ram_work_mb(x);
+  if (ISNA(before) || ISNA(after)) return ScalarReal(NA_REAL);
+  return ScalarReal(before - after);
+}
+
+SEXP st_data_set_remove(SEXP dataset)
+{
+  const char *name;
+
+  if ((STRSXP != TYPEOF(dataset)) || (1 != XLENGTH(dataset)) ||
+      (NA_STRING == STRING_ELT(dataset,0)) ||
+      ('\0' == CHAR(STRING_ELT(dataset,0))[0]))
+    Rf_error("data.set must be one non-empty character string");
+
+  name = CHAR(STRING_ELT(dataset,0));
+
+  if (0 == strcmp(name,"default"))
+    {
+      gs_reset(gv);
+      return ScalarLogical(1);
+    }
+
+  for (gs_UNSIGNED i = 0; i < gs_ndta; i++)
+    if ((NULL != gs_data[i]) && (0 == strcmp(name,gs_data[i]->name)))
+      {
+        gs_varset_type **smaller;
+
+        gs_reset(gs_data[i]);
+        free(gs_data[i]);
+
+        for (gs_UNSIGNED j = i + 1; j < gs_ndta; j++)
+          gs_data[j-1] = gs_data[j];
+
+        gs_ndta--;
+        if (0 == gs_ndta)
+          {
+            free(gs_data);
+            gs_data = NULL;
+          }
+        else
+          {
+            smaller = gs_realloc_array(gs_data,(size_t)gs_ndta,
+                                       sizeof(*gs_data));
+            if (NULL != smaller)
+              gs_data = smaller;
+          }
+
+        return ScalarLogical(1);
+      }
+
+  return ScalarLogical(0);
+}
+
+SEXP st_data_set_remove_all(void)
+{
+  gs_UNSIGNED removed = gs_ndta;
+
+  gs_reset(gv);
+  for (gs_UNSIGNED i = 0; i < gs_ndta; i++)
+    if (NULL != gs_data[i])
+      {
+        gs_reset(gs_data[i]);
+        free(gs_data[i]);
+      }
+
+  free(gs_data);
+  gs_data = NULL;
+  gs_ndta = 0;
+
+  return ScalarReal((double)removed);
+}
+
+static int st_build_marker_subset(const gs_varset_type *src,
+                                  const gs_UNSIGNED *keep,
+                                  gs_UNSIGNED nkeep,
+                                  gs_varset_type *tmp)
+{
+  gs_name_index_type *map_index = NULL;
+  gs_name_index_type *selected_index = NULL;
+  size_t map_str_offset = 0;
+  gs_UNSIGNED nmap_selected = 0;
+  int srv = 0;
+  char *empty = "";
+  char **empty_p = &empty;
+  int zero = 0;
+  int *zero_p = &zero;
+
+  if ((NULL == src) || (NULL == keep) || (0 == nkeep) ||
+      (0 == src->NoInd) || (0 == src->NoMar) ||
+      (NULL == src->IndName) || (NULL == src->MarName) ||
+      (NULL == src->All1) || (NULL == src->All2))
+    return -1;
+
+  gs_tmp_init_from(tmp,src);
+  tmp->NoInd = src->NoInd;
+  tmp->NoMar = nkeep;
+  tmp->phased = src->phased;
+  tmp->MaxIL = src->MaxIL;
+  tmp->MaxML = src->MaxML;
+
+  tmp->IndName = gs_malloc_array((size_t)tmp->NoInd,sizeof(*tmp->IndName));
+  tmp->MarName = gs_malloc_array((size_t)tmp->NoMar,sizeof(*tmp->MarName));
+  if ((NULL == tmp->IndName) || (NULL == tmp->MarName) ||
+      (0 != gs_alloc_genotype_matrix(tmp,tmp->NoMar,tmp->NoInd)))
+    goto fail;
+
+  for (gs_UNSIGNED i = 0; i < tmp->NoInd; i++)
+    strcpy(tmp->IndName[i],src->IndName[i]);
+
+  for (gs_UNSIGNED m = 0; m < nkeep; m++)
+    {
+      gs_UNSIGNED old = keep[m];
+      if (old >= src->NoMar)
+        goto fail;
+
+      strcpy(tmp->MarName[m],src->MarName[old]);
+      memcpy(&(tmp->All1[(size_t)m * tmp->NoInd]),
+             &(src->All1[(size_t)old * src->NoInd]),
+             (size_t)tmp->NoInd * sizeof(*tmp->All1));
+      memcpy(&(tmp->All2[(size_t)m * tmp->NoInd]),
+             &(src->All2[(size_t)old * src->NoInd]),
+             (size_t)tmp->NoInd * sizeof(*tmp->All2));
+    }
+
+  if (NULL != src->y)
+    {
+      tmp->y = gs_malloc_array((size_t)tmp->NoInd,sizeof(*tmp->y));
+      if (NULL == tmp->y)
+        goto fail;
+      memcpy(tmp->y,src->y,(size_t)tmp->NoInd * sizeof(*tmp->y));
+    }
+
+  if (0 < src->NLoc)
+    {
+      if ((NULL == src->map) || (NULL == src->map_S))
+        goto fail;
+
+      map_index = gs_malloc_array((size_t)src->NLoc,sizeof(*map_index));
+      if (NULL == map_index)
+        goto fail;
+
+      for (gs_UNSIGNED l = 0; l < src->NLoc; l++)
+        {
+          if ((NULL == src->map[l]) || (NULL == src->map[l]->name) ||
+              (NULL == src->map[l]->class))
+            goto fail;
+          map_index[l].name = src->map[l]->name;
+          map_index[l].idx = l;
+        }
+      qsort(map_index,src->NLoc,sizeof(*map_index),gs_name_index_cmp);
+      if (gs_name_index_has_duplicates(map_index,src->NLoc))
+        goto fail;
+
+      if ((0 != gs_make_name_index(tmp->MarName,tmp->NoMar,&selected_index)) ||
+          gs_name_index_has_duplicates(selected_index,tmp->NoMar))
+        goto fail;
+
+      /* A data set with a map must have a map entry for every retained marker. */
+      for (gs_UNSIGNED m = 0; m < nkeep; m++)
+        if (gs_UNSIGNED_MAX == gs_name_index_find(map_index,src->NLoc,
+                                                  tmp->MarName[m]))
+          goto fail;
+
+      /* Preserve the source linkage-map order.  mdl maps that order back to
+         the marker-matrix order, which is the order inherited from data.set1. */
+      for (gs_UNSIGNED l = 0; l < src->NLoc; l++)
+        {
+          gs_UNSIGNED m = gs_name_index_find(selected_index,tmp->NoMar,
+                                             src->map[l]->name);
+          if (gs_UNSIGNED_MAX == m)
+            continue;
+
+          if ((0 != gs_pool_add_string_size(&(tmp->map_str_N),
+                                            src->map[l]->name)) ||
+              (0 != gs_pool_add_string_size(&(tmp->map_str_N),
+                                            src->map[l]->class)))
+            goto fail;
+          nmap_selected++;
+        }
+
+      if (nmap_selected != nkeep)
+        goto fail;
+
+      tmp->NLoc = nkeep;
+      tmp->map_S = gs_malloc_array((size_t)tmp->NLoc,sizeof(*tmp->map_S));
+      tmp->map_str_S = gs_malloc_array(tmp->map_str_N,sizeof(*tmp->map_str_S));
+      tmp->map = gs_malloc_array((size_t)tmp->NLoc,sizeof(*tmp->map));
+      tmp->mdl = gs_malloc_array((size_t)tmp->NLoc,sizeof(*tmp->mdl));
+      if ((NULL == tmp->map_S) || (NULL == tmp->map_str_S) ||
+          (NULL == tmp->map) || (NULL == tmp->mdl))
+        goto fail;
+
+      nmap_selected = 0;
+      for (gs_UNSIGNED l = 0; l < src->NLoc; l++)
+        {
+          gs_UNSIGNED m = gs_name_index_find(selected_index,tmp->NoMar,
+                                             src->map[l]->name);
+          if (gs_UNSIGNED_MAX == m)
+            continue;
+
+          if (0 != gs_copy_map_point_to_pool(&(tmp->map_S[nmap_selected]),
+                                              src->map[l],nmap_selected,
+                                              tmp->map_str_S,
+                                              tmp->map_str_N,
+                                              &map_str_offset))
+            goto fail;
+          tmp->map[nmap_selected] = &(tmp->map_S[nmap_selected]);
+          tmp->mdl[nmap_selected] = m;
+          nmap_selected++;
+        }
+
+      if ((nmap_selected != tmp->NLoc) ||
+          (map_str_offset != tmp->map_str_N))
+        goto fail;
+    }
+
+  gs_marker_stats_01(tmp,
+                     empty_p,empty_p,empty_p,
+                     zero_p,zero_p,zero_p,zero_p,
+                     &srv);
+  if (-2 == srv)
+    goto fail;
+
+  free(map_index);
+  free(selected_index);
+  return 0;
+
+fail:
+  free(map_index);
+  free(selected_index);
+  gs_reset(tmp);
+  return -1;
+}
+
+SEXP st_keep_intersection_markers(SEXP dataset1, SEXP dataset2)
+{
+  const char *name1;
+  const char *name2;
+  gs_varset_type *set1;
+  gs_varset_type *set2;
+  gs_name_index_type *index1 = NULL;
+  gs_name_index_type *index2 = NULL;
+  gs_UNSIGNED *match2 = NULL;
+  gs_UNSIGNED *keep1 = NULL;
+  gs_UNSIGNED *keep2 = NULL;
+  gs_UNSIGNED ncommon = 0;
+  int need1 = 0;
+  int need2 = 0;
+  int have_tmp1 = 0;
+  int have_tmp2 = 0;
+  gs_varset_type tmp1;
+  gs_varset_type tmp2;
+  const char *errmsg = NULL;
+
+  if ((STRSXP != TYPEOF(dataset1)) || (1 != XLENGTH(dataset1)) ||
+      (NA_STRING == STRING_ELT(dataset1,0)) ||
+      ('\0' == CHAR(STRING_ELT(dataset1,0))[0]) ||
+      (STRSXP != TYPEOF(dataset2)) || (1 != XLENGTH(dataset2)) ||
+      (NA_STRING == STRING_ELT(dataset2,0)) ||
+      ('\0' == CHAR(STRING_ELT(dataset2,0))[0]))
+    Rf_error("data.set1 and data.set2 must be non-empty character strings");
+
+  name1 = CHAR(STRING_ELT(dataset1,0));
+  name2 = CHAR(STRING_ELT(dataset2,0));
+  set1 = st_find_data_set_no_create(name1);
+  set2 = st_find_data_set_no_create(name2);
+
+  if (NULL == set1)
+    Rf_error("Unknown data set '%s'",name1);
+  if (NULL == set2)
+    Rf_error("Unknown data set '%s'",name2);
+  if ((0 == set1->NoMar) || (NULL == set1->MarName) ||
+      (NULL == set1->All1) || (NULL == set1->All2))
+    Rf_error("No marker data available in data set '%s'",name1);
+  if ((0 == set2->NoMar) || (NULL == set2->MarName) ||
+      (NULL == set2->All1) || (NULL == set2->All2))
+    Rf_error("No marker data available in data set '%s'",name2);
+
+  if (set1 == set2)
+    return ScalarReal((double)set1->NoMar);
+
+  if ((0 != gs_make_name_index(set1->MarName,set1->NoMar,&index1)) ||
+      (0 != gs_make_name_index(set2->MarName,set2->NoMar,&index2)))
+    {
+      errmsg = "Memory allocation error";
+      goto cleanup;
+    }
+  if (gs_name_index_has_duplicates(index1,set1->NoMar) ||
+      gs_name_index_has_duplicates(index2,set2->NoMar))
+    {
+      errmsg = "Duplicate marker names are not supported";
+      goto cleanup;
+    }
+
+  match2 = gs_malloc_array((size_t)set1->NoMar,sizeof(*match2));
+  if (NULL == match2)
+    {
+      errmsg = "Memory allocation error";
+      goto cleanup;
+    }
+  for (gs_UNSIGNED i = 0; i < set1->NoMar; i++)
+    match2[i] = gs_UNSIGNED_MAX;
+
+  {
+    gs_UNSIGNED a = 0;
+    gs_UNSIGNED b = 0;
+    while ((a < set1->NoMar) && (b < set2->NoMar))
+      {
+        int cmp = strcmp(index1[a].name,index2[b].name);
+        if (0 == cmp)
+          {
+            match2[index1[a].idx] = index2[b].idx;
+            ncommon++;
+            a++;
+            b++;
+          }
+        else if (cmp < 0)
+          a++;
+        else
+          b++;
+      }
+  }
+
+  if (0 == ncommon)
+    {
+      errmsg = "The two data sets have no markers in common";
+      goto cleanup;
+    }
+
+  keep1 = gs_malloc_array((size_t)ncommon,sizeof(*keep1));
+  keep2 = gs_malloc_array((size_t)ncommon,sizeof(*keep2));
+  if ((NULL == keep1) || (NULL == keep2))
+    {
+      errmsg = "Memory allocation error";
+      goto cleanup;
+    }
+
+  {
+    gs_UNSIGNED k = 0;
+    for (gs_UNSIGNED i = 0; i < set1->NoMar; i++)
+      if (gs_UNSIGNED_MAX != match2[i])
+        {
+          keep1[k] = i;
+          keep2[k] = match2[i];
+          k++;
+        }
+  }
+
+  need1 = (ncommon != set1->NoMar);
+  need2 = (ncommon != set2->NoMar);
+  if (!need2)
+    for (gs_UNSIGNED k = 0; k < ncommon; k++)
+      if (keep2[k] != k)
+        {
+          need2 = 1;
+          break;
+        }
+
+  if (need1)
+    {
+      if (0 != st_build_marker_subset(set1,keep1,ncommon,&tmp1))
+        {
+          errmsg = "Failed to restrict first data set to common markers";
+          goto cleanup;
+        }
+      have_tmp1 = 1;
+    }
+
+  if (need2)
+    {
+      if (0 != st_build_marker_subset(set2,keep2,ncommon,&tmp2))
+        {
+          errmsg = "Failed to restrict second data set to common markers";
+          goto cleanup;
+        }
+      have_tmp2 = 1;
+    }
+
+  if (have_tmp1)
+    {
+      gs_tmp_commit(set1,&tmp1);
+      have_tmp1 = 0;
+    }
+  if (have_tmp2)
+    {
+      gs_tmp_commit(set2,&tmp2);
+      have_tmp2 = 0;
+    }
+
+cleanup:
+  if (have_tmp1) gs_reset(&tmp1);
+  if (have_tmp2) gs_reset(&tmp2);
+  free(index1);
+  free(index2);
+  free(match2);
+  free(keep1);
+  free(keep2);
+
+  if (NULL != errmsg)
+    Rf_error("%s",errmsg);
+
+  return ScalarReal((double)ncommon);
+}
+
+
 static int gs_finish_marker_read(gs_varset_type *gv,
                                  gs_varset_type *tmp,
                                  char **ind_filename,
@@ -2776,6 +3395,7 @@ void gs_read_performance_data_01 ( gs_varset_type *gv ,
 
   tmp.NoInd = no_seen;
   tmp.NoMar = gv->NoMar;
+  tmp.phased = gv->phased;
   tmp.MaxIL = gv->MaxIL;
   tmp.MaxML = gv->MaxML;
 
@@ -3368,6 +3988,7 @@ void gs_restrict_marker_data_03 ( gs_varset_type *gv ,
   gs_tmp_init_from(&tmp,gv);
   tmp.NoInd = CountInd;
   tmp.NoMar = CountMar;
+  tmp.phased = gv->phased;
 
   tmp.IndName = gs_malloc_array((size_t)tmp.NoInd,
                                 sizeof(*tmp.IndName));
@@ -3648,6 +4269,7 @@ void gs_copy_marker_data_01 ( gs_varset_type *new ,
 
   new->NoInd = gv->NoInd; 
   new->NoMar = gv->NoMar; 
+  new->phased = gv->phased;
 
   new->IndName = realloc( new->IndName, 
 			  new->NoInd * sizeof(char[gs_MAXNME]) ); 
@@ -4651,6 +5273,7 @@ void gs_reset_all_but_marker_matrix (gs_varset_type *gv)
 {
   gs_UNSIGNED NoInd = gv->NoInd; 
   gs_UNSIGNED NoMar = gv->NoMar; 
+  int phased = gv->phased;
 
   char (*IndName) [gs_MAXNME] = gv->IndName; gv->IndName = NULL;  
   char (*MarName) [gs_MAXNME] = gv->MarName; gv->MarName = NULL; 
@@ -4662,6 +5285,7 @@ void gs_reset_all_but_marker_matrix (gs_varset_type *gv)
 
   gv->NoInd = NoInd; 
   gv->NoMar = NoMar; 
+  gv->phased = phased;
 
   gv->IndName = IndName;  
   gv->MarName = MarName; 
@@ -5438,6 +6062,7 @@ void gs_read_map_01 ( gs_varset_type *gv ,
 
   tmp.NoInd = gv->NoInd;
   tmp.NoMar = no_matching;
+  tmp.phased = gv->phased;
   tmp.NLoc = no_matching;
   tmp.MaxIL = gv->MaxIL;
   tmp.MaxML = gv->MaxML;
@@ -5669,6 +6294,27 @@ static int st_stvcf_components(SEXP list)
     }
 
   return 1;
+}
+
+
+static int st_stvcf_phased_attribute(SEXP stvcf, int *phased)
+{
+  SEXP x;
+
+  if (NULL == phased)
+    return -1;
+
+  *phased = 0;
+  x = getAttrib(stvcf,install("phased"));
+  if (R_NilValue == x)
+    return 0;
+
+  if ((LGLSXP != TYPEOF(x)) || (1 != XLENGTH(x)) ||
+      (NA_LOGICAL == LOGICAL(x)[0]))
+    return -1;
+
+  *phased = LOGICAL(x)[0] ? 1 : 0;
+  return 0;
 }
 
 
@@ -6400,6 +7046,8 @@ SEXP st_read_vcf(SEXP filename, SEXP dataset)
   size_t map_string_offset = 0u;
   unsigned long long previous_raw_pos = 0ull;
   int previous_chrom = 0;
+  int saw_phased_gt = 0;
+  int saw_unphased_gt = 0;
 
   if ((STRSXP != TYPEOF(filename)) || (1 != XLENGTH(filename)) ||
       (NA_STRING == STRING_ELT(filename,0)) ||
@@ -6796,6 +7444,8 @@ SEXP st_read_vcf(SEXP filename, SEXP dataset)
                   failed = 1;
                   goto cleanup;
                 }
+              if (NULL != memchr(gt,'|',gt_len)) saw_phased_gt = 1;
+              if (NULL != memchr(gt,'/',gt_len)) saw_unphased_gt = 1;
               tmp.All1[idx] = a1;
               tmp.All2[idx] = a2;
             }
@@ -6810,6 +7460,8 @@ SEXP st_read_vcf(SEXP filename, SEXP dataset)
         goto cleanup;
       }
   }
+
+  tmp.phased = (saw_phased_gt && !saw_unphased_gt) ? 1 : 0;
 
   if (map_string_offset != tmp.map_str_N)
     {
@@ -7149,7 +7801,7 @@ SEXP st_write_vcf(SEXP filename, SEXP dataset)
 
           if ((GS_ALLELE_MISSING == a1) || (GS_ALLELE_MISSING == a2))
             {
-              if (0 != st_vcf_output_printf(&out,"\t./."))
+              if (0 != st_vcf_output_printf(&out,gv->phased ? "\t.|." : "\t./."))
                 {
                   failed = 1;
                   goto cleanup;
@@ -7160,7 +7812,7 @@ SEXP st_write_vcf(SEXP filename, SEXP dataset)
               int i1 = st_markerdata_allele_index(alleles,n_alleles,a1);
               int i2 = st_markerdata_allele_index(alleles,n_alleles,a2);
               if ((i1 < 0) || (i2 < 0) ||
-                  (0 != st_vcf_output_printf(&out,"\t%d/%d",i1,i2)))
+                  (0 != st_vcf_output_printf(&out,gv->phased ? "\t%d|%d" : "\t%d/%d",i1,i2)))
                 {
                   gs_info(gv,-2,"Allele normalization failed during VCF output");
                   failed = 1;
@@ -7210,6 +7862,7 @@ SEXP st_load_vcf_data(SEXP stvcf, SEXP dataset)
   unsigned char *chrom_seen = NULL;
   R_xlen_t no_mar_x, no_ind_x;
   gs_UNSIGNED no_mar, no_ind, no_chrom;
+  int input_phased = 0;
   int failed = 0;
   int status = -2;
 
@@ -7224,6 +7877,12 @@ SEXP st_load_vcf_data(SEXP stvcf, SEXP dataset)
     {
       gs_info(gv,-2,
               "STvcf must contain exactly the nine required components");
+      failed = 1;
+      goto cleanup;
+    }
+  if (0 != st_stvcf_phased_attribute(stvcf,&input_phased))
+    {
+      gs_info(gv,-2,"Invalid STvcf phased attribute");
       failed = 1;
       goto cleanup;
     }
@@ -7269,6 +7928,7 @@ SEXP st_load_vcf_data(SEXP stvcf, SEXP dataset)
   no_mar = (gs_UNSIGNED)no_mar_x;
   no_ind = (gs_UNSIGNED)no_ind_x;
   no_chrom = (gs_UNSIGNED)XLENGTH(chrom_levels_s);
+  tmp.phased = input_phased;
 
   if ((0 == no_chrom) ||
       (XLENGTH(chrom_s) != no_mar_x) ||
@@ -7909,6 +8569,11 @@ SEXP st_markerdata_to_STvcf(SEXP dataset)
 
   setAttrib(out,R_NamesSymbol,names_s);
   setAttrib(out,R_ClassSymbol,class_s);
+  {
+    SEXP phased_s = PROTECT(ScalarLogical(gv->phased ? TRUE : FALSE));
+    nprot++;
+    setAttrib(out,install("phased"),phased_s);
+  }
 
  cleanup:
   free(index);
@@ -8027,6 +8692,7 @@ SEXP st_load_performance_data(SEXP id_s, SEXP y_s, SEXP dataset)
 
   tmp.NoInd = no_seen;
   tmp.NoMar = gv->NoMar;
+  tmp.phased = gv->phased;
   tmp.MaxIL = gv->MaxIL;
   tmp.MaxML = gv->MaxML;
   tmp.IndName = gs_malloc_array((size_t)tmp.NoInd,sizeof(*tmp.IndName));
@@ -8957,6 +9623,7 @@ int gs_swap_block_marker (gs_varset_type* gv )
   // Marker (=haploblock) data
   gs_UNSIGNED NoInd = gv->NoInd;
   gs_UNSIGNED NoMar = gv->NHap;
+  int phased = gv->phased;
 
   char (*MarName) [gs_MAXNME] =
     gs_malloc_array((size_t)NoMar,sizeof(*MarName));
@@ -8999,6 +9666,7 @@ int gs_swap_block_marker (gs_varset_type* gv )
 
   gv->NoInd = NoInd;
   gv->NoMar = NoMar;
+  gv->phased = phased;
 
   gv->IndName = IndName;
   gv->MarName = MarName;
@@ -12706,6 +13374,9 @@ void st_get_simpop (  gs_varset_type *gv   ,
   }
 
 
+  /* Simulation homologues are returned in known chromosome-homologue order. */
+  gv->phased = 1;
+
   *retval = 1;   return;
 }
 
@@ -12789,6 +13460,9 @@ void st_get_simpop2 (  gs_varset_type *gv   ,
     if (-2 == *Sretval) { *retval = -2; return; }
   }
 
+
+  /* Simulation homologues are returned in known chromosome-homologue order. */
+  gv->phased = 1;
 
   *retval = 1;   return;
 }
@@ -14221,7 +14895,8 @@ void gs_cross_validation_02 ( gs_varset_type *gv   ,
     vs->info_level = -2;
 
 #ifdef MT
-    #pragma omp for
+    omp_set_schedule(omp_sched_static, 0);
+    #pragma omp for schedule(runtime)
 #endif
     for (int r=0; r < CVNoRuns; r++)
       {
@@ -18614,7 +19289,11 @@ void gs_permtest_01 ( gs_varset_type *gv ,
       }
 
 #ifdef MT
-    #pragma omp for schedule(dynamic)
+    /* Each worker changes only its own schedule ICV. Legacy dynamic
+       scheduling is retained unless an explicit seed was requested. */
+    omp_set_schedule(st_rng_is_seeded() ? omp_sched_static : omp_sched_dynamic,
+                     st_rng_is_seeded() ? 0 : 1);
+    #pragma omp for schedule(runtime)
 #endif
     for (int r=0; r < *nperm; r++)
       {
@@ -23812,5 +24491,1011 @@ SEXP st_mixed(SEXP args)
 //##############################################################################
 //# END: Extend st_mixed for full matrix based genomic precistion           2026
 //##############################################################################
+
+//##############################################################################
+// Haplotype enrichment: counting, exact selection and forward selection
+//##############################################################################
+
+#include <stdint.h>
+
+/* Names, blocks, variants and per-call state. */
+typedef struct
+{
+  const char *name;
+  size_t index;
+} ste_name;
+
+typedef struct
+{
+  const char *name;
+  size_t length;
+  size_t *base, *donor;
+} ste_block;
+
+typedef struct ste_variant
+{
+  size_t block;
+  int hidden;
+  GS_ALLELE_TYPE *sequence;
+  uint64_t *carriers;
+  struct ste_variant *next;
+} ste_variant;
+
+typedef struct
+{
+  SEXP base_arg, donor_arg, options, blocks_arg, exclude_arg, n_arg,
+      method_arg;
+  gs_varset_type tmp, *base, *donor;
+  size_t nm, nb, nd, nblocks, nevents, *base_order, *donor_order;
+  ste_name *marker_names, *donor_names;
+  ste_block *blocks;
+  int *main_count, exclude, select_n, forward;
+  ste_variant *first, *last;
+} ste_context;
+
+/* Checked allocation and R object helpers. */
+static size_t ste_product(size_t a, size_t b)
+{
+  if (b && a > SIZE_MAX / b)
+    Rf_error("Enrichment allocation size overflow");
+  return a * b;
+}
+
+static void *ste_alloc(size_t n, size_t size)
+{
+  ste_product(n, size);
+  return R_alloc(n ? n : 1, size);
+}
+
+static int ste_name_cmp(const void *a, const void *b)
+{
+  return strcmp(((const ste_name *)a)->name, ((const ste_name *)b)->name);
+}
+
+static size_t ste_lookup(const ste_name *a, size_t n, const char *name)
+{
+  size_t lo = 0, hi = n;
+  while (lo < hi)
+  {
+    size_t m = lo + (hi - lo) / 2;
+    int c = strcmp(name, a[m].name);
+    if (!c)
+      return a[m].index;
+    if (c < 0)
+      hi = m;
+    else
+      lo = m + 1;
+  }
+  return SIZE_MAX;
+}
+
+static const char *ste_string(SEXP x, const char *what)
+{
+  if (TYPEOF(x) != STRSXP || XLENGTH(x) != 1 ||
+      STRING_ELT(x, 0) == NA_STRING || !LENGTH(STRING_ELT(x, 0)))
+    Rf_error("%s must be one nonempty string", what);
+  return CHAR(STRING_ELT(x, 0));
+}
+
+static int ste_integer(SEXP x, int minimum, const char *what)
+{
+  if ((TYPEOF(x) != INTSXP && TYPEOF(x) != REALSXP) || XLENGTH(x) != 1)
+    Rf_error("%s must be an integer >= %d", what, minimum);
+  double v = Rf_asReal(x);
+  if (!R_FINITE(v) || v < minimum || v > INT_MAX || v != floor(v))
+    Rf_error("%s must be an integer >= %d", what, minimum);
+  return (int)v;
+}
+
+static SEXP ste_column(SEXP x, const char *name)
+{
+  SEXP names = Rf_getAttrib(x, R_NamesSymbol);
+  if (TYPEOF(x) != VECSXP || TYPEOF(names) != STRSXP ||
+      XLENGTH(names) != XLENGTH(x))
+    return R_NilValue;
+  for (R_xlen_t i = 0; i < XLENGTH(x); i++)
+    if (STRING_ELT(names, i) != NA_STRING &&
+        !strcmp(CHAR(STRING_ELT(names, i)), name))
+      return VECTOR_ELT(x, i);
+  return R_NilValue;
+}
+
+static SEXP ste_characters(SEXP x)
+{
+  return Rf_isFactor(x) ? Rf_asCharacterFactor(x) : Rf_coerceVector(x, STRSXP);
+}
+
+static SEXP ste_frame(int nr, int nc, const char **names, const int *types)
+{
+  SEXP ans = PROTECT(Rf_allocVector(VECSXP, nc)),
+       nms = PROTECT(Rf_allocVector(STRSXP, nc));
+  SEXP rn = PROTECT(Rf_allocVector(INTSXP, 2)),
+       cls = PROTECT(Rf_mkString("data.frame"));
+  for (int i = 0; i < nc; i++)
+  {
+    SET_STRING_ELT(nms, i, Rf_mkChar(names[i]));
+    SET_VECTOR_ELT(ans, i, Rf_allocVector(types[i], nr));
+  }
+  INTEGER(rn)[0] = NA_INTEGER;
+  INTEGER(rn)[1] = -nr;
+  Rf_setAttrib(ans, R_NamesSymbol, nms);
+  Rf_setAttrib(ans, R_RowNamesSymbol, rn);
+  Rf_setAttrib(ans, R_ClassSymbol, cls);
+  UNPROTECT(4);
+  return ans;
+}
+
+/* Validate named datasets and align markers by identity. */
+static gs_varset_type *ste_pool(SEXP arg)
+{
+  const char *name = ste_string(arg, "Pool name");
+  gs_varset_type *x = NULL;
+  if (!strcmp(name, "default"))
+    x = gv;
+  else
+    for (gs_UNSIGNED i = 0; i < gs_ndta; i++)
+      if (!strcmp(name, gs_data[i]->name))
+      {
+        x = gs_data[i];
+        break;
+      }
+  if (!x || !x->NoMar || !x->NoInd || !x->All1 || !x->All2 || !x->MarName ||
+      !x->IndName || !x->NLoc || !x->map || !x->mdl)
+    Rf_error("Pool '%s' has no usable marker data/map", name);
+  if (x->NoInd > INT_MAX / 2 || x->NoMar > INT_MAX)
+    Rf_error("Pool dimensions exceed supported enrichment limits");
+  return x;
+}
+
+static size_t *ste_map_order(gs_varset_type *x)
+{
+  size_t *order = ste_alloc(x->NoMar, sizeof(size_t));
+  unsigned char *seen = ste_alloc(x->NoMar, 1);
+  memset(seen, 0, x->NoMar);
+  size_t n = 0;
+  for (gs_UNSIGNED i = 0; i < x->NLoc; i++)
+  {
+    if (x->mdl[i] == gs_UNSIGNED_MAX)
+      continue;
+    if (x->mdl[i] >= x->NoMar || seen[x->mdl[i]] || !x->map[i] ||
+        x->map[i]->chrom < 1 || !R_FINITE(x->map[i]->pos) ||
+        x->map[i]->pos < 0 || strcmp(x->map[i]->name, x->MarName[x->mdl[i]]))
+      Rf_error("Invalid or ambiguous marker map");
+    seen[x->mdl[i]] = 1;
+    order[n++] = i;
+  }
+  if (n != x->NoMar)
+    Rf_error("Every marker must have exactly one map location");
+  return order;
+}
+
+static void ste_validate(ste_context *c)
+{
+  c->base = ste_pool(c->base_arg);
+  c->donor = ste_pool(c->donor_arg);
+  c->nb = c->base->NoInd;
+  c->nd = c->donor->NoInd;
+  c->nm = c->base->NoMar;
+  if (c->nm != c->donor->NoMar)
+    Rf_error("Pools must have the same marker set");
+  if (TYPEOF(c->exclude_arg) != LGLSXP || XLENGTH(c->exclude_arg) != 1 ||
+      LOGICAL(c->exclude_arg)[0] == NA_LOGICAL)
+    Rf_error("exclude.compatible must be TRUE or FALSE");
+  c->exclude = LOGICAL(c->exclude_arg)[0];
+  if (c->n_arg != R_NilValue)
+  {
+    c->select_n = ste_integer(c->n_arg, 1, "n");
+    if ((size_t)c->select_n > c->nd)
+      Rf_error("n exceeds the enrichment pool size");
+  }
+  const char *method = ste_string(c->method_arg, "method");
+  if (strcmp(method, "best.subset") && strcmp(method, "forward"))
+    Rf_error("method must be 'best.subset' or 'forward'");
+  c->forward = !strcmp(method, "forward");
+  if ((c->options == R_NilValue) == (c->blocks_arg == R_NilValue))
+    Rf_error("Supply exactly one of haplotype.options or blocks");
+  c->base_order = ste_map_order(c->base);
+  size_t *dm = ste_map_order(c->donor);
+  c->donor_order = ste_alloc(c->nm, sizeof(size_t));
+  c->marker_names = ste_alloc(c->nm, sizeof(ste_name));
+  ste_name *dn = ste_alloc(c->nm, sizeof(ste_name));
+  for (size_t i = 0; i < c->nm; i++)
+  {
+    c->marker_names[i] = (ste_name){c->base->map[c->base_order[i]]->name, i};
+    dn[i] = (ste_name){c->donor->map[dm[i]]->name, dm[i]};
+  }
+  qsort(c->marker_names, c->nm, sizeof(ste_name), ste_name_cmp);
+  qsort(dn, c->nm, sizeof(ste_name), ste_name_cmp);
+  for (size_t i = 0; i < c->nm; i++)
+  {
+    if (i && (!strcmp(c->marker_names[i - 1].name, c->marker_names[i].name) ||
+              !strcmp(dn[i - 1].name, dn[i].name)))
+      Rf_error("Marker names must be unique");
+    if (strcmp(c->marker_names[i].name, dn[i].name))
+      Rf_error("Pools must have the same marker set");
+    size_t b = c->marker_names[i].index, d = dn[i].index;
+    gs_mappoint_type *bp = c->base->map[c->base_order[b]],
+                     *dp = c->donor->map[d];
+    if (bp->chrom != dp->chrom || fabs(bp->pos - dp->pos) > 1e-8)
+      Rf_error(
+          "Pools must have matching chromosome assignments and positions");
+    c->donor_order[b] = d;
+  }
+  c->donor_names = ste_alloc(c->nd, sizeof(ste_name));
+  for (size_t i = 0; i < c->nd; i++)
+    c->donor_names[i] = (ste_name){c->donor->IndName[i], i};
+  qsort(c->donor_names, c->nd, sizeof(ste_name), ste_name_cmp);
+  for (size_t i = 1; i < c->nd; i++)
+    if (!strcmp(c->donor_names[i - 1].name, c->donor_names[i].name))
+      Rf_error("Donor genotype names must be unique");
+  ste_name *bn = ste_alloc(c->nb, sizeof(ste_name));
+  for (size_t i = 0; i < c->nb; i++)
+    bn[i] = (ste_name){c->base->IndName[i], i};
+  qsort(bn, c->nb, sizeof(ste_name), ste_name_cmp);
+  for (size_t i = 1; i < c->nb; i++)
+    if (!strcmp(bn[i - 1].name, bn[i].name))
+      Rf_error("Base genotype names must be unique");
+}
+
+/* Reuse the existing haplotyping machinery on a private base copy. */
+static SEXP ste_define_blocks(ste_context *c)
+{
+  if (c->blocks_arg != R_NilValue)
+    return c->blocks_arg;
+  SEXP op = c->options, names = Rf_getAttrib(op, R_NamesSymbol);
+  if (TYPEOF(op) != VECSXP || (XLENGTH(op) && (TYPEOF(names) != STRSXP ||
+                                               XLENGTH(names) != XLENGTH(op))))
+    Rf_error("haplotype.options must be a named list");
+  int hap = 5, unit = 1, tolerance = 0;
+  double threshold = .8;
+  const char *criterion = "none", *symbol = "b", *measure = "r2";
+  const char *allowed[] = {"hap",
+                           "hap.unit",
+                           "ld.threshold",
+                           "ld.criterion",
+                           "tolerance",
+                           "hap.symbol",
+                           "ld.measure"};
+  unsigned int seen = 0;
+  for (R_xlen_t i = 0; i < XLENGTH(op); i++)
+  {
+    if (STRING_ELT(names, i) == NA_STRING)
+      Rf_error("Invalid haplotyping option name");
+    const char *key = CHAR(STRING_ELT(names, i));
+    int k;
+    for (k = 0; k < 7; k++)
+      if (!strcmp(key, allowed[k]))
+        break;
+    if (k == 7 || (seen & (1U << k)))
+      Rf_error("Unknown or repeated haplotyping option '%s'", key);
+    seen |= 1U << k;
+    SEXP v = VECTOR_ELT(op, i);
+    switch (k)
+    {
+    case 0:
+      hap = ste_integer(v, 1, key);
+      break;
+    case 1:
+      unit = ste_integer(v, 0, key);
+      if (unit > 2)
+        Rf_error("hap.unit must be 0, 1 or 2");
+      break;
+    case 2:
+      if ((TYPEOF(v) != INTSXP && TYPEOF(v) != REALSXP) || XLENGTH(v) != 1)
+        Rf_error("ld.threshold must lie between zero and one");
+      threshold = Rf_asReal(v);
+      if (!R_FINITE(threshold) || threshold < 0 || threshold > 1)
+        Rf_error("ld.threshold must lie between zero and one");
+      break;
+    case 3:
+      criterion = ste_string(v, key);
+      break;
+    case 4:
+      tolerance = ste_integer(v, 0, key);
+      break;
+    case 5:
+      symbol = ste_string(v, key);
+      break;
+    case 6:
+      measure = ste_string(v, key);
+      break;
+    }
+  }
+  if (strcmp(criterion, "none") && strcmp(criterion, "flanking") &&
+      strcmp(criterion, "average"))
+    Rf_error("Invalid LD criterion");
+  if (strcmp(measure, "r2") && strcmp(measure, "Dp") &&
+      strcmp(measure, "r2-estimate-phases") &&
+      strcmp(measure, "Dp-estimate-phases"))
+    Rf_error("Invalid LD measure");
+  if (strlen(symbol) > 20)
+    Rf_error("hap.symbol must be 1 to 20 letters or digits");
+  for (const unsigned char *p = (const unsigned char *)symbol; *p; p++)
+    if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+          (*p >= '0' && *p <= '9')))
+      Rf_error("hap.symbol must be 1 to 20 letters or digits");
+  int rv = 0, aux = 0;
+  char *empty = "", *crit = (char *)criterion, *sym = (char *)symbol,
+       *met = (char *)measure;
+  c->tmp.info_level = c->base->info_level;
+  snprintf(c->tmp.name, sizeof(c->tmp.name), "enrichment work");
+  gs_copy_marker_data_01(&c->tmp, c->base, &rv);
+  if (rv == -2)
+    Rf_error("Cannot create temporary base data");
+  if (strcmp(criterion, "none"))
+  {
+    gs_calc_ld_01(&c->tmp, &met, &empty, &aux, &rv);
+    if (rv == -2)
+      Rf_error("LD calculation failed");
+  }
+  gs_def_hblocks_01(&c->tmp,
+                    &hap,
+                    &unit,
+                    &threshold,
+                    &crit,
+                    &tolerance,
+                    &sym,
+                    &empty,
+                    &aux,
+                    &rv);
+  if (rv == -2 || !c->tmp.NHap || c->tmp.NHap > INT_MAX)
+    Rf_error("No usable haplotype blocks were defined");
+  const char *cols[] = {"Chrom", "Pos", "Name", "Class", "Markers"};
+  int types[] = {INTSXP, REALSXP, STRSXP, STRSXP, STRSXP};
+  SEXP ans = PROTECT(ste_frame((int)c->tmp.NHap, 5, cols, types));
+  size_t capacity = 1;
+  for (size_t i = 0; i < c->nm; i++)
+  {
+    size_t len = strlen(c->base->map[c->base_order[i]]->name) + 1;
+    if (capacity > SIZE_MAX - len)
+      Rf_error("Block text size overflow");
+    capacity += len;
+  }
+  char *text = ste_alloc(capacity, 1);
+  for (size_t b = 0; b < c->tmp.NHap; b++)
+  {
+    gs_mappoint_type *p = &c->tmp.Hap_S[b];
+    INTEGER(VECTOR_ELT(ans, 0))[b] = p->chrom;
+    /* Preserve the existing public block table's six-decimal export. */
+    char rounded[DBL_MAX_10_EXP + 32];
+    snprintf(rounded, sizeof(rounded), "%.6f", p->pos);
+    REAL(VECTOR_ELT(ans, 1))[b] = strtod(rounded, NULL);
+    SET_STRING_ELT(VECTOR_ELT(ans, 2), b, Rf_mkChar(p->name));
+    SET_STRING_ELT(VECTOR_ELT(ans, 3), b, Rf_mkChar(p->class));
+    size_t used = 0;
+    for (size_t j = c->tmp.h_u[b]; j <= c->tmp.h_o[b]; j++)
+    {
+      if (c->tmp.mdl[j] == gs_UNSIGNED_MAX)
+        continue;
+      const char *m = c->tmp.MarName[c->tmp.mdl[j]];
+      size_t len = strlen(m);
+      memcpy(text + used, m, len);
+      used += len;
+      text[used++] = ';';
+    }
+    text[used] = '\0';
+    SET_STRING_ELT(VECTOR_ELT(ans, 4), b, Rf_mkChar(text));
+  }
+  UNPROTECT(1);
+  return ans;
+}
+
+/* Validate fixed block membership and build native marker indices. */
+static void ste_parse_blocks(ste_context *c, SEXP table)
+{
+  SEXP n = ste_column(table, "Name"), m = ste_column(table, "Markers"),
+       ch = ste_column(table, "Chrom");
+  if (!Rf_inherits(table, "data.frame") || n == R_NilValue ||
+      m == R_NilValue || ch == R_NilValue || !XLENGTH(n) ||
+      XLENGTH(n) > INT_MAX || XLENGTH(m) != XLENGTH(n) ||
+      XLENGTH(ch) != XLENGTH(n))
+    Rf_error("blocks must contain Name, Chrom and Markers columns");
+  SEXP names = PROTECT(ste_characters(n)),
+       markers = PROTECT(ste_characters(m));
+  SEXP chrom = PROTECT(Rf_isFactor(ch) ? Rf_asCharacterFactor(ch) : ch);
+  c->nblocks = XLENGTH(n);
+  c->blocks = ste_alloc(c->nblocks, sizeof(ste_block));
+  c->main_count = ste_alloc(c->nblocks, sizeof(int));
+  ste_name *bn = ste_alloc(c->nblocks, sizeof(ste_name));
+  unsigned char *seen = ste_alloc(c->nm, 1);
+  memset(seen, 0, c->nm);
+  for (size_t i = 0; i < c->nblocks; i++)
+  {
+    if (STRING_ELT(names, i) == NA_STRING || !LENGTH(STRING_ELT(names, i)) ||
+        STRING_ELT(markers, i) == NA_STRING)
+      Rf_error("Block names and marker lists must be nonmissing");
+    const char *sname = CHAR(STRING_ELT(names, i));
+    char *name = ste_alloc(strlen(sname) + 1, 1);
+    strcpy(name, sname);
+    c->blocks[i].name = name;
+    bn[i] = (ste_name){name, i};
+    double chromosome;
+    if (TYPEOF(chrom) == STRSXP)
+    {
+      if (STRING_ELT(chrom, i) == NA_STRING)
+        Rf_error("Invalid block chromosome");
+      const char *s = CHAR(STRING_ELT(chrom, i));
+      char *end;
+      chromosome = strtod(s, &end);
+      if (end == s || *end)
+        Rf_error("Invalid block chromosome");
+    }
+    else if (TYPEOF(chrom) == INTSXP)
+      chromosome = INTEGER(chrom)[i];
+    else if (TYPEOF(chrom) == REALSXP)
+      chromosome = REAL(chrom)[i];
+    else
+      Rf_error("Invalid block chromosome");
+    if (!R_FINITE(chromosome) || chromosome < 1 || chromosome > INT_MAX ||
+        chromosome != floor(chromosome))
+      Rf_error("Invalid block chromosome");
+    const char *s = CHAR(STRING_ELT(markers, i));
+    size_t len = strlen(s);
+    if (len && s[len - 1] == ';')
+      len--;
+    if (!len)
+      Rf_error("Empty haplotype block");
+    size_t count = 1;
+    for (size_t j = 0; j < len; j++)
+      if (s[j] == ';')
+        count++;
+    c->blocks[i].length = count;
+    c->blocks[i].base = ste_alloc(count, sizeof(size_t));
+    c->blocks[i].donor = ste_alloc(count, sizeof(size_t));
+    char *copy = ste_alloc(len + 1, 1);
+    memcpy(copy, s, len);
+    copy[len] = '\0';
+    size_t start = 0, k = 0, previous = SIZE_MAX;
+    for (size_t j = 0; j <= len; j++)
+      if (j == len || copy[j] == ';')
+      {
+        copy[j] = '\0';
+        size_t idx = ste_lookup(c->marker_names, c->nm, copy + start);
+        if (idx == SIZE_MAX || seen[idx])
+          Rf_error("Block markers must be known and nonoverlapping");
+        if ((k && idx != previous + 1) ||
+            c->base->map[c->base_order[idx]]->chrom != (int)chromosome)
+          Rf_error(
+              "Each block must contain consecutive markers on one chromosome");
+        seen[idx] = 1;
+        previous = idx;
+        c->blocks[i].base[k] = c->base->mdl[c->base_order[idx]];
+        c->blocks[i].donor[k] = c->donor->mdl[c->donor_order[idx]];
+        k++;
+        start = j + 1;
+      }
+  }
+  qsort(bn, c->nblocks, sizeof(ste_name), ste_name_cmp);
+  for (size_t i = 1; i < c->nblocks; i++)
+    if (!strcmp(bn[i - 1].name, bn[i].name))
+      Rf_error("Block names must be unique");
+  UNPROTECT(3);
+}
+
+/* Catalogue distinct block-specific sequences and their donor carriers. */
+static uint64_t ste_hash(const GS_ALLELE_TYPE *s, size_t n)
+{
+  uint64_t h = UINT64_C(1469598103934665603);
+  for (size_t i = 0; i < n; i++)
+  {
+    h ^= (uint64_t)s[i];
+    h *= UINT64_C(1099511628211);
+  }
+  return h;
+}
+
+static void ste_catalogue(ste_context *c)
+{
+  size_t copies = 2 * (c->nb + c->nd), maxlen = 0;
+  for (size_t i = 0; i < c->nblocks; i++)
+    if (c->blocks[i].length > maxlen)
+      maxlen = c->blocks[i].length;
+  GS_ALLELE_TYPE *buffer =
+      ste_alloc(ste_product(copies, maxlen), sizeof(GS_ALLELE_TYPE));
+  unsigned char *complete = ste_alloc(copies, 1);
+  size_t cap = 1;
+  while (cap < ste_product(copies, 2))
+  {
+    if (cap > SIZE_MAX / 2)
+      Rf_error("Haplotype hash size overflow");
+    cap *= 2;
+  }
+  size_t *slots = ste_alloc(cap, sizeof(size_t));
+  ste_variant **event = ste_alloc(cap, sizeof(ste_variant *));
+  size_t donor_words = (c->nd + 63) / 64;
+  for (size_t b = 0; b < c->nblocks; b++)
+  {
+    R_CheckUserInterrupt();
+    ste_block *block = &c->blocks[b];
+    size_t len = block->length;
+    memset(slots, 0, cap * sizeof(size_t));
+    memset(event, 0, cap * sizeof(ste_variant *));
+    memset(complete, 1, copies);
+    c->main_count[b] = 0;
+    for (size_t p = 0; p < copies; p++)
+    {
+      int is_donor = p >= 2 * c->nb;
+      gs_varset_type *pool = is_donor ? c->donor : c->base;
+      size_t copy = is_donor ? p - 2 * c->nb : p, ind = copy % pool->NoInd;
+      GS_ALLELE_TYPE *alleles = copy < pool->NoInd ? pool->All1 : pool->All2;
+      size_t *rows = is_donor ? block->donor : block->base;
+      GS_ALLELE_TYPE *seq = buffer + p * len;
+      for (size_t j = 0; j < len; j++)
+      {
+        seq[j] = alleles[rows[j] * pool->NoInd + ind];
+        if (seq[j] == GS_ALLELE_MISSING)
+          complete[p] = 0;
+      }
+      if (!complete[p])
+        continue;
+      size_t slot = (size_t)ste_hash(seq, len) & (cap - 1);
+      while (slots[slot] &&
+             memcmp(buffer + (slots[slot] - 1) * len, seq, len * sizeof(*seq)))
+        slot = (slot + 1) & (cap - 1);
+      if (!slots[slot])
+      {
+        slots[slot] = p + 1;
+        if (!is_donor)
+        {
+          c->main_count[b]++;
+          continue;
+        }
+        if (c->nevents >= INT_MAX)
+          Rf_error("Too many additional haplotypes");
+        ste_variant *v = ste_alloc(1, sizeof(*v));
+        v->block = b;
+        v->hidden = 0;
+        v->next = NULL;
+        v->sequence = ste_alloc(len, sizeof(*seq));
+        memcpy(v->sequence, seq, len * sizeof(*seq));
+        v->carriers = ste_alloc(donor_words, sizeof(uint64_t));
+        memset(v->carriers, 0, donor_words * sizeof(uint64_t));
+        for (size_t j = 0; j < 2 * c->nb; j++)
+          if (!complete[j])
+          {
+            const GS_ALLELE_TYPE *base = buffer + j * len;
+            int match = 1;
+            for (size_t k = 0; k < len; k++)
+              if (base[k] != GS_ALLELE_MISSING && base[k] != seq[k])
+              {
+                match = 0;
+                break;
+              }
+            if (match)
+            {
+              v->hidden = 1;
+              break;
+            }
+          }
+        if (c->last)
+          c->last->next = v;
+        else
+          c->first = v;
+        c->last = v;
+        c->nevents++;
+        event[slot] = v;
+      }
+      if (is_donor && event[slot])
+        event[slot]->carriers[ind / 64] |= UINT64_C(1) << (ind % 64);
+    }
+  }
+}
+
+/* Assemble the public enrichment result without modifying input pools. */
+static SEXP ste_calculate(ste_context *c, SEXP blocks)
+{
+  const char *sn[] = {"Base.lines",
+                      "Enrichment.lines",
+                      "Main",
+                      "Additional",
+                      "Hidden",
+                      "No.match",
+                      "Score",
+                      "Enriched",
+                      "Gaining.blocks"};
+  int st[] = {
+      INTSXP, INTSXP, INTSXP, INTSXP, INTSXP, INTSXP, INTSXP, INTSXP, INTSXP};
+  const char *bn[] = {"Block",
+                      "Main",
+                      "Hidden",
+                      "No.match",
+                      "Additional",
+                      "Score",
+                      "Enriched"};
+  int bt[] = {STRSXP, INTSXP, INTSXP, INTSXP, INTSXP, INTSXP, INTSXP};
+  const char *an[] = {"Block", "Sequence", "Hidden"};
+  int at[] = {STRSXP, STRSXP, LGLSXP};
+  SEXP summary = PROTECT(ste_frame(1, 9, sn, st)),
+       by = PROTECT(ste_frame((int)c->nblocks, 7, bn, bt));
+  SEXP alleles = PROTECT(ste_frame((int)c->nevents, 3, an, at));
+  for (size_t b = 0; b < c->nblocks; b++)
+  {
+    SET_STRING_ELT(VECTOR_ELT(by, 0), b, Rf_mkChar(c->blocks[b].name));
+    INTEGER(VECTOR_ELT(by, 1))[b] = c->main_count[b];
+    INTEGER(VECTOR_ELT(by, 2))[b] = INTEGER(VECTOR_ELT(by, 3))[b] = 0;
+  }
+  size_t maxlen = 0;
+  for (size_t b = 0; b < c->nblocks; b++)
+    if (c->blocks[b].length > maxlen)
+      maxlen = c->blocks[b].length;
+  size_t text_capacity = ste_product(maxlen, 4) + 1;
+  char *text = ste_alloc(text_capacity, 1);
+  size_t i = 0;
+  for (ste_variant *v = c->first; v; v = v->next, i++)
+  {
+    INTEGER(VECTOR_ELT(by, v->hidden ? 2 : 3))[v->block]++;
+    SET_STRING_ELT(
+        VECTOR_ELT(alleles, 0), i, Rf_mkChar(c->blocks[v->block].name));
+    size_t used = 0, len = c->blocks[v->block].length;
+    for (size_t j = 0; j < len; j++)
+      used += (size_t)snprintf(text + used,
+                               text_capacity - used,
+                               j ? ";%u" : "%u",
+                               (unsigned)v->sequence[j]);
+    SET_STRING_ELT(VECTOR_ELT(alleles, 1), i, Rf_mkChar(text));
+    LOGICAL(VECTOR_ELT(alleles, 2))[i] = v->hidden;
+  }
+  int64_t totals[9] = {(int)c->nb, (int)c->nd, 0, 0, 0, 0, 0, 0, 0};
+  for (size_t b = 0; b < c->nblocks; b++)
+  {
+    int main = c->main_count[b], hidden = INTEGER(VECTOR_ELT(by, 2))[b],
+        no = INTEGER(VECTOR_ELT(by, 3))[b];
+    int additional = hidden + no, score = c->exclude ? no : additional;
+    if ((int64_t)main + additional > INT_MAX)
+      Rf_error("Allele count exceeds integer limit");
+    INTEGER(VECTOR_ELT(by, 4))[b] = additional;
+    INTEGER(VECTOR_ELT(by, 5))[b] = score;
+    INTEGER(VECTOR_ELT(by, 6))[b] = main + additional;
+    totals[2] += main;
+    totals[3] += additional;
+    totals[4] += hidden;
+    totals[5] += no;
+    totals[6] += score;
+    totals[7] += main + additional;
+    totals[8] += (additional > 0);
+  }
+  for (int j = 0; j < 9; j++)
+  {
+    if (totals[j] > INT_MAX)
+      Rf_error("Allele count exceeds integer limit");
+    INTEGER(VECTOR_ELT(summary, j))[0] = (int)totals[j];
+  }
+  SEXP ans = PROTECT(Rf_allocVector(VECSXP, 5)),
+       names = PROTECT(Rf_allocVector(STRSXP, 5));
+  const char *rn[] = {
+      "summary", "by.block", "alleles", "blocks", "exclude.compatible"};
+  for (int j = 0; j < 5; j++)
+    SET_STRING_ELT(names, j, Rf_mkChar(rn[j]));
+  SET_VECTOR_ELT(ans, 0, summary);
+  SET_VECTOR_ELT(ans, 1, by);
+  SET_VECTOR_ELT(ans, 2, alleles);
+  SET_VECTOR_ELT(ans, 3, blocks);
+  SET_VECTOR_ELT(ans, 4, Rf_ScalarLogical(c->exclude));
+  Rf_setAttrib(ans, R_NamesSymbol, names);
+  UNPROTECT(5);
+  return ans;
+}
+
+/* No R API calls, allocations or random numbers in the worker routines. */
+static int ste_popcount(uint64_t x)
+{
+  int n = 0;
+  while (x)
+  {
+    x &= x - 1;
+    n++;
+  }
+  return n;
+}
+
+static int ste_count(const uint64_t *x, size_t words)
+{
+  int n = 0;
+  for (size_t w = 0; w < words; w++)
+    n += ste_popcount(x[w]);
+  return n;
+}
+
+static int ste_lex_less(const int *a, const int *b, int n)
+{
+  for (int i = 0; i < n; i++)
+    if (a[i] != b[i])
+      return a[i] < b[i];
+  return 0;
+}
+typedef struct
+{
+  uint64_t *covered;
+  int *chosen, *next, *task_best, *best, *gains, best_score;
+} ste_worker;
+static int ste_gain_cmp(const void *a, const void *b)
+{
+  int x = *(const int *)a, y = *(const int *)b;
+  return (x < y) - (x > y);
+}
+
+/* Exact search: each task fixes the first donor in a sorted combination.
+   Suffix-union and marginal-gain bounds prune branches that cannot improve
+   the task optimum. Ascending traversal preserves the first lexical tie. */
+static void ste_search_task(int first,
+                            int n,
+                            int nd,
+                            size_t words,
+                            const uint64_t *inc,
+                            const uint64_t *suffix,
+                            ste_worker *s)
+{
+  int level = 1, task_score = -1;
+  s->chosen[0] = first;
+  s->next[1] = first + 1;
+  memcpy(s->covered + words,
+         inc + (size_t)first * words,
+         words * sizeof(uint64_t));
+  while (level >= 1)
+  {
+    uint64_t *covered = s->covered + (size_t)level * words;
+    if (level == n)
+    {
+      int score = ste_count(covered, words);
+      if (score > task_score)
+      {
+        task_score = score;
+        memcpy(s->task_best, s->chosen, n * sizeof(int));
+      }
+      level--;
+      continue;
+    }
+    int start = s->next[level], left = n - level;
+    if (start > nd - left)
+    {
+      level--;
+      continue;
+    }
+    int upper = 0;
+    for (size_t w = 0; w < words; w++)
+      upper += ste_popcount(covered[w] | suffix[(size_t)start * words + w]);
+    if (upper <= task_score)
+    {
+      level--;
+      continue;
+    }
+    int current = ste_count(covered, words), ng = nd - start;
+    for (int j = start; j < nd; j++)
+    {
+      int gain = 0;
+      for (size_t w = 0; w < words; w++)
+        gain += ste_popcount(inc[(size_t)j * words + w] & ~covered[w]);
+      s->gains[j - start] = gain;
+    }
+    qsort(s->gains, (size_t)ng, sizeof(int), ste_gain_cmp);
+    int64_t bound = current;
+    for (int j = 0; j < left; j++)
+      bound += s->gains[j];
+    if (bound <= task_score)
+    {
+      level--;
+      continue;
+    }
+    int chosen = start;
+    s->next[level] = start + 1;
+    s->chosen[level] = chosen;
+    uint64_t *next = s->covered + (size_t)(level + 1) * words;
+    for (size_t w = 0; w < words; w++)
+      next[w] = covered[w] | inc[(size_t)chosen * words + w];
+    level++;
+    s->next[level] = chosen + 1;
+  }
+  if (task_score > s->best_score ||
+      (task_score == s->best_score && ste_lex_less(s->task_best, s->best, n)))
+  {
+    s->best_score = task_score;
+    memcpy(s->best, s->task_best, n * sizeof(int));
+  }
+}
+
+static int ste_threads(int nd, int tasks)
+{
+  int threads = 1;
+#ifdef MT
+  if (nd >= 16 && tasks > 1)
+  {
+    threads = omp_get_max_threads();
+    if (threads > MAXTHREADS)
+      threads = MAXTHREADS;
+    if (threads > tasks)
+      threads = tasks;
+  }
+#endif
+  return threads;
+}
+
+/* Forward search: score marginal gains against the current selected union. */
+static void
+ste_forward(ste_context *c, const uint64_t *inc, size_t words, SEXP ans)
+{
+  int nd = (int)c->nd, n = c->select_n, threads = ste_threads(nd, nd);
+  uint64_t *covered = ste_alloc(words, sizeof(uint64_t));
+  memset(covered, 0, words * sizeof(uint64_t));
+  unsigned char *selected = ste_alloc(nd, 1);
+  memset(selected, 0, nd);
+  int *gains = ste_alloc(nd, sizeof(int));
+  /* All candidates see the same immutable current union during one step. */
+  for (int step = 0; step < n; step++)
+  {
+    R_CheckUserInterrupt();
+#ifdef MT
+#pragma omp parallel for schedule(static) num_threads(threads) if (threads > 1)
+#endif
+    for (int j = 0; j < nd; j++)
+    {
+      int gain = -1;
+      if (!selected[j])
+      {
+        gain = 0;
+        for (size_t w = 0; w < words; w++)
+          gain += ste_popcount(inc[(size_t)j * words + w] & ~covered[w]);
+      }
+      gains[j] = gain;
+    }
+    /* Sorted names and a strict comparison give deterministic tie resolution.
+     */
+    int best = -1, best_gain = -1;
+    for (int j = 0; j < nd; j++)
+      if (gains[j] > best_gain)
+      {
+        best = j;
+        best_gain = gains[j];
+      }
+    selected[best] = 1;
+    for (size_t w = 0; w < words; w++)
+      covered[w] |= inc[(size_t)best * words + w];
+    SET_STRING_ELT(ans, step, Rf_mkChar(c->donor_names[best].name));
+  }
+}
+
+/* Construct donor incidence bitsets, then dispatch to the selected method. */
+static SEXP ste_select(ste_context *c)
+{
+  int n = c->select_n, nd = (int)c->nd;
+  size_t qualifying = 0;
+  for (ste_variant *v = c->first; v; v = v->next)
+    if (!c->exclude || !v->hidden)
+      qualifying++;
+  SEXP ans = PROTECT(Rf_allocVector(STRSXP, n));
+  if (!qualifying || (!c->forward && n == nd))
+  {
+    for (int i = 0; i < n; i++)
+      SET_STRING_ELT(ans, i, Rf_mkChar(c->donor_names[i].name));
+    UNPROTECT(1);
+    return ans;
+  }
+  size_t words = (qualifying + 63) / 64;
+  uint64_t *inc = ste_alloc(ste_product(c->nd, words), sizeof(uint64_t));
+  memset(inc, 0, ste_product(c->nd, words) * sizeof(uint64_t));
+  size_t k = 0;
+  for (ste_variant *v = c->first; v; v = v->next)
+    if (!c->exclude || !v->hidden)
+    {
+      for (size_t j = 0; j < c->nd; j++)
+      {
+        size_t original = c->donor_names[j].index;
+        if (v->carriers[original / 64] & (UINT64_C(1) << (original % 64)))
+          inc[j * words + k / 64] |= UINT64_C(1) << (k % 64);
+      }
+      k++;
+    }
+  if (c->forward)
+  {
+    ste_forward(c, inc, words, ans);
+    UNPROTECT(1);
+    return ans;
+  }
+  if (n == 1)
+  {
+    int best = -1, index = 0;
+    for (int j = 0; j < nd; j++)
+    {
+      int score = ste_count(inc + (size_t)j * words, words);
+      if (score > best)
+      {
+        best = score;
+        index = j;
+      }
+    }
+    SET_STRING_ELT(ans, 0, Rf_mkChar(c->donor_names[index].name));
+    UNPROTECT(1);
+    return ans;
+  }
+  uint64_t *suffix =
+      ste_alloc(ste_product(c->nd + 1, words), sizeof(uint64_t));
+  memset(suffix + c->nd * words, 0, words * sizeof(uint64_t));
+  for (int j = nd - 1; j >= 0; j--)
+    for (size_t w = 0; w < words; w++)
+      suffix[(size_t)j * words + w] =
+          suffix[(size_t)(j + 1) * words + w] | inc[(size_t)j * words + w];
+  int tasks = nd - n + 1, threads = ste_threads(nd, tasks);
+  ste_worker *workers = ste_alloc(threads, sizeof(ste_worker));
+  for (int t = 0; t < threads; t++)
+  {
+    ste_worker *s = &workers[t];
+    s->best_score = -1;
+    s->covered =
+        ste_alloc(ste_product((size_t)n + 1, words), sizeof(uint64_t));
+    s->chosen = ste_alloc(n, sizeof(int));
+    s->next = ste_alloc((size_t)n + 1, sizeof(int));
+    s->task_best = ste_alloc(n, sizeof(int));
+    s->best = ste_alloc(n, sizeof(int));
+    s->gains = ste_alloc(nd, sizeof(int));
+  }
+  for (int begin = 0; begin < tasks; begin += 32)
+  {
+    int end = tasks - begin < 32 ? tasks : begin + 32;
+    R_CheckUserInterrupt();
+#ifdef MT
+#pragma omp parallel for schedule(dynamic, 1)                                 \
+    num_threads(threads) if (threads > 1)
+#endif
+    for (int task = begin; task < end; task++)
+    {
+      int t = 0;
+#ifdef MT
+      t = omp_get_thread_num();
+#endif
+      ste_search_task(task, n, nd, words, inc, suffix, &workers[t]);
+    }
+  }
+  int winner = 0;
+  for (int t = 1; t < threads; t++)
+    if (workers[t].best_score > workers[winner].best_score ||
+        (workers[t].best_score == workers[winner].best_score &&
+         workers[t].best_score >= 0 &&
+         ste_lex_less(workers[t].best, workers[winner].best, n)))
+      winner = t;
+  for (int i = 0; i < n; i++)
+    SET_STRING_ELT(
+        ans, i, Rf_mkChar(c->donor_names[workers[winner].best[i]].name));
+  UNPROTECT(1);
+  return ans;
+}
+
+/* Main-thread entry and cleanup, including R errors and interrupts. */
+static SEXP ste_body(void *data)
+{
+  ste_context *c = (ste_context *)data;
+  ste_validate(c);
+  SEXP blocks = PROTECT(ste_define_blocks(c));
+  ste_parse_blocks(c, blocks);
+  ste_catalogue(c);
+  SEXP ans = PROTECT(c->select_n ? ste_select(c) : ste_calculate(c, blocks));
+  UNPROTECT(2);
+  return ans;
+}
+
+static void ste_cleanup(void *data)
+{
+  ste_context *c = (ste_context *)data;
+  gs_reset(&c->tmp);
+}
+
+SEXP st_enrichment(SEXP base,
+                   SEXP donor,
+                   SEXP options,
+                   SEXP blocks,
+                   SEXP exclude,
+                   SEXP n,
+                   SEXP method)
+{
+  ste_context c;
+  memset(&c, 0, sizeof(c));
+  gs_init(&c.tmp);
+  c.base_arg = base;
+  c.donor_arg = donor;
+  c.options = options;
+  c.blocks_arg = blocks;
+  c.exclude_arg = exclude;
+  c.n_arg = n;
+  c.method_arg = method;
+  return R_ExecWithCleanup(ste_body, &c, ste_cleanup, &c);
+}
 
 #include "SelectionTools01a.h"

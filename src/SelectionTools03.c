@@ -1,7 +1,4 @@
-//////////////////////////////////////////////////////////////////////////
-// SelectionTools03.c
-// Chromosome-wide statistical phasing and R interface
-///////////////////////////////////////////////////////////////////////////
+/* st.phase.v1 */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,6 +9,12 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <ctype.h>
+#ifdef _OPENMP
+  #ifndef ST
+    #define MT
+    #include <omp.h>
+  #endif
+#endif
 
 #include "SelectionToolsAllele.h"
 
@@ -19,130 +22,12 @@
 #include <Rdefines.h>
 #include <Rinternals.h>
 #include <R_ext/Random.h>
+#include "SelectionToolsDataSet.h"
 
-#define gs_MAXSTR 4096
-#define gs_MAXNME 256
-
-typedef unsigned long int gs_UNSIGNED;
-#define gs_UNSIGNED_MAX ULONG_MAX
-typedef double gs_FLOAT;
-
-typedef struct gs_mappoint_type
-{
-  int chrom;
-  double pos;
-  const char *name;
-  const char *class;
-  gs_UNSIGNED nr;
-} gs_mappoint_type;
-
-typedef struct gs_cross_type
-{
-  gs_UNSIGNED p1;
-  gs_UNSIGNED p2;
-  gs_FLOAT gd;
-  gs_FLOAT mu;
-  gs_FLOAT mi;
-  gs_FLOAT ma;
-  gs_FLOAT va;
-  gs_FLOAT es;
-} gs_cross_type;
-
-typedef struct gs_chrom_type
-{
-  gs_UNSIGNED NLocC;
-  gs_mappoint_type **first_loc;
-  gs_UNSIGNED first_loc_i;
-  gs_FLOAT *rf;
-  gs_FLOAT *q;
-  gs_FLOAT *ld;
-} gs_chrom_type;
-
-typedef struct gs_varset_type
-{
-  char name[gs_MAXSTR];
-  char msg[3 * gs_MAXSTR];
-  int info_level;
-  int MaxIL;
-  int MaxML;
-  gs_UNSIGNED NoInd, NoMar;
-  char (*IndName)[gs_MAXNME];
-  char (*MarName)[gs_MAXNME];
-  GS_ALLELE_TYPE *All1;
-  GS_ALLELE_TYPE *All2;
-  gs_FLOAT *genv;
-  gs_FLOAT *genv1;
-  gs_FLOAT *genv2;
-  gs_UNSIGNED *NoAll;
-  GS_ALLELE_TYPE *All_S;
-  GS_ALLELE_TYPE **All;
-  gs_UNSIGNED *AllCnt_S;
-  gs_UNSIGNED **AllCnt;
-  double *Pic;
-  double *Mis;
-  double *IndMis;
-  double *Z;
-  double *V;
-  double *y;
-  gs_UNSIGNED NoEff;
-  char (*EffNme)[gs_MAXNME];
-  int *EffAll;
-  int *CmpAll;
-  double aa;
-  double aA;
-  double AA;
-  double an;
-  double nn;
-  double nA;
-  gs_UNSIGNED dimu;
-  gs_UNSIGNED dimA;
-  double *A;
-  double *u;
-  double *b;
-  double *As;
-  double *bs;
-  double *GI;
-  double *a;
-  double *p;
-  double *ladi;
-  double *est;
-  double *SMsqm;
-  double *SMsqe;
-  double *SMF;
-  double *SMp;
-  double *SMvar;
-  double *sigma;
-  double sigma_e;
-  gs_UNSIGNED NLoc;
-  gs_mappoint_type *map_S;
-  char *map_str_S;
-  size_t map_str_N;
-  gs_mappoint_type **map;
-  gs_UNSIGNED *mdl;
-  GS_ALLELE_TYPE *Ref1;
-  GS_ALLELE_TYPE *Ref2;
-  gs_UNSIGNED NHap;
-  gs_mappoint_type *Hap_S;
-  char *Hap_str_S;
-  size_t Hap_str_N;
-  gs_UNSIGNED *h_u;
-  gs_UNSIGNED *h_o;
-  gs_UNSIGNED *h_n;
-  gs_UNSIGNED NCrs;
-  gs_cross_type *crs_S;
-  gs_cross_type **crs;
-  gs_UNSIGNED NChrom;
-  gs_chrom_type *chrom;
-  double *t0, *t1, *t2, *t3, *t4, *t5, *t6, *t7, *t8, *t9;
-  gs_UNSIGNED *u0;
-} gs_varset_type;
-
-/* Implemented in SelectionTools01.c. */
 extern gs_varset_type *gs_fdta(char *set_name);
 extern void gs_info(gs_varset_type *gv, int level, char *message);
 extern int gs_string_cmp(const void *a, const void *b);
 
-/* Local copies of the integrity helpers needed by the phasing module. */
 static int gs_size_mul(size_t a, size_t b, size_t *out)
 {
   if ((0 != a) && (b > ((size_t)-1) / a))
@@ -367,19 +252,6 @@ cleanup:
   return storage;
 }
 
-/*
- * Development block: chromosome-wide statistical phasing.
- *
- * Step 01 implements only the data-access/normalization layer.  It does
- * not estimate phase and it does not modify SelectionTools marker data.
- *
- * The core phasing code will operate on st_phase_data rather than directly
- * on gs_varset_type.  Genotype allele order is deliberately discarded
- * here: each diploid genotype is stored in sorted compact allele-state
- * order.
- */
-
-
 #define ST_PHASE_STATE_MISSING ((uint8_t)255u)
 
 typedef struct
@@ -388,35 +260,21 @@ typedef struct
   size_t n_marker;
   size_t n_chrom;
 
-  /* Marker order is linkage-map order. */
   gs_UNSIGNED *source_marker;
   int *chrom_label;
   double *pos_cm;
 
-  /* Chromosome intervals in marker order. */
   size_t *chrom_start;
   size_t *chrom_length;
 
-  /*
-   * Compact biological allele states for every marker.
-   * allele_offset has n_marker + 1 elements.  The biological allele value
-   * corresponding to compact state s at marker m is
-   * allele_value[allele_offset[m] + s].
-   */
   size_t *allele_offset;
   uint8_t *n_alleles;
   GS_ALLELE_TYPE *allele_value;
   size_t n_allele_value;
 
-  /*
-   * Marker-major diploid genotypes.  Input homologue order is
-   * intentionally removed: geno1 <= geno2 for non-missing genotypes.  255
-   * denotes missing.
-   */
   uint8_t *geno1;
   uint8_t *geno2;
 } st_phase_data;
-
 
 static int st_phase_size_mul(size_t a, size_t b, size_t *out)
 {
@@ -427,13 +285,11 @@ static int st_phase_size_mul(size_t a, size_t b, size_t *out)
   return 0;
 }
 
-
 static void st_phase_data_init(st_phase_data *d)
 {
   if (NULL != d)
     memset(d, 0, sizeof(*d));
 }
-
 
 static void st_phase_data_free(st_phase_data *d)
 {
@@ -453,7 +309,6 @@ static void st_phase_data_free(st_phase_data *d)
 
   st_phase_data_init(d);
 }
-
 
 static int st_phase_marker_alleles(const gs_varset_type *gv,
                                    gs_UNSIGNED marker,
@@ -495,7 +350,6 @@ static int st_phase_marker_alleles(const gs_varset_type *gv,
   return 0;
 }
 
-
 static int st_phase_build_data(gs_varset_type *gv, st_phase_data *d)
 {
   gs_UNSIGNED *map_storage = NULL;
@@ -517,7 +371,6 @@ static int st_phase_build_data(gs_varset_type *gv, st_phase_data *d)
     return -1;
   }
 
-  /* Chromosome-wide phasing requires one valid map point per marker. */
   map_storage = gs_map_storage_index(gv, 1, 1);
   if (NULL == map_storage)
     return -1;
@@ -560,7 +413,6 @@ static int st_phase_build_data(gs_varset_type *gv, st_phase_data *d)
 
   d->allele_offset[0] = 0;
 
-  /* First pass: validate map order and count biological allele states. */
   for (size_t l = 0; l < d->n_marker; l++)
   {
     gs_UNSIGNED marker = gv->mdl[l];
@@ -635,7 +487,6 @@ static int st_phase_build_data(gs_varset_type *gv, st_phase_data *d)
     goto fail;
   }
 
-  /* Chromosome interval table. */
   {
     size_t c = 0;
     size_t start = 0;
@@ -654,11 +505,6 @@ static int st_phase_build_data(gs_varset_type *gv, st_phase_data *d)
     d->chrom_length[c] = d->n_marker - start;
   }
 
-  /*
-   * Second pass: build compact allele tables and unphased genotype states.
-   * State order follows increasing biological allele code and therefore
-   * does not depend on All1/All2 input order.
-   */
   for (size_t l = 0; l < d->n_marker; l++)
   {
     gs_UNSIGNED marker = d->source_marker[l];
@@ -733,38 +579,6 @@ fail:
   return -1;
 }
 
-
-/*
- * Temporary development entry point used only to test the adapter against
- * a real SelectionTools data set.  summary must have room for 10 doubles:
- *
- *  0 No. individuals
- *  1 No. markers
- *  2 No. chromosomes
- *  3 all-missing markers
- *  4 monomorphic markers
- *  5 biallelic markers
- *  6 markers with >2 observed alleles
- *  7 missing diploid genotypes
- *  8 heterozygous diploid genotypes
- *  9 total observed biological marker-allele states
- */
-
-
-/**************************************************************************
- * PBWT ordering and divergence engine
- *
- * This layer operates only on complete biallelic haplotype panels coded
- *0/1. It is independent of SelectionTools marker-data structures and does
- *not infer phase or modify marker data.
- *
- * At position k, order[] contains the haplotypes sorted by their reversed
- * prefixes over markers 0..k-1.  divergence[i] is the first marker of the
- * suffix match between order[i-1] and order[i]; divergence[0] is the
- *sentinel k.  The update is a stable binary partition and runs in O(number
- *haplotypes) time and O(number haplotypes) memory.
- *************************************************************************/
-
 typedef struct
 {
   size_t n_hap;
@@ -775,13 +589,11 @@ typedef struct
   size_t *next_divergence;
 } st_phase_pbwt;
 
-
 static void st_phase_pbwt_init_empty(st_phase_pbwt *p)
 {
   if (NULL != p)
     memset(p, 0, sizeof(*p));
 }
-
 
 static void st_phase_pbwt_free(st_phase_pbwt *p)
 {
@@ -794,7 +606,6 @@ static void st_phase_pbwt_free(st_phase_pbwt *p)
   free(p->next_divergence);
   st_phase_pbwt_init_empty(p);
 }
-
 
 static int st_phase_pbwt_init(st_phase_pbwt *p, size_t n_hap)
 {
@@ -824,11 +635,6 @@ static int st_phase_pbwt_init(st_phase_pbwt *p, size_t n_hap)
   return 0;
 }
 
-
-/*
- * Advance the PBWT by one marker.  allele[h] is the allele (0 or 1) of
- * original haplotype h at the marker currently being processed.
- */
 static int st_phase_pbwt_update(st_phase_pbwt *p, const uint8_t *allele)
 {
   size_t n_zero = 0;
@@ -842,7 +648,6 @@ static int st_phase_pbwt_update(st_phase_pbwt *p, const uint8_t *allele)
       (SIZE_MAX == p->position))
     return -1;
 
-  /* Validate first so a failed call leaves the PBWT state unchanged. */
   for (size_t h = 0; h < p->n_hap; h++)
   {
     if (allele[h] > 1u)
@@ -900,105 +705,22 @@ static int st_phase_pbwt_update(st_phase_pbwt *p, const uint8_t *allele)
   return 0;
 }
 
-
-/*
- * Convenience sweep over a marker-major binary haplotype matrix.  The
- * final order/divergence state is left in p.  Primarily useful to later
- * phasing layers and to independent tests of the PBWT core.
- */
-
-
-/**************************************************************************
- * PBWT-based exact IBS-match extraction
- *
- * A reported match is a maximal exact binary haplotype match on the
- *half-open marker interval [start,end).  min_length is measured in
- *markers.  Matches are reported once, when they can no longer be extended
- *to the right; matches reaching the end of the panel are flushed after the
- *final PBWT update.
- *
- * The extractor uses the current PBWT order/divergence state.  Within a
- *PBWT block whose adjacent divergence values imply at least min_length
- *matching markers, haplotypes with different next alleles terminate an
- *exact match. The exact pairwise start is the maximum divergence value
- *between the two haplotypes in PBWT order.
- *
- * The callback interface deliberately allows later HMM-state selection to
- * consume matches as a stream instead of forcing storage of all pairwise
- * matches.  The complete binary panel is validated before the first
- *callback, so malformed 0/1 input cannot cause partial match output.
- *************************************************************************/
-
 typedef struct
 {
   size_t hap1;
   size_t hap2;
   size_t start;
-  size_t end; /* exclusive */
+  size_t end;
 } st_phase_ibs_match;
-
 
 typedef int (*st_phase_ibs_emit_fn)(void *context,
                                     const st_phase_ibs_match *match);
-
-
-/*
- * Report all long matches in one PBWT block that end immediately before
- * the supplied next marker.  Every 0/1 cross-pair is an output pair.
- * Scanning from the less frequent allele side bounds the work by at most
- * twice the number of reported cross-pairs, while accumulating the exact
- * range maximum of divergence values for each pair.
- */
-
-
-/* Report terminal long matches in one PBWT block at the end of the panel.
- */
-
-
-/*
- * Partition the current PBWT order into blocks in which every pair shares
- * a suffix of at least min_length markers.  If next_allele is non-NULL,
- * only pairs that differ at that marker are emitted (their match ends
- * here).  With next_allele == NULL, all qualifying pairs are emitted as
- * terminal matches.
- */
-
-
-/*
- * Extract all pairwise locally maximal exact IBS runs of at least
- * min_length markers from a complete marker-major binary haplotype panel.
- *
- * Coordinates in st_phase_ibs_match are zero-based half-open marker
- * indices. The routine uses O(n_hap) PBWT workspace.  Apart from the
- * unavoidable match output, each mixed PBWT block is processed in
- * output-proportional work.
- */
-
-
-/**************************************************************************
- * PBWT/IBS candidate-state selection
- *
- * For a target haplotype t and marker k, every donor haplotype d != t
- *receives an IBS support score equal to the length of the maximal exact
- *IBS run that contains k.  The score is zero when t and d differ at k.
- *Candidate states are the best max_states donors under the deterministic
- *ordering
- *
- *   larger IBS support first; ties by smaller donor haplotype index.
- *
- * Positive support is supplied exclusively by the validated Step 03 IBS
- * stream (min_length = 1).  Zero-score donors are added only after the
- *stream has been consumed, so every target/marker cell contains exactly
- * min(max_states,n_hap-1) states.  No HMM probabilities are calculated
- *here.
- *************************************************************************/
 
 typedef struct
 {
   size_t hap;
   size_t ibs_length;
 } st_phase_candidate;
-
 
 typedef struct
 {
@@ -1011,7 +733,6 @@ typedef struct
   st_phase_candidate *state;
 } st_phase_candidate_set;
 
-
 static int st_phase_candidate_better(const st_phase_candidate *a,
                                      const st_phase_candidate *b)
 {
@@ -1022,80 +743,10 @@ static int st_phase_candidate_better(const st_phase_candidate *a,
   return a->hap < b->hap;
 }
 
-
-/*
- * Insert or improve one donor in one target/marker cell.  The retained
- * prefix is always sorted by the Step 04 ranking and contains no duplicate
- * donor.
- */
-
-
 typedef struct
 {
   st_phase_candidate_set *set;
 } st_phase_candidate_context;
-
-
-/* Consume one maximal positive IBS run from the Step 03 stream. */
-
-
-/*
- * Fill any unoccupied candidate slots with deterministic zero-score
- * donors. These are exactly the donors that differ from the target at the
- * marker (or would otherwise rank below every positive IBS donor retained
- * in the cell).
- */
-
-
-/*
- * Build the bounded candidate grid from a complete binary haplotype panel.
- * The result is target-major, then marker-major, with max_states sorted
- * entries in every cell.  max_states is clamped to n_hap-1 because a
- * target is never allowed to copy from itself.
- */
-
-
-/* Return the retained state vector for one target/marker cell. */
-
-/**************************************************************************
- * HMM probability primitives
- *
- * Step 05 defines only the numerical probability model used by a later
- *HMM. It does not run an HMM and does not infer or write phase.
- *
- * Emission model
- * --------------
- * For a marker with A observed allele states and allelic error probability
- *e, one copied donor allele emits its own allele with probability 1-e and
- *each of the A-1 alternative alleles with probability e/(A-1).  A
- *monomorphic marker has the only possible emission with probability one.
- *A completely missing observation is neutral (probability one).
- *
- * The diploid helper treats the observed genotype as unphased.  For a
- * heterozygote it sums the two possible ordered emissions; for a
- *homozygote there is only one ordered observation.  This makes the
- *emission model normalized over unordered diploid genotypes.
- *
- * Recombination transition model
- * ------------------------------
- * Copying breakpoints are a Poisson process along genetic distance.  For
- * distance d Morgans and caller-supplied breakpoint intensity lambda per
- * Morgan, the probability of at least one copying breakpoint is
- *
- *      q = 1 - exp(-lambda*d).
- *
- * Given q and K candidate donors at the next marker, a retained previous
- *donor persists with mass 1-q and q is redistributed uniformly over all K
- *current donors.  Therefore the previous donor, when retained, has
- *probability 1-q+q/K and every other donor q/K.  If truncation removed the
- *previous donor, the transition is conditioned on the available state set
- *and is uniform over the K current donors.  Every transition row is
- *consequently normalized.
- *
- * Step 05 deliberately does not choose lambda or an allelic error rate.
- *Those are model parameters for the later phasing driver, not hidden
- *constants in the probability core.
- *************************************************************************/
 
 static int st_phase_hmm_error_valid(double error_rate)
 {
@@ -1103,8 +754,6 @@ static int st_phase_hmm_error_valid(double error_rate)
          (error_rate <= 1.0);
 }
 
-
-/* Normalized haploid allelic emission probability. */
 static int st_phase_hmm_hap_emission(uint8_t observed, uint8_t donor,
                                      uint8_t n_alleles, double error_rate,
                                      double *probability)
@@ -1131,20 +780,6 @@ static int st_phase_hmm_hap_emission(uint8_t observed, uint8_t donor,
   return 0;
 }
 
-
-/*
- * Normalized unphased diploid-genotype emission from two copied donor
- * alleles. Missing must be represented as a complete diploid missing
- * genotype.
- */
-
-
-/*
- * Probability of at least one copying breakpoint over a map interval.
- * distance_cm is in centiMorgans and break_rate_per_morgan is
- * dimensionless expected breakpoints per Morgan.  expm1 is used for
- * accuracy at short maps.
- */
 static int st_phase_hmm_break_probability(double distance_cm,
                                           double break_rate_per_morgan,
                                           double *probability)
@@ -1163,7 +798,6 @@ static int st_phase_hmm_break_probability(double distance_cm,
   else
     p = -expm1(-x);
 
-  /* Protect the probability contract against last-bit libm excursions. */
   if (p < 0.0)
     p = 0.0;
   if (p > 1.0)
@@ -1173,54 +807,16 @@ static int st_phase_hmm_break_probability(double distance_cm,
   return 0;
 }
 
-
-/*
- * Build one normalized transition row into the current Step 04 candidate
- * set. Candidate identities must be unique.  The destination is untouched
- * on any validation failure.
- */
-
-/**************************************************************************
- * Numerically stable finite-state HMM recursion
- *
- * Step 06 adds the first actual HMM dynamic program.  It deliberately
- *remains independent of phase inference and SelectionTools write-back:
- *callers supply one Step 04 candidate grid for a target, a marker-major
- *emission probability for each retained candidate slot, and one Step 05
- *copying-break probability for each interval.
- *
- * The forward recursion is performed in log space.  At each marker a
- * log-sum-exp normalization is removed and stored in log_scale; their sum
- *is the complete sequence log likelihood.  This avoids the multiplicative
- * underflow of a naive forward implementation even for very long marker
- * sequences or extremely small emissions.
- *
- * Viterbi scores are accumulated in log space and traced back through the
- * varying candidate sets.  Callers supply nonnegative initial-state
- *weights; the core normalizes them, so Step 06 imposes no hidden
- *initial-prior choice. Transitions obey exactly the Step 05 law: retained
- *donor -> 1-q+q/K for persistence and q/K otherwise; a previous donor
- *absent from the current truncated state set resets uniformly to 1/K.
- *
- * No backward recursion, posterior decoding, pair-state recursion, phase
- *call, parameter default, chromosome driver, or genotype modification is
- *present in Step 06.
- *************************************************************************/
-
 typedef struct
 {
   size_t n_marker;
   size_t max_states;
   size_t n_slot;
 
-  /* Marker-major normalized filtering probabilities; unused slots are
-   * zero. */
   double *forward;
 
-  /* Per-marker log normalizers; their sum is log_likelihood. */
   double *log_scale;
 
-  /* Donor haplotype identity of the deterministic Viterbi traceback. */
   size_t *viterbi_hap;
 
   double log_likelihood;
@@ -1228,8 +824,6 @@ typedef struct
   int possible;
 } st_phase_hmm_result;
 
-
-/* Stable log(exp(a)+exp(b)) for values that are finite or -INFINITY. */
 static double st_phase_hmm_logadd(double a, double b)
 {
   double hi, lo;
@@ -1253,66 +847,10 @@ static double st_phase_hmm_logadd(double a, double b)
   return hi + log1p(exp(lo - hi));
 }
 
-
 static double st_phase_hmm_log_probability(double p)
 {
   return (p > 0.0) ? log(p) : -INFINITY;
 }
-
-
-/*
- * Validate the structural candidate information needed for one target HMM.
- * Only the selected target is inspected, but the global
- * dimensions/pointers must be internally consistent before any output
- * allocation is committed.
- */
-
-
-/*
- * Run forward filtering and Viterbi decoding for one target candidate
- * grid.
- *
- * initial_weight contains the first marker's nonnegative state weights; at
- * least one must be positive and the core normalizes them.  emission is
- * marker-major with stride candidate->max_states.  Only the first
- * candidate count at each marker is read.  break_probability[m-1]
- * describes the transition from marker m-1 to marker m and must be in
- * [0,1].
- *
- * A mathematically valid zero-likelihood observation sequence is not an
- * API error: the routine succeeds with possible=0,
- * log_likelihood=-INFINITY, zero forward probabilities from the impossible
- * point onward, and an all- SIZE_MAX Viterbi path.  Invalid inputs, by
- * contrast, return -1 and leave the caller's result object untouched.
- */
-
-/**************************************************************************
- * Backward recursion and posterior state probabilities
- *
- * Step 07 adds the backward half of the same generic varying-state HMM
- *used in Step 06.  It deliberately does not add a diploid donor-pair
- *model, phase decision, parameter default, SelectionTools driver, or
- *genotype write-back.
- *
- * Both filtering and backward messages used for smoothing are retained in
- *log space.  This is important even though Step 06 also exposes normalized
- * filtering probabilities as doubles: a tiny filtered state can underflow
- *to zero in that convenience representation while still be the only state
- *with nonzero probability after later observations.  Step 07 therefore
- *recomputes normalized log-forward messages under the exact Step 06
- *transition law and never uses an underflowed linear-space filtering value
- *to form a posterior.
- *
- * Backward messages are normalized to sum to one before exposure.  At the
- *last marker the terminal all-ones backward vector therefore appears as a
- *uniform normalized message over the active states.  Posterior
- *probabilities are obtained by normalizing log_forward + log_backward at
- *each marker.
- *
- * If the complete sequence has zero probability, posterior marginals are
- * mathematically undefined; the routine succeeds with possible=0 and
- *leaves both backward and posterior arrays as zero.
- *************************************************************************/
 
 typedef struct
 {
@@ -1320,18 +858,14 @@ typedef struct
   size_t max_states;
   size_t n_slot;
 
-  /* Marker-major normalized backward messages; unused slots are zero. */
   double *backward;
 
-  /* Marker-major smoothed state probabilities; unused slots are zero. */
   double *posterior;
 
   double log_likelihood;
   int possible;
 } st_phase_hmm_posterior_result;
 
-
-/* Normalize one log-forward + log-backward product row. */
 static int st_phase_hmm_posterior_log_row(const double *log_forward,
                                           const double *log_backward,
                                           size_t n, double *posterior)
@@ -1359,36 +893,6 @@ static int st_phase_hmm_posterior_log_row(const double *log_forward,
   return 0;
 }
 
-
-/*
- * Recompute normalized log-forward messages under exactly the Step 06
- * model. The complete input contract has already been validated by the
- * successful Step 06 call made by st_phase_hmm_forward_backward().
- */
-
-
-/*
- * Run Step 06 validation/likelihood followed by log-space forward-backward
- * smoothing for one target candidate grid.  Invalid input leaves the
- * caller's output object untouched.
- */
-
-/**************************************************************************
- * Ordered diploid donor-pair state layer
- *
- * Step 08 forms the Cartesian product of two existing Step 04 candidate
- *lists at every marker.  States are ordered: (a,b) and (b,a) are distinct,
- *and (a,a) is permitted.  This is the state-space/probability layer needed
- *by a later diploid HMM; Step 08 itself does not run a pair-state
- *recursion and does not call phase or modify marker data.
- *
- * Pair emissions retain the two heterozygous orientation contributions in
- * addition to their Step 05 unordered-genotype sum.  Pair transitions
- *assume the two copying chains move independently conditional on
- *caller-supplied break probabilities q1 and q2, so the pair transition is
- *the product of the two normalized one-chain transition laws from Step 05.
- *************************************************************************/
-
 typedef struct
 {
   size_t hap1;
@@ -1396,7 +900,6 @@ typedef struct
   size_t slot1;
   size_t slot2;
 } st_phase_pair_state;
-
 
 typedef struct
 {
@@ -1408,15 +911,12 @@ typedef struct
   size_t max_pair_states;
   size_t n_slot;
 
-  /* Per marker dimensions of the Cartesian product. */
   size_t *left_count;
   size_t *right_count;
   size_t *count;
 
-  /* Marker-major, stride max_pair_states. */
   st_phase_pair_state *state;
 } st_phase_pair_state_set;
-
 
 static void st_phase_pair_state_set_init(st_phase_pair_state_set *s)
 {
@@ -1427,7 +927,6 @@ static void st_phase_pair_state_set_init(st_phase_pair_state_set *s)
     s->target2 = SIZE_MAX;
   }
 }
-
 
 static void st_phase_pair_state_set_free(st_phase_pair_state_set *s)
 {
@@ -1441,8 +940,6 @@ static void st_phase_pair_state_set_free(st_phase_pair_state_set *s)
   st_phase_pair_state_set_init(s);
 }
 
-
-/* Return one marker's ordered pair-state vector. */
 static const st_phase_pair_state *
 st_phase_pair_state_get(const st_phase_pair_state_set *s, size_t marker,
                         size_t *count, size_t *left_count,
@@ -1470,11 +967,6 @@ st_phase_pair_state_get(const st_phase_pair_state_set *s, size_t marker,
   return s->state + marker * s->max_pair_states;
 }
 
-
-/*
- * Validate one stored Cartesian row, including deterministic row-major
- * order. slot1 is the outer index and slot2 the inner index.
- */
 static int st_phase_pair_state_row_valid(const st_phase_pair_state_set *s,
                                          size_t marker)
 {
@@ -1511,7 +1003,6 @@ static int st_phase_pair_state_row_valid(const st_phase_pair_state_set *s,
           (v[z].hap1 >= s->n_hap) || (v[z].hap2 >= s->n_hap))
         return 0;
 
-      /* Each side identity is constant along its Cartesian coordinate. */
       if ((j > 0u) && (v[z].hap1 != v[i * n2].hap1))
         return 0;
       if ((i > 0u) && (v[z].hap2 != v[j].hap2))
@@ -1531,22 +1022,6 @@ static int st_phase_pair_state_row_valid(const st_phase_pair_state_set *s,
   return 1;
 }
 
-
-/*
- * Build one marker-major ordered donor-pair grid from two target candidate
- * grids.  target1 and target2 may be equal; the routine simply combines
- * the two requested Step 04 state lists.  The caller's output is untouched
- * on validation/allocation failure.
- */
-
-
-/*
- * Ordered orientation components of the Step 05 unphased genotype
- * emission. For a heterozygote, phase12 is g1<-donor1,g2<-donor2 and
- * phase21 is the opposite ordering.  Homozygous and completely missing
- * observations have no distinct second ordering, so phase21 is zero. total
- * exactly equals the Step 05 unordered-genotype emission.
- */
 static int st_phase_hmm_pair_emission_components(
     uint8_t observed1, uint8_t observed2, uint8_t donor1, uint8_t donor2,
     uint8_t n_alleles, double error_rate, double *phase12, double *phase21,
@@ -1598,12 +1073,6 @@ static int st_phase_hmm_pair_emission_components(
   return 0;
 }
 
-
-/*
- * Build pair-state emission rows from compact donor alleles at one marker.
- * The three destination arrays are all required and remain untouched on
- * any validation failure.
- */
 static int st_phase_hmm_pair_emission_row(
     const st_phase_pair_state_set *pair, size_t marker,
     const uint8_t *donor_allele, size_t n_hap, uint8_t observed1,
@@ -1641,7 +1110,7 @@ static int st_phase_hmm_pair_emission_row(
                  observed1, observed2, donor_allele[row[z].hap1],
                  donor_allele[row[z].hap2], n_alleles, error_rate, &p12,
                  &p21, &p))
-      return -1; /* Cannot occur after the complete validation above. */
+      return -1;
 
     phase12[z] = p12;
     phase21[z] = p21;
@@ -1651,48 +1120,18 @@ static int st_phase_hmm_pair_emission_row(
   return 0;
 }
 
-
-/*
- * One normalized transition row from an ordered previous donor pair into
- * one current Step 08 Cartesian state row.  q1 and q2 are caller-supplied
- * break probabilities for the two copying chains.  If a previous donor is
- * absent from one current truncated side list, that side resets uniformly,
- * exactly as in Step 05.  The destination is untouched on validation
- * failure.
- */
-
-/**************************************************************************
- * Numerically stable HMM over ordered diploid donor-pair states
- *
- * Step 09 runs the first HMM directly on the varying Step 08 Cartesian
- *pair state rows.  The caller supplies marker-major total genotype
- *emissions with stride max_pair_states, two copying-break probabilities
- *per interval, and nonnegative initial weights for the first pair-state
- *row.  No phase decision or SelectionTools write-back is made here.
- *
- * Forward filtering and smoothing use normalized log messages.  Viterbi
- * scores are also normalized marker by marker; the removed maxima are
- *summed with compensation.  Pair transitions are exactly the product law
- *already validated in Step 08, including independent truncation/reset on
- *either copying chain.
- *************************************************************************/
-
 typedef struct
 {
   size_t n_marker;
   size_t max_pair_states;
   size_t n_slot;
 
-  /* Marker-major normalized filtering/backward/posterior probabilities. */
   double *forward;
   double *backward;
   double *posterior;
 
-  /* Per-marker forward log normalizers; their compensated sum is
-   * likelihood. */
   double *log_scale;
 
-  /* Ordered donor identities along the deterministic Viterbi traceback. */
   size_t *viterbi_hap1;
   size_t *viterbi_hap2;
 
@@ -1700,7 +1139,6 @@ typedef struct
   double viterbi_log_probability;
   int possible;
 } st_phase_pair_hmm_result;
-
 
 static void st_phase_pair_hmm_result_init(st_phase_pair_hmm_result *r)
 {
@@ -1711,7 +1149,6 @@ static void st_phase_pair_hmm_result_init(st_phase_pair_hmm_result *r)
     r->viterbi_log_probability = -INFINITY;
   }
 }
-
 
 static void st_phase_pair_hmm_result_free(st_phase_pair_hmm_result *r)
 {
@@ -1726,7 +1163,6 @@ static void st_phase_pair_hmm_result_free(st_phase_pair_hmm_result *r)
   free(r->viterbi_hap2);
   st_phase_pair_hmm_result_init(r);
 }
-
 
 static int st_phase_pair_hmm_set_valid(const st_phase_pair_state_set *pair)
 {
@@ -1751,8 +1187,6 @@ static int st_phase_pair_hmm_set_valid(const st_phase_pair_state_set *pair)
   return 1;
 }
 
-
-/* Kahan-style compensated accumulation used for long log-score chains. */
 static void st_phase_pair_hmm_compensated_add(double value, double *sum,
                                               double *compensation)
 {
@@ -1764,47 +1198,12 @@ static void st_phase_pair_hmm_compensated_add(double value, double *sum,
   *sum = t;
 }
 
-
-/*
- * Run forward filtering, backward smoothing, posterior decoding and
- * Viterbi traceback on one ordered Step 08 pair-state grid.
- *
- * initial_weight has one entry for each state in marker 0.  emission is
- * marker-major with stride pair->max_pair_states; only live row entries
- * are inspected.  q1/q2 have n_marker-1 entries and are independently
- * validated.
- *
- * A mathematically valid zero-likelihood observation sequence succeeds
- * with possible=0 and undefined decoding represented by zero posterior
- * values and SIZE_MAX Viterbi identities.  Invalid input returns -1
- * transactionally.
- */
-
-/**************************************************************************
- * Posterior support for the two heterozygous phase orientations
- *
- * Step 10 converts the validated Step 09 ordered pair-state posterior into
- * marker-wise support for the two possible orientations of an unordered
- * heterozygous genotype.  For pair state z, Step 08 supplies the two
- *ordered emission components e12[z] and e21[z].  Conditional on that state
- *and the observed genotype, the orientation probability is therefore
- * e12/(e12+e21) versus e21/(e12+e21).  Step 10 averages those conditional
- * probabilities with the Step 09 posterior state probabilities.
- *
- * Homozygous markers have one trivial ordering and are reported
- *separately. Completely missing genotypes carry no phase information and
- *are reported as unavailable.  No hard phase call, threshold, or
- *marker-data write-back is made here.
- *************************************************************************/
-
-
 typedef enum
 {
   ST_PHASE_ORIENTATION_MISSING = 0,
   ST_PHASE_ORIENTATION_HOMOZYGOUS = 1,
   ST_PHASE_ORIENTATION_HETEROZYGOUS = 2
 } st_phase_orientation_kind;
-
 
 typedef struct
 {
@@ -1814,14 +1213,12 @@ typedef struct
   double *phase21;
 } st_phase_orientation_result;
 
-
 static void
 st_phase_orientation_result_init(st_phase_orientation_result *r)
 {
   if (NULL != r)
     memset(r, 0, sizeof(*r));
 }
-
 
 static void
 st_phase_orientation_result_free(st_phase_orientation_result *r)
@@ -1835,30 +1232,11 @@ st_phase_orientation_result_free(st_phase_orientation_result *r)
   st_phase_orientation_result_init(r);
 }
 
-
 static int st_phase_orientation_probability_valid(double x)
 {
   return isfinite(x) && (x >= 0.0) && (x <= 1.0);
 }
 
-
-/*
- * Convert ordered pair-state posteriors to marker-wise orientation
- * support.
- *
- * phase12_component and phase21_component are marker-major Step 08
- * emission components with stride pair->max_pair_states.
- * observed1/observed2 are the sorted unordered genotype alleles used to
- * build those components.
- *
- * For a globally impossible Step 09 sequence, heterozygous supports are
- * both zero.  For a possible sequence every live posterior row is
- * validated to sum to one (within floating-point accumulation error), and
- * every posterior- positive state must have positive total orientation
- * emission.
- *
- * The destination remains untouched on any validation/allocation failure.
- */
 static int st_phase_orientation_posterior(
     const st_phase_pair_state_set *pair,
     const st_phase_pair_hmm_result *hmm, const uint8_t *observed1,
@@ -1941,7 +1319,6 @@ static int st_phase_orientation_posterior(
       }
     }
 
-    /* Recompute heterozygous support with independent compensated sums. */
     if (ST_PHASE_ORIENTATION_HETEROZYGOUS == tmp.kind[marker])
     {
       double s12 = 0.0, c12 = 0.0, s21 = 0.0, c21 = 0.0;
@@ -1972,7 +1349,6 @@ static int st_phase_orientation_posterior(
             (fabs(support_sum - 1.0) > tol))
           goto fail;
 
-        /* Normalize the final pair only to remove final-rounding drift. */
         tmp.phase12[marker] = s12 / support_sum;
         tmp.phase21[marker] = s21 / support_sum;
       }
@@ -2004,7 +1380,7 @@ static int st_phase_orientation_posterior(
     }
     else
     {
-      /* Missing genotype: phase is unavailable, never a confident call. */
+
       if (hmm->possible)
       {
         double tol = 64.0 * DBL_EPSILON * (double)((n > 1u) ? n : 1u);
@@ -2036,22 +1412,6 @@ fail:
   return -1;
 }
 
-/**************************************************************************
- * Thresholded hard phase calls
- *
- * Step 11 converts the validated Step 10 marker-wise orientation posterior
- * into an explicit hard-call representation.  The confidence threshold is
- * caller supplied and must lie in [0.5,1].  Heterozygous orientation 1->2
- *or 2->1 is called only when that orientation is at least the threshold
- *and is strictly more probable than its alternative.  Therefore an exact
- *0.5/0.5 tie remains unresolved even when threshold==0.5.
- *
- * Missing genotypes stay explicitly missing.  A homozygous marker from a
- * possible HMM is a trivial homozygous call.  Step 10's 0/0 representation
- *for a globally impossible HMM becomes unresolved, never a fabricated
- *phase call.  No SelectionTools genotype data are modified here.
- *************************************************************************/
-
 typedef enum
 {
   ST_PHASE_HARD_MISSING = 0,
@@ -2061,7 +1421,6 @@ typedef enum
   ST_PHASE_HARD_UNRESOLVED = 4
 } st_phase_hard_call;
 
-
 typedef struct
 {
   size_t n_marker;
@@ -2069,13 +1428,11 @@ typedef struct
   double *confidence;
 } st_phase_hard_call_result;
 
-
 static void st_phase_hard_call_result_init(st_phase_hard_call_result *r)
 {
   if (NULL != r)
     memset(r, 0, sizeof(*r));
 }
-
 
 static void st_phase_hard_call_result_free(st_phase_hard_call_result *r)
 {
@@ -2087,30 +1444,14 @@ static void st_phase_hard_call_result_free(st_phase_hard_call_result *r)
   st_phase_hard_call_result_init(r);
 }
 
-
 static int st_phase_hard_threshold_valid(double threshold)
 {
   return isfinite(threshold) && (threshold >= 0.5) && (threshold <= 1.0);
 }
 
-/* Shared Step-0 numerical probability comparison, defined with the Step-0
- * helpers below. */
 static int st_phase_step0_probability_close(double x, double y,
                                             double scale);
 
-
-/*
- * Convert a complete Step 10 orientation result into hard calls.
- *
- * confidence is the posterior support of the selected orientation.  For an
- * unresolved but otherwise possible heterozygote it is the larger of the
- * two posterior supports, so callers can distinguish a near-threshold
- * unresolved marker from an exact tie without rerunning Step 10.
- * Missing/impossible markers have confidence zero and a possible
- * homozygote has confidence one.
- *
- * The destination remains untouched on any validation/allocation failure.
- */
 static int st_phase_hard_call_from_orientation(
     const st_phase_orientation_result *orientation, double threshold,
     st_phase_hard_call_result *out)
@@ -2182,17 +1523,11 @@ static int st_phase_hard_call_from_orientation(
         if (!(sum > 0.0) || (fabs(sum - 1.0) > tol))
           goto fail;
 
-        /* Remove only final-rounding drift from the Step 10 pair. */
         q12 = p12 / sum;
         q21 = p21 / sum;
         best = (q12 > q21) ? q12 : q21;
         tmp.confidence[marker] = best;
 
-        /* A resolved heterozygous call must beat 50:50 by more
-           than numerical roundoff.  The ordered pair HMM is exactly
-           label-symmetric in important two-founder cases, so tiny
-           floating-point asymmetries must remain unresolved and be
-           completed later from the continuous Viterbi path. */
         if ((q12 > 0.5) && (q12 >= threshold) &&
             !st_phase_step0_probability_close(q12, q21, 1.0))
           tmp.call[marker] = ST_PHASE_HARD_12;
@@ -2218,28 +1553,6 @@ fail:
   return -1;
 }
 
-/**************************************************************************
- * Transactional diploid target/output adapter
- *
- * Step 12 bridges the Step 01 normalized marker workspace to the validated
- * Step 11 hard-call layer without modifying gs_varset_type.  Phasing is
- * prepared one individual x chromosome at a time, matching the unit
- *consumed by the chromosome HMM.
- *
- * st_phase_diploid_input contains a private copy of the canonical compact
- * unphased genotype states for one target chromosome.
- *st_phase_proposed_output maps a complete Step 11 result back to
- *biological SelectionTools allele codes and source-marker indices.
- *write_phase is one only for a resolved heterozygous 12/21 call.  Missing,
- *homozygous and unresolved genotypes are represented in the proposal but
- *are never marked for phase write-back.
- *
- * Both construction functions are transactional: their destination object
- *is replaced only after every input/call has been validated and every
- *allocation has succeeded.  No All1/All2 or other gs_varset_type storage
- *is written.
- *************************************************************************/
-
 typedef struct
 {
   size_t individual;
@@ -2250,7 +1563,6 @@ typedef struct
   uint8_t *observed1;
   uint8_t *observed2;
 } st_phase_diploid_input;
-
 
 typedef struct
 {
@@ -2267,16 +1579,13 @@ typedef struct
   unsigned char *write_phase;
 } st_phase_proposed_output;
 
-
 #define st_phase_adapter_malloc malloc
-
 
 static void st_phase_diploid_input_init(st_phase_diploid_input *x)
 {
   if (NULL != x)
     memset(x, 0, sizeof(*x));
 }
-
 
 static void st_phase_diploid_input_free(st_phase_diploid_input *x)
 {
@@ -2288,13 +1597,11 @@ static void st_phase_diploid_input_free(st_phase_diploid_input *x)
   st_phase_diploid_input_init(x);
 }
 
-
 static void st_phase_proposed_output_init(st_phase_proposed_output *x)
 {
   if (NULL != x)
     memset(x, 0, sizeof(*x));
 }
-
 
 static void st_phase_proposed_output_free(st_phase_proposed_output *x)
 {
@@ -2310,13 +1617,6 @@ static void st_phase_proposed_output_free(st_phase_proposed_output *x)
   st_phase_proposed_output_init(x);
 }
 
-
-/*
- * Validate the complete Step 01 workspace strongly enough for safe target
- * extraction and biological-allele lookup.  This is independent of gv so
- * the proposed-output layer cannot accidentally write through to marker
- * data.
- */
 static int st_phase_data_adapter_valid(const st_phase_data *d)
 {
   size_t n_genotype;
@@ -2408,13 +1708,6 @@ static int st_phase_data_adapter_valid(const st_phase_data *d)
   return 1;
 }
 
-
-/*
- * Copy one individual's canonical compact genotype sequence for one
- * chromosome. chromosome is the zero-based internal chromosome interval
- * index, not the biological chromosome label.  The latter is retained
- * separately.
- */
 static int st_phase_prepare_diploid_input(const st_phase_data *d,
                                           size_t individual,
                                           size_t chromosome,
@@ -2459,7 +1752,6 @@ fail:
   return -1;
 }
 
-
 static int
 st_phase_diploid_input_matches(const st_phase_data *d,
                                const st_phase_diploid_input *input)
@@ -2489,15 +1781,6 @@ st_phase_diploid_input_matches(const st_phase_data *d,
   return 1;
 }
 
-
-/*
- * Convert a complete Step 11 result for one prepared chromosome into a
- * biological-allele proposal.  Only resolved heterozygotes receive
- * write_phase=1.  For unresolved heterozygotes the proposal carries
- * canonical (sorted compact-state) biological order only as a diagnostic
- * representation; write_phase=0 guarantees that a later commit layer
- * cannot use that order as an inferred phase.
- */
 static int st_phase_build_proposed_output(
     const st_phase_data *d, const st_phase_diploid_input *input,
     const st_phase_hard_call_result *hard, st_phase_proposed_output *out)
@@ -2629,24 +1912,6 @@ fail:
   return -1;
 }
 
-/**************************************************************************
- * Dataset-level transactional phasing stage
- *
- * Step 13 takes validated Step 12 chromosome proposals and merges their
- * resolved phase writes into a private dataset-sized staging copy.  It
- *does not modify gs_varset_type.  The stage retains an immutable
- *byte-for-byte snapshot of the original All1/All2 arrays in addition to
- *the mutable staged copies so that any source change after stage
- *construction is detected before a proposal is accepted.
- *
- * Every accepted chromosome proposal covers its complete individual x
- *marker region, including write_phase=0 cells.  Any later proposal
- *covering an already covered cell is rejected as overlap unless it
- *contains a different valid resolved orientation for an already claimed
- *cell, which is classified as conflict.  write_phase=0 cells never modify
- *staged genotype bytes.
- *************************************************************************/
-
 typedef enum
 {
   ST_PHASE_STAGE_OK = 0,
@@ -2656,7 +1921,6 @@ typedef enum
   ST_PHASE_STAGE_CONFLICT = -4
 } st_phase_stage_status;
 
-
 typedef struct
 {
   size_t n_ind;
@@ -2665,33 +1929,24 @@ typedef struct
   size_t n_written;
   size_t n_covered;
 
-  /* Immutable exact source snapshot. */
   GS_ALLELE_TYPE *base1;
   GS_ALLELE_TYPE *base2;
 
-  /* Private candidate dataset. */
   GS_ALLELE_TYPE *staged1;
   GS_ALLELE_TYPE *staged2;
 
-  /* One byte per marker-major genotype cell; 1 after a resolved phase
-   * write. */
   unsigned char *claimed;
 
-  /* One byte per cell covered by an accepted complete chromosome proposal.
-   */
   unsigned char *covered;
 } st_phase_dataset_stage;
 
-
 #define st_phase_stage_malloc malloc
-
 
 static void st_phase_dataset_stage_init(st_phase_dataset_stage *x)
 {
   if (NULL != x)
     memset(x, 0, sizeof(*x));
 }
-
 
 static void st_phase_dataset_stage_free(st_phase_dataset_stage *x)
 {
@@ -2706,7 +1961,6 @@ static void st_phase_dataset_stage_free(st_phase_dataset_stage *x)
   free(x->covered);
   st_phase_dataset_stage_init(x);
 }
-
 
 static int st_phase_dataset_stage_structurally_valid(
     const st_phase_dataset_stage *stage)
@@ -2755,7 +2009,6 @@ static int st_phase_dataset_stage_structurally_valid(
 
   return 1;
 }
-
 
 static int
 st_phase_stage_workspace_matches_source(const gs_varset_type *gv,
@@ -2817,13 +2070,6 @@ st_phase_stage_workspace_matches_source(const gs_varset_type *gv,
   return 1;
 }
 
-
-/*
- * Build a dataset-sized private stage from the exact current All1/All2
- * bytes. d is checked against the biological unordered genotypes before
- * any stage is published.  The destination is replaced only after all six
- * allocations and the complete validation have succeeded.
- */
 static int st_phase_dataset_stage_build(const gs_varset_type *gv,
                                         const st_phase_data *d,
                                         st_phase_dataset_stage *out)
@@ -2873,9 +2119,6 @@ fail:
   return ST_PHASE_STAGE_INVALID;
 }
 
-
-/* Exact byte-level stale-source check against the immutable construction
- * copy. */
 static int
 st_phase_dataset_stage_source_current(const gs_varset_type *gv,
                                       const st_phase_dataset_stage *stage)
@@ -2893,7 +2136,6 @@ st_phase_dataset_stage_source_current(const gs_varset_type *gv,
   return ((0 == memcmp(stage->base1, gv->All1, bytes)) &&
           (0 == memcmp(stage->base2, gv->All2, bytes)));
 }
-
 
 static int
 st_phase_stage_proposal_valid(const st_phase_data *d,
@@ -2999,13 +2241,6 @@ st_phase_stage_proposal_valid(const st_phase_data *d,
   return 1;
 }
 
-
-/*
- * Transactionally merge one complete Step 12 chromosome proposal.
- * Validation and overlap/conflict classification are completed before the
- * first staged byte is changed.  Thus any non-OK return leaves the stage
- * unchanged.
- */
 static int st_phase_dataset_stage_merge(const gs_varset_type *gv,
                                         const st_phase_data *d,
                                         const st_phase_proposed_output *p,
@@ -3027,11 +2262,6 @@ static int st_phase_dataset_stage_merge(const gs_varset_type *gv,
   if (!st_phase_stage_proposal_valid(d, stage, p))
     return ST_PHASE_STAGE_INVALID;
 
-  /*
-   * First pass: classify the complete chromosome region without modifying
-   * stage.  Conflicting resolved writes take precedence over the more
-   * general overlap classification.
-   */
   for (size_t j = 0; j < p->n_marker; j++)
   {
     size_t slot =
@@ -3060,8 +2290,6 @@ static int st_phase_dataset_stage_merge(const gs_varset_type *gv,
       (p->n_marker > stage->n_genotype - stage->n_covered))
     return ST_PHASE_STAGE_INVALID;
 
-  /* Second pass: safe to publish the whole accepted chromosome proposal.
-   */
   for (size_t j = 0; j < p->n_marker; j++)
   {
     size_t slot =
@@ -3080,22 +2308,6 @@ static int st_phase_dataset_stage_merge(const gs_varset_type *gv,
   return ST_PHASE_STAGE_OK;
 }
 
-/**************************************************************************
- * Read-only audit of a dataset-level phasing stage
- *
- * Step 14 is a pure validation/reporting layer.  It independently rechecks
- *the internal stage invariants needed for a later commit, verifies exact
- *source freshness and the current map/workspace provenance, and summarizes
- *coverage and source-genotype categories.  It never modifies the stage,
- *gs_varset_type, or st_phase_data.
- *
- * ST_PHASE_AUDIT_OK is deliberately strong: the stage is internally sound,
- * source bytes and workspace are current, and every dataset genotype cell
- *is covered by exactly one accepted chromosome proposal.  A sound but
- *partial stage returns ST_PHASE_AUDIT_INCOMPLETE and still publishes its
- *diagnostics.
- *************************************************************************/
-
 typedef enum
 {
   ST_PHASE_AUDIT_OK = 0,
@@ -3104,7 +2316,6 @@ typedef enum
   ST_PHASE_AUDIT_INCOMPLETE = -3,
   ST_PHASE_AUDIT_CORRUPT = -4
 } st_phase_audit_status;
-
 
 typedef struct
 {
@@ -3134,44 +2345,11 @@ typedef struct
   int workspace_current;
 } st_phase_stage_audit;
 
-
 static void st_phase_stage_audit_init(st_phase_stage_audit *x)
 {
   if (NULL != x)
     memset(x, 0, sizeof(*x));
 }
-
-
-/*
- * Independently verify the stage representation while constructing summary
- * counts.  This deliberately does not call
- * st_phase_dataset_stage_structurally_valid(): Step 14 is intended to be a
- * second audit path, not merely a wrapper around the Step 13 predicate.
- */
-
-
-/*
- * Read-only audit suitable as a future pre-commit gate.
- *
- * INVALID/CORRUPT leave *out unchanged.  Once the stage itself is proven
- * internally sound, diagnostics are published even for STALE or INCOMPLETE
- * so callers can report why a staged dataset is not commit-ready.
- */
-
-/**************************************************************************
- * Dataset-stage commit gate
- *
- * Step 15 is the first write-capable phaser function.  It accepts only a
- * complete Step 13 stage for which Step 14 returns ST_PHASE_AUDIT_OK in
- *the commit function itself immediately before publication.  No
- *caller-supplied audit result is trusted.
- *
- * On success the private staged1/staged2 arrays are copied byte-for-byte
- *into gv->All1/gv->All2.  The stage itself is not modified.  Any gate
- *failure is strictly read-only.  A defensive post-copy verification is
- *followed by an exact rollback to the immutable base1/base2 snapshot if
- *publication cannot be verified.
- *************************************************************************/
 
 typedef enum
 {
@@ -3183,12 +2361,8 @@ typedef enum
   ST_PHASE_COMMIT_ROLLED_BACK = -5
 } st_phase_commit_status;
 
-
 #define st_phase_commit_test_should_fail(point) 0
 
-
-/* Map the Step 14 gate result without collapsing diagnostically distinct
- * cases. */
 static int st_phase_commit_from_audit_status(int audit_status)
 {
   switch (audit_status)
@@ -3208,38 +2382,6 @@ static int st_phase_commit_from_audit_status(int audit_status)
   }
 }
 
-
-/*
- * Commit one completely staged dataset.
- *
- * The byte count is derived before the gate.  The final operation before
- * the first production write is a fresh Step 14 audit performed here;
- * there is no separate "audited" flag that can become stale between API
- * calls.
- */
-
-/**************************************************************************
- * End-to-end binary-reference chromosome driver
- *
- * Step 16 connects the previously validated correctness layers for one
- *target individual x chromosome.  The caller supplies a marker-major
- *binary reference haplotype panel in the compact Step-01 allele coding,
- *model parameters, and first-marker ordered donor-pair weights.
- *
- * Deliberately, this first integration driver does not prune the supplied
- * reference panel.  A synthetic all-zero query haplotype is appended only
- *so the validated Step-02/03/04 PBWT/candidate machinery can construct a
- *target candidate row.  max_states is set to the complete number of
- *reference haplotypes, so every reference donor is retained at every
- *marker.  The synthetic query therefore affects only deterministic state
- *ordering / IBS diagnostics, never state membership or the statistical
- *model.  No phase initialization of the unphased target is assumed.
- *
- * This layer still does not stage or commit marker data.  Its final
- *product is the Step-12 proposed-output buffer plus Step-09/10/11
- *diagnostics.
- *************************************************************************/
-
 typedef struct
 {
   size_t individual;
@@ -3255,7 +2397,6 @@ typedef struct
   st_phase_proposed_output proposal;
 } st_phase_chromosome_result;
 
-
 static void st_phase_chromosome_result_init(st_phase_chromosome_result *r)
 {
   if (NULL != r)
@@ -3269,7 +2410,6 @@ static void st_phase_chromosome_result_init(st_phase_chromosome_result *r)
   }
 }
 
-
 static void st_phase_chromosome_result_free(st_phase_chromosome_result *r)
 {
   if (NULL == r)
@@ -3281,60 +2421,8 @@ static void st_phase_chromosome_result_free(st_phase_chromosome_result *r)
   st_phase_chromosome_result_init(r);
 }
 
-
 #define st_phase_driver_malloc malloc
 #define st_phase_driver_calloc calloc
-
-
-/*
- * Run the complete correctness chain for one target chromosome.
- *
- * reference_hap is marker-major over exactly the target chromosome:
- *   reference_hap[marker*n_ref_hap + hap]
- * and contains compact allele states 0/1.  Those states must exist in the
- * Step-01 marker dictionary: monomorphic markers therefore permit only 0.
- * Markers with zero observed allele states or more than two allele states
- * are outside this first binary-reference driver and are rejected
- * transactionally.
- *
- * initial_pair_weight is reference-identity-major, not
- * candidate-slot-major: initial_pair_weight[hap1*n_ref_hap + hap2] This
- * makes the caller prior invariant to PBWT state ordering.
- *
- * break_rate1_per_morgan and break_rate2_per_morgan remain separate,
- * exactly as in Steps 08/09.  No model default is introduced here.
- */
-
-/**************************************************************************
- * Phase-invariant bounded candidates for an unphased diploid target
- *
- * Step 17 defines a correctness-first donor score that never chooses an
- * initial phase for the target.  For one reference haplotype h and marker
- *k, consider every haplotype q that is compatible marker by marker with
- *the unordered target genotype: q may use either observed allele at a
- * heterozygous marker, the sole observed allele at a homozygous marker,
- *and any allele present in the binary marker dictionary at a completely
- *missing marker.  The phase-envelope IBS score is
- *
- *   max_q { length of the maximal exact IBS tract h==q containing k }.
- *
- * This maximum can be evaluated without enumerating q: h is compatible at
- *a marker exactly when its allele is one of the two observed alleles, or
- *the target genotype is completely missing.  Thus the score is simply the
- *length of the maximal contiguous donor/target-compatibility run
- *containing k.
- *
- * Candidate membership is the best max_states reference haplotypes under
- * larger envelope-IBS score first, then smaller donor index.  The
- *donor-index tie rule is explicit and deterministic; no phase orientation
- *enters it.
- *
- * This Step-17 implementation is O(M*R*K) in the small retained-state
- *factor (with a direct O(M*R) compatibility scan) and is the correctness
- *target for a later wildcard/PBWT acceleration.  It does not replace the
- *complete Step-16 driver state space yet and performs no HMM or genotype
- *write-back.
- *************************************************************************/
 
 typedef struct
 {
@@ -3346,14 +2434,12 @@ typedef struct
   st_phase_candidate *state;
 } st_phase_unphased_candidate_set;
 
-
 static void
 st_phase_unphased_candidate_set_init(st_phase_unphased_candidate_set *s)
 {
   if (NULL != s)
     memset(s, 0, sizeof(*s));
 }
-
 
 static void
 st_phase_unphased_candidate_set_free(st_phase_unphased_candidate_set *s)
@@ -3366,10 +2452,8 @@ st_phase_unphased_candidate_set_free(st_phase_unphased_candidate_set *s)
   st_phase_unphased_candidate_set_init(s);
 }
 
-
 #define st_phase_unphased_malloc malloc
 #define st_phase_unphased_calloc calloc
-
 
 static st_phase_candidate *
 st_phase_unphased_candidate_row(st_phase_unphased_candidate_set *s,
@@ -3378,15 +2462,12 @@ st_phase_unphased_candidate_row(st_phase_unphased_candidate_set *s,
   return s->state + marker * s->max_states;
 }
 
-
 static const st_phase_candidate *st_phase_unphased_candidate_row_const(
     const st_phase_unphased_candidate_set *s, size_t marker)
 {
   return s->state + marker * s->max_states;
 }
 
-
-/* Insert/improve one donor while preserving the Step-17 ranking. */
 static int
 st_phase_unphased_candidate_insert(st_phase_unphased_candidate_set *s,
                                    size_t marker, size_t donor,
@@ -3452,7 +2533,6 @@ st_phase_unphased_candidate_insert(st_phase_unphased_candidate_set *s,
   return 0;
 }
 
-
 static int st_phase_unphased_marker_compatible(uint8_t observed1,
                                                uint8_t observed2,
                                                uint8_t donor)
@@ -3461,7 +2541,6 @@ static int st_phase_unphased_marker_compatible(uint8_t observed1,
     return 1;
   return (donor == observed1) || (donor == observed2);
 }
-
 
 static int st_phase_unphased_candidate_input_valid(
     const uint8_t *observed1, const uint8_t *observed2,
@@ -3498,13 +2577,6 @@ static int st_phase_unphased_candidate_input_valid(
   return 1;
 }
 
-
-/*
- * Build a bounded phase-invariant donor grid for one unphased chromosome.
- * observed1/observed2 need not be ordered; swapping them cannot change the
- * result.  reference_hap is marker-major with n_ref_hap entries per
- * marker.
- */
 static int st_phase_unphased_candidate_build(
     const uint8_t *observed1, const uint8_t *observed2,
     const uint8_t *n_alleles, const uint8_t *reference_hap,
@@ -3548,7 +2620,6 @@ static int st_phase_unphased_candidate_build(
     tmp.state[z].ibs_length = 0u;
   }
 
-  /* Insert every positive phase-envelope IBS compatibility run. */
   for (size_t donor = 0u; donor < n_ref_hap; donor++)
   {
     size_t marker = 0u;
@@ -3583,8 +2654,6 @@ static int st_phase_unphased_candidate_build(
     }
   }
 
-  /* Fill score-zero ties deterministically so every marker has capacity K.
-   */
   for (size_t marker = 0u; marker < n_marker; marker++)
   {
     for (size_t donor = 0u;
@@ -3619,7 +2688,6 @@ fail:
   return -1;
 }
 
-
 static const st_phase_candidate *
 st_phase_unphased_candidate_get(const st_phase_unphased_candidate_set *s,
                                 size_t marker, size_t *count)
@@ -3637,35 +2705,6 @@ st_phase_unphased_candidate_get(const st_phase_unphased_candidate_set *s,
 
   return st_phase_unphased_candidate_row_const(s, marker);
 }
-
-/**************************************************************************
- * Bounded unphased-target chromosome driver
- *
- * Step 18 connects the Step-17 phase-envelope candidate rows to the
- *already validated ordered donor-pair HMM.  Both copying chains use the
- *same bounded donor row at each marker because Step 17 intentionally
- *scores the unordered diploid target without assigning either observed
- *allele to a homologue.
- *
- * max_states is a caller-supplied donor bound and is capped at n_ref_hap
- *by Step 17.  When max_states >= n_ref_hap the statistical state space
- *contains every supplied reference haplotype and must therefore reproduce
- *the complete Step-16 correctness driver independently of candidate
- *ordering.
- *
- * For max_states < n_ref_hap, first-marker pair weights are selected by
- *donor identity from the caller's complete n_ref_hap x n_ref_hap prior and
- *then normalized by the Step-09 HMM over the retained first-marker states.
- *At later markers, disappearance of a previous donor from a bounded row
- *uses the already validated Step-05/08 uniform-reset transition rule.  No
- *pseudo-phase or additional prior is introduced here.
- *
- * This remains a correctness implementation: Step 17 still obtains its
- * phase-envelope scores by direct O(M*R) compatibility scanning, and the
- *pair HMM is O(M*K^4) for K retained donors.  No staging, commit, or R
- *interface is performed by this driver.
- *************************************************************************/
-
 
 static int st_phase_unphased_candidate_set_valid(
     const st_phase_unphased_candidate_set *s)
@@ -3710,13 +2749,6 @@ static int st_phase_unphased_candidate_set_valid(
   return 1;
 }
 
-
-/* Cohort-only balanced bounded donor selector.  The historical
- * phase-invariant envelope ranking can fill a small K with donors carrying
- * only one allele at a heterozygous target marker.  This version preserves
- * the same compatibility run score but ranks donors separately by their
- * current allele, then merges the two classes with deterministic balance.
- */
 static int st_phase_candidate_row_insert_local(st_phase_candidate *row,
                                                size_t *n, size_t capacity,
                                                size_t donor, size_t score)
@@ -3727,6 +2759,10 @@ static int st_phase_candidate_row_insert_local(st_phase_candidate *row,
     return -1;
   x.hap = donor;
   x.ibs_length = score;
+
+  if (*n == capacity &&
+      !st_phase_candidate_better(&x, &row[capacity - 1u]))
+    return 0;
   for (pos = 0u; pos < *n; pos++)
     if (row[pos].hap == donor)
     {
@@ -3786,9 +2822,7 @@ static int st_phase_unphased_candidate_input_valid_cohort(
     {
       if (!ma)
         return 0;
-      /* Snapshot initialization uses the deterministic 0 proxy when the
-       * entire marker is missing.  It is only a PBWT/ranking placeholder.
-       */
+
       for (size_t h = 0u; h < n_ref_hap; h++)
         if (reference_hap[m * n_ref_hap + h] != 0u)
           return 0;
@@ -3813,6 +2847,7 @@ static int st_phase_unphased_candidate_build_cohort_balanced(
   st_phase_candidate *by0 = NULL, *by1 = NULL;
   size_t *n0 = NULL, *n1 = NULL;
   size_t capacity, n_slot;
+  uint8_t *donor_major = NULL;
   int status = -1;
   st_phase_unphased_candidate_set_init(&tmp);
   if ((NULL == out) || (0u == max_states) ||
@@ -3845,14 +2880,31 @@ static int st_phase_unphased_candidate_build_cohort_balanced(
     tmp.state[z].ibs_length = by0[z].ibs_length = by1[z].ibs_length = 0u;
   }
 
+  donor_major = st_phase_unphased_malloc(n_marker * n_ref_hap);
+  if (!donor_major)
+    goto cleanup;
+  for (size_t bm = 0u; bm < n_marker; )
+  {
+    size_t me = n_marker - bm < 32u ? n_marker : bm + 32u;
+    for (size_t br = 0u; br < n_ref_hap; )
+    {
+      size_t re = n_ref_hap - br < 32u ? n_ref_hap : br + 32u;
+      for (size_t r = br; r < re; r++)
+        for (size_t m = bm; m < me; m++)
+          donor_major[r * n_marker + m] = reference_hap[m * n_ref_hap + r];
+      br = re;
+    }
+    bm = me;
+  }
   for (size_t donor = 0u; donor < n_ref_hap; donor++)
   {
+    const uint8_t *donor_hap = donor_major + donor * n_marker;
     size_t marker = 0u;
     while (marker < n_marker)
     {
       if (!st_phase_unphased_marker_compatible(
               observed1[marker], observed2[marker],
-              reference_hap[marker * n_ref_hap + donor]))
+              donor_hap[marker]))
       {
         marker++;
         continue;
@@ -3863,11 +2915,11 @@ static int st_phase_unphased_candidate_build_cohort_balanced(
       while ((marker < n_marker) &&
              st_phase_unphased_marker_compatible(
                  observed1[marker], observed2[marker],
-                 reference_hap[marker * n_ref_hap + donor]));
+                 donor_hap[marker]));
       size_t len = marker - start;
       for (size_t m = start; m < marker; m++)
       {
-        uint8_t a = reference_hap[m * n_ref_hap + donor];
+        uint8_t a = donor_hap[m];
         st_phase_candidate *row =
             (0u == a) ? by0 + m * capacity : by1 + m * capacity;
         size_t *nr = (0u == a) ? n0 + m : n1 + m;
@@ -3878,11 +2930,13 @@ static int st_phase_unphased_candidate_build_cohort_balanced(
     }
   }
 
-  /* Complete each allele-specific row with deterministic zero-score
-   * donors. */
   for (size_t m = 0u; m < n_marker; m++)
     for (size_t donor = 0u; donor < n_ref_hap; donor++)
     {
+
+      if (n0[m] >= capacity &&
+          (n1[m] >= capacity || n_alleles[m] <= 1u))
+        break;
       uint8_t a = reference_hap[m * n_ref_hap + donor];
       st_phase_candidate *row =
           (0u == a) ? by0 + m * capacity : by1 + m * capacity;
@@ -3957,6 +3011,7 @@ static int st_phase_unphased_candidate_build_cohort_balanced(
   st_phase_unphased_candidate_set_init(&tmp);
   status = 0;
 cleanup:
+  free(donor_major);
   free(n0);
   free(n1);
   free(by0);
@@ -3968,14 +3023,6 @@ cleanup:
 #define st_phase_bounded_malloc malloc
 #define st_phase_bounded_calloc calloc
 
-
-/*
- * Construct the ordered K x K pair rows directly from one Step-17 bounded
- * donor grid.  The same row is used on the two copying sides.
- * target1/target2 are structural compatibility fields inherited from Step
- * 08 and are set to zero; no downstream pair-HMM calculation uses them as
- * donor identities.
- */
 static int st_phase_pair_state_build_unphased(
     const st_phase_unphased_candidate_set *candidate,
     st_phase_pair_state_set *out)
@@ -4063,41 +3110,8 @@ fail:
   return -1;
 }
 
-
-/*
- * End-to-end bounded binary-reference driver for one target chromosome.
- *
- * reference_hap is marker-major compact binary state data with n_ref_hap
- * entries per marker.  initial_pair_weight is always the complete
- * reference-identity-major R x R table, even when max_states<R.  This lets
- * a caller vary K without changing the meaning/indexing of its
- * first-marker prior.
- */
-
-/**************************************************************************
- * Factorized ordered-pair HMM transition kernel
- *
- * Step 19 preserves the exact Step-08/09 transition law but exploits its
- * special structure.  For one copying side and one previous donor a,
- *
- *   T(a,c) = base[a] + stay * I(c == retained_slot[a]),
- *
- * where base[a]=q/K for a donor retained in the current row, base[a]=1/K
- * for a donor removed by truncation, and stay=1-q only for retained
- *donors. The Cartesian pair transition therefore expands into four
- *positive terms. Forward and backward sum-product recursions use those
- *four terms, and the Viterbi max-product recursion uses two
- *one-dimensional retained/absent max transforms.  Every interval is
- *O(K^2), where K is the maximum number of donors on one side, instead of
- *the Step-09 correctness kernel's O(K^4).
- *
- * The original Step-09 correctness implementation remains untouched and is
- * retained as the independent regression oracle for this optimization.
- *************************************************************************/
-
 #define st_phase_factor_malloc malloc
 #define st_phase_factor_calloc calloc
-
 
 static void st_phase_factor_best_update(double score, size_t identity,
                                         double *best_score,
@@ -4112,9 +3126,6 @@ static void st_phase_factor_best_update(double score, size_t identity,
   }
 }
 
-
-/* Keep the best two distinct indices under
- * score-descending/index-ascending. */
 static void st_phase_factor_top2_update(double score, size_t identity,
                                         double *first_score,
                                         size_t *first_identity,
@@ -4143,14 +3154,6 @@ static void st_phase_factor_top2_update(double score, size_t identity,
   }
 }
 
-
-/*
- * Build the one-to-one retained-donor maps for one interval.  prev_to_cur
- * arrays have previous-side length; cur_to_prev arrays have current-side
- * length.  SIZE_MAX means the donor is absent on the other side of the
- * interval.  The pair rows themselves already guarantee identity
- * uniqueness.
- */
 static int st_phase_factor_interval_maps(
     const st_phase_pair_state_set *pair, size_t marker,
     size_t *prev_to_cur1, size_t *prev_to_cur2, size_t *cur_to_prev1,
@@ -4208,7 +3211,6 @@ static int st_phase_factor_interval_maps(
   return 0;
 }
 
-
 static double st_phase_factor_log_base(double q, size_t n_current,
                                        int retained)
 {
@@ -4217,19 +3219,11 @@ static double st_phase_factor_log_base(double q, size_t n_current,
   return st_phase_hmm_log_probability(q / (double)n_current);
 }
 
-
 static double st_phase_factor_log_same(double q, size_t n_current)
 {
   return st_phase_hmm_log_probability((1.0 - q) + q / (double)n_current);
 }
 
-
-/*
- * Forward transition without emissions.  log_prev is normalized log mass
- * on the previous Cartesian row.  log_mass receives one log mass per
- * current Cartesian state.  All work is O(np1*np2 + nc1*nc2 + K^2 map
- * matching).
- */
 static int st_phase_factor_forward_transition(
     const double *log_prev, size_t np1, size_t np2, size_t nc1, size_t nc2,
     const size_t *prev_to_cur1, const size_t *prev_to_cur2,
@@ -4248,27 +3242,30 @@ static int st_phase_factor_forward_transition(
       (q1 > 1.0) || (q2 < 0.0) || (q2 > 1.0))
     return -1;
 
+  const double retained_base1 = st_phase_factor_log_base(q1, nc1, 1);
+  const double absent_base1 = st_phase_factor_log_base(q1, nc1, 0);
+  const double retained_base2 = st_phase_factor_log_base(q2, nc2, 1);
+  const double absent_base2 = st_phase_factor_log_base(q2, nc2, 0);
+
   for (size_t c = 0u; c < nc1; c++)
     side1[c] = -INFINITY;
   for (size_t d = 0u; d < nc2; d++)
     side2[d] = -INFINITY;
 
-  /* base1*base2 term, constant over all current (c,d). */
   for (size_t a = 0u; a < np1; a++)
   {
     double lb1 =
-        st_phase_factor_log_base(q1, nc1, SIZE_MAX != prev_to_cur1[a]);
+        (SIZE_MAX != prev_to_cur1[a] ? retained_base1 : absent_base1);
     for (size_t b = 0u; b < np2; b++)
     {
       double lf = log_prev[a * np2 + b];
       double lb2 =
-          st_phase_factor_log_base(q2, nc2, SIZE_MAX != prev_to_cur2[b]);
+          (SIZE_MAX != prev_to_cur2[b] ? retained_base2 : absent_base2);
       if ((lf > -INFINITY) && (lb1 > -INFINITY) && (lb2 > -INFINITY))
         log_const = st_phase_hmm_logadd(log_const, lf + lb1 + lb2);
     }
   }
 
-  /* stay1*base2 term for a retained donor matching current c. */
   if (log_stay1 > -INFINITY)
     for (size_t c = 0u; c < nc1; c++)
     {
@@ -4280,7 +3277,7 @@ static int st_phase_factor_forward_transition(
       {
         double lf = log_prev[a * np2 + b];
         double lb2 =
-            st_phase_factor_log_base(q2, nc2, SIZE_MAX != prev_to_cur2[b]);
+            (SIZE_MAX != prev_to_cur2[b] ? retained_base2 : absent_base2);
         if ((lf > -INFINITY) && (lb2 > -INFINITY))
           v = st_phase_hmm_logadd(v, lf + lb2);
       }
@@ -4288,7 +3285,6 @@ static int st_phase_factor_forward_transition(
         side1[c] = v + log_stay1;
     }
 
-  /* base1*stay2 term for a retained donor matching current d. */
   if (log_stay2 > -INFINITY)
     for (size_t d = 0u; d < nc2; d++)
     {
@@ -4300,7 +3296,7 @@ static int st_phase_factor_forward_transition(
       {
         double lf = log_prev[a * np2 + b];
         double lb1 =
-            st_phase_factor_log_base(q1, nc1, SIZE_MAX != prev_to_cur1[a]);
+            (SIZE_MAX != prev_to_cur1[a] ? retained_base1 : absent_base1);
         if ((lf > -INFINITY) && (lb1 > -INFINITY))
           v = st_phase_hmm_logadd(v, lf + lb1);
       }
@@ -4309,11 +3305,13 @@ static int st_phase_factor_forward_transition(
     }
 
   for (size_t c = 0u; c < nc1; c++)
+  {
+
+    double prefix = st_phase_hmm_logadd(log_const, side1[c]);
     for (size_t d = 0u; d < nc2; d++)
     {
-      double v = log_const;
+      double v = prefix;
       size_t a = cur_to_prev1[c], b = cur_to_prev2[d];
-      v = st_phase_hmm_logadd(v, side1[c]);
       v = st_phase_hmm_logadd(v, side2[d]);
       if ((SIZE_MAX != a) && (SIZE_MAX != b) && (log_stay1 > -INFINITY) &&
           (log_stay2 > -INFINITY))
@@ -4324,16 +3322,11 @@ static int st_phase_factor_forward_transition(
       }
       log_mass[c * nc2 + d] = v;
     }
+  }
 
   return 0;
 }
 
-
-/*
- * One special max transform along the second copying side for every fixed
- * previous-side-1 slot.  stage_score[a,d] is the best score after applying
- * side-2 transition into current d; stage_prev_b stores its predecessor b.
- */
 static int st_phase_factor_viterbi_side2(
     const double *vit_prev, size_t np1, size_t np2, size_t nc2,
     const size_t *prev_to_cur2, const size_t *cur_to_prev2, double q2,
@@ -4394,9 +3387,6 @@ static int st_phase_factor_viterbi_side2(
   return 0;
 }
 
-
-/* Complete the max transform along side 1 and write flat predecessor
- * slots. */
 static int st_phase_factor_viterbi_side1(
     const double *stage_score, const size_t *stage_prev_b, size_t np1,
     size_t np2, size_t nc1, size_t nc2, const size_t *prev_to_cur1,
@@ -4485,14 +3475,6 @@ static int st_phase_factor_viterbi_side1(
   return 0;
 }
 
-
-/*
- * Backward transition.  log_next is the normalized backward message on the
- * current row.  Emission belongs to the current marker.  The same
- * four-term expansion as the forward transform is evaluated from current
- * total/row/ column log sums, giving O(K^2) work for the whole previous
- * pair row.
- */
 static int st_phase_factor_backward_transition(
     const double *log_next, const double *emission_current, size_t np1,
     size_t np2, size_t nc1, size_t nc2, const size_t *prev_to_cur1,
@@ -4509,6 +3491,11 @@ static int st_phase_factor_backward_transition(
       (NULL == log_previous) || (0u == np1) || (0u == np2) ||
       (0u == nc1) || (0u == nc2))
     return -1;
+
+  const double retained_base1 = st_phase_factor_log_base(q1, nc1, 1);
+  const double absent_base1 = st_phase_factor_log_base(q1, nc1, 0);
+  const double retained_base2 = st_phase_factor_log_base(q2, nc2, 1);
+  const double absent_base2 = st_phase_factor_log_base(q2, nc2, 0);
 
   for (size_t c = 0u; c < nc1; c++)
     row_log[c] = -INFINITY;
@@ -4532,22 +3519,31 @@ static int st_phase_factor_backward_transition(
   for (size_t a = 0u; a < np1; a++)
   {
     int retained1 = (SIZE_MAX != prev_to_cur1[a]);
-    double lb1 = st_phase_factor_log_base(q1, nc1, retained1);
+    double lb1 = (retained1 ? retained_base1 : absent_base1);
     size_t c = prev_to_cur1[a];
+    double prefix[2];
+    int prefix_ready[2] = {0, 0};
 
     for (size_t b = 0u; b < np2; b++)
     {
       int retained2 = (SIZE_MAX != prev_to_cur2[b]);
-      double lb2 = st_phase_factor_log_base(q2, nc2, retained2);
+      double lb2 = (retained2 ? retained_base2 : absent_base2);
       size_t d = prev_to_cur2[b];
       double v = -INFINITY;
 
-      if ((total > -INFINITY) && (lb1 > -INFINITY) && (lb2 > -INFINITY))
-        v = lb1 + lb2 + total;
+      if (!prefix_ready[retained2])
+      {
+        if ((total > -INFINITY) && (lb1 > -INFINITY) && (lb2 > -INFINITY))
+          v = lb1 + lb2 + total;
 
-      if (retained1 && (log_stay1 > -INFINITY) &&
-          (row_log[c] > -INFINITY) && (lb2 > -INFINITY))
-        v = st_phase_hmm_logadd(v, log_stay1 + lb2 + row_log[c]);
+        if (retained1 && (log_stay1 > -INFINITY) &&
+            (row_log[c] > -INFINITY) && (lb2 > -INFINITY))
+          v = st_phase_hmm_logadd(v, log_stay1 + lb2 + row_log[c]);
+        prefix[retained2] = v;
+        prefix_ready[retained2] = 1;
+      }
+      else
+        v = prefix[retained2];
 
       if (retained2 && (log_stay2 > -INFINITY) &&
           (col_log[d] > -INFINITY) && (lb1 > -INFINITY))
@@ -4565,13 +3561,6 @@ static int st_phase_factor_backward_transition(
   return 0;
 }
 
-
-/*
- * Step-19 factorized equivalent of the Step-09 correctness HMM.
- * Input/output semantics are intentionally identical.  The old
- * implementation remains in the source unchanged and is used to prove
- * equivalence in the Step-19 tests.
- */
 static int st_phase_pair_hmm_forward_backward_viterbi_factorized(
     const st_phase_pair_state_set *pair, const double *initial_weight,
     const double *emission, const double *q1, const double *q2,
@@ -4713,7 +3702,6 @@ static int st_phase_pair_hmm_forward_backward_viterbi_factorized(
     tmp.viterbi_hap2[marker] = SIZE_MAX;
   }
 
-  /* Marker 0 is intentionally identical to Step 09. */
   {
     double log_scaled_sum = log(scaled_initial_sum);
     double log_norm = -INFINITY, vit_norm = -INFINITY;
@@ -5028,9 +4016,6 @@ fail:
   return -1;
 }
 
-
-/* Fast max-product-only factorized pair HMM.  Used by cohort burn-in; it
- * keeps no sum-product forward/backward/posterior matrices. */
 static int st_phase_pair_hmm_viterbi_factorized_path(
     const st_phase_pair_state_set *pair, const double *initial_weight,
     const double *emission, const double *q1, const double *q2,
@@ -5229,53 +4214,11 @@ cleanup:
   return status;
 }
 
-/**************************************************************************
- * Optimized bounded unphased-target chromosome driver
- *
- * Step 20 is intentionally a sibling of the Step-18 correctness driver
- *rather than a replacement.  It constructs exactly the same Step-17
- *bounded donor rows, ordered K x K pair states, emissions, interval break
- *probabilities, first-marker identity prior, orientation posterior, hard
- *calls, and proposed output.  Its only statistical/computational
- *difference is that the pair HMM recursion is delegated to the
- *independently validated Step-19 factorized O(M*K^2) kernel instead of the
- *Step-09 O(M*K^4) correctness kernel.
- *
- * Keeping both end-to-end drivers in the development block provides a
- *direct regression oracle for every future change.  This function still
- *performs no staging, commit, R interface, or mutation of SelectionTools
- *genotype data.
- *************************************************************************/
-
-
-/**************************************************************************
- * Dataset-level optimized phasing orchestration
- *
- * Step 21 runs the validated Step-20 optimized bounded chromosome driver
- *over an explicit caller-supplied set of (individual, chromosome) requests
- *and transactionally merges every resulting Step-12 proposal into one
- *private Step-13 dataset stage.  The completed temporary stage is audited
- *with the read-only Step-14 audit before it can replace the caller's
- *output object.
- *
- * A partial request set is valid and returns ST_PHASE_AUDIT_INCOMPLETE in
- *the result.  Complete individual x chromosome coverage must return
- * ST_PHASE_AUDIT_OK.  This layer never calls the Step-15 commit function
- *and never modifies gv->All1/gv->All2.
- *
- * reference_hap is marker-major in complete st_phase_data marker order,
- *with n_ref_hap compact binary states per marker.  Each chromosome driver
- *receives the corresponding contiguous chromosome slice.
- *initial_pair_weight keeps the complete reference-identity-major R x R
- *indexing used by Steps 18/20.
- *************************************************************************/
-
 typedef struct
 {
   size_t individual;
   size_t chromosome;
 } st_phase_dataset_request;
-
 
 typedef enum
 {
@@ -5285,7 +4228,6 @@ typedef enum
   ST_PHASE_DATASET_RUN_MERGE_FAILED = -3,
   ST_PHASE_DATASET_RUN_AUDIT_FAILED = -4
 } st_phase_dataset_run_status;
-
 
 typedef struct
 {
@@ -5298,9 +4240,7 @@ typedef struct
   st_phase_stage_audit audit;
 } st_phase_dataset_run_result;
 
-
 #define st_phase_dataset_run_calloc calloc
-
 
 static int st_phase_dataset_requests_valid(
     const st_phase_data *d, const st_phase_dataset_request *request,
@@ -5348,49 +4288,6 @@ cleanup:
   return valid;
 }
 
-
-/**************************************************************************
- * Explicit commit of a completed Step-21 dataset result
- *
- * Step 22 connects the read-only Step-21 dataset orchestration result to
- *the already validated Step-15 commit gate.  It does not duplicate
- *publication: after validating Step-21 bookkeeping and performing a fresh
- *Step-14 audit, it delegates the actual write to
- *st_phase_dataset_stage_commit(), which in turn performs its own second
- *fresh audit immediately before publication.
- *
- * A successful complete Step-21 result must remain internally unchanged
- *and current.  Partial results are explicitly non-committable.  Stale
- *source/map state, corrupt staging state, or altered result metadata never
- *reach a write.
- *************************************************************************/
-
-
-/*
- * Explicit Step-21-result commit.
- *
- * The first audit validates the result against the current dataset and
- * against its stored Step-21 diagnostics.  If and only if it is
- * complete/current, the final call is Step 15, whose own immediate audit
- * remains the authoritative write gate and whose rollback behavior is
- * reused unchanged.
- */
-
-/**************************************************************************
- * Public-facing C dataset phasing pipeline
- *
- * Step 23 provides one R-independent C entry point around the validated
- * dataset pipeline.  It owns the temporary Step-01 normalized workspace
- *and Step-21 staging result, publishes only scalar diagnostics, and
- *optionally invokes the explicit Step-22 commit bridge when
- *commit_requested is exactly one.  A staging-only call (commit_requested
- *== 0) never writes All1/All2.
- *
- * The function is intentionally non-static: the next layer can wrap this
- *one stable C API without exposing the internal staging/HMM
- *implementation.
- *************************************************************************/
-
 typedef enum
 {
   ST_PHASE_PIPELINE_OK = 0,
@@ -5399,7 +4296,6 @@ typedef enum
   ST_PHASE_PIPELINE_RUN_FAILED = -3,
   ST_PHASE_PIPELINE_COMMIT_FAILED = -4
 } st_phase_pipeline_status;
-
 
 typedef struct
 {
@@ -5442,7 +4338,6 @@ typedef struct
   int audit_workspace_current;
 } st_phase_pipeline_diagnostics;
 
-
 static void
 st_phase_pipeline_diagnostics_init(st_phase_pipeline_diagnostics *x)
 {
@@ -5456,9 +4351,6 @@ st_phase_pipeline_diagnostics_init(st_phase_pipeline_diagnostics *x)
   }
 }
 
-
-/* Count biological genotype cells whose staged allele order differs in
- * bytes. */
 static size_t st_phase_dataset_stage_changed_genotypes(
     const st_phase_dataset_stage *stage)
 {
@@ -5477,13 +4369,6 @@ static size_t st_phase_dataset_stage_changed_genotypes(
   return changed;
 }
 
-
-/*
- * Validate parameters that do not require the normalized Step-01
- * workspace. Dataset/map validity remains the responsibility of
- * st_phase_build_data(), and request chromosome bounds/duplicates remain
- * centralized in Step 21.
- */
 static int st_phase_pipeline_parameters_valid(
     const gs_varset_type *gv, const st_phase_dataset_request *request,
     size_t n_request, const uint8_t *reference_hap,
@@ -5531,53 +4416,8 @@ static int st_phase_pipeline_parameters_valid(
   return prior_sum > 0.0;
 }
 
-
-/*
- * Stable C entry point intended for the later R wrapper.
- *
- * Diagnostics are always replaced when a non-NULL diagnostics pointer is
- * supplied, including parameter/data/run/commit failures.  They own no
- * memory. On ST_PHASE_PIPELINE_OK, commit_requested==0 means a successful
- * staging-only run; commit_requested==1 means Step 22 returned
- * ST_PHASE_COMMIT_OK.
- */
-
-
-/**************************************************************************
- * Cohort phasing Step 01: relative phase posterior between heterozygotes
- *
- * Reference-free cohort phasing cannot use the arbitrary chromosome-wide
- * labels "haplotype 1" and "haplotype 2" as its confidence quantity.  The
- * label-invariant quantity needed by later burn-in/progressive iterations
- *is the posterior probability that two consecutive heterozygous markers
- *have the same relative orientation versus a switch in orientation.
- *
- * For consecutive heterozygous markers L and R, Step 01 computes the four
- * endpoint-orientation posterior masses
- *
- *   P(12 at L, 12 at R | all data), P(12 at L, 21 at R | all data),
- *   P(21 at L, 12 at R | all data), P(21 at L, 21 at R | all data).
- *
- * The reported label-invariant quantities are
- *
- *   same   = P(12,12) + P(21,21)
- *   switch = P(12,21) + P(21,12).
- *
- * "Consecutive heterozygous" means consecutive in the heterozygote list;
- * any number of homozygous or missing markers may lie between L and R.
- *
- * This correctness implementation deliberately recomputes normalized
- * log-forward and log-backward messages from the original HMM inputs
- *rather than using the exposed linear-space messages.  Therefore a state
- *that is mathematically relevant but underflows in a convenience
- *probability array is not silently lost.  The direct pair-transition
- *kernel is used here; factorization/optimization is deferred until the
- *quantity itself has been independently validated.
- *************************************************************************/
-
 #define st_phase_relative_malloc malloc
 #define st_phase_relative_calloc calloc
-
 
 typedef struct
 {
@@ -5588,27 +4428,6 @@ typedef struct
   double *switch_probability;
   int possible;
 } st_phase_relative_orientation_result;
-
-
-/*
- * Recompute normalized log-forward/log-backward messages under the exact
- * Step-09 pair-transition law.  The two destination arrays have
- * pair->n_slot entries.  Unused row slots are -INFINITY.  possible is zero
- * only for a mathematically valid zero-likelihood observation sequence.
- */
-
-
-/*
- * Compute same/switch support for every pair of consecutive heterozygous
- * markers.  The destination is replaced only after complete validation and
- * successful computation.  For a zero-likelihood HMM the marker links are
- * still returned but both supports are zero and possible is zero.
- */
-
-
-/**************************************************************************
- * R interface for chromosome-wide statistical phasing
- *************************************************************************/
 
 typedef struct
 {
@@ -5695,7 +4514,6 @@ static int st_phase_r_matrix_dims(SEXP x, size_t *nr, size_t *nc)
   *nc = (size_t)INTEGER(dim)[1];
   return 1;
 }
-
 
 static int st_phase_r_build_prior(SEXP prior, size_t R, double **out)
 {
@@ -6123,33 +4941,6 @@ static SEXP st_phase_r_diagnostics(const st_phase_pipeline_diagnostics *d)
   return ans;
 }
 
-
-/************************************************************************48
- * Reference-free cohort phasing -- Cohort Step 02
- *
- * PBWT/prefix-based initial cohort phase for one biallelic chromosome.
- *
- * The input is an unordered diploid genotype matrix in marker-major order.
- * The routine never interprets input geno1/geno2 order as gametic phase.
- * At marker k, the PBWT contains only provisional haplotype prefixes
- *through k-1.  For a heterozygous target, each of its two prefix
- *haplotypes is scored against the closest PBWT prefix from another
- *individual whose unordered current genotype contains the candidate
- *allele.  The two possible 0/1 assignments are compared synchronously; no
- *individual's current-marker provisional phase is used while another
- *individual's phase is chosen.
- *
- * Exact score ties use the canonical chromosome-label convention 0 on the
- * first provisional haplotype and 1 on the second.  This fixes only the
- * biologically irrelevant global homologue label.  Completely missing
- * genotypes receive a provisional homozygous major-allele proxy (0 on a
- *tie) for initialization/PBWT purposes; the proxy is not an
- *observed/imputed call.
- *
- * This is an initialization layer only.  It does not modify SelectionTools
- * genotype storage and is not yet used by st.phase().
- *************************************************************************/
-
 typedef struct
 {
   size_t n_ind;
@@ -6159,16 +4950,14 @@ typedef struct
   size_t n_orientation_informative;
   size_t n_orientation_tie;
   size_t n_missing_proxy;
-  uint8_t *hap; /* marker-major: marker * (2*n_ind) + hap */
+  uint8_t *hap;
 } st_phase_cohort_initial;
-
 
 static void st_phase_cohort_initial_init(st_phase_cohort_initial *x)
 {
   if (NULL != x)
     memset(x, 0, sizeof(*x));
 }
-
 
 static void st_phase_cohort_initial_free(st_phase_cohort_initial *x)
 {
@@ -6178,9 +4967,7 @@ static void st_phase_cohort_initial_free(st_phase_cohort_initial *x)
   st_phase_cohort_initial_init(x);
 }
 
-
 #define st_phase_cohort_malloc malloc
-
 
 static int st_phase_cohort_genotype_valid(uint8_t a, uint8_t b)
 {
@@ -6189,7 +4976,6 @@ static int st_phase_cohort_genotype_valid(uint8_t a, uint8_t b)
             (ST_PHASE_STATE_MISSING == b));
   return ((a <= 1u) && (b <= 1u));
 }
-
 
 static int st_phase_cohort_genotype_contains(uint8_t a, uint8_t b,
                                              uint8_t allele)
@@ -6200,17 +4986,6 @@ static int st_phase_cohort_genotype_contains(uint8_t a, uint8_t b,
   return ((a == allele) || (b == allele));
 }
 
-
-/*
- * For one candidate allele at the current marker, compute for every PBWT
- * haplotype h the longest exact suffix match of its already phased prefix
- * to an eligible prefix carried by another individual.  Eligibility uses
- * only the donor individual's unordered current genotype.  The nearest
- * eligible PBWT prefix on either side is optimal; because only one other
- * haplotype can belong to the target individual, retaining the two nearest
- * eligible prefixes on each side is sufficient for the leave-self-out
- * rule.
- */
 static int st_phase_cohort_pbwt_prefix_support(
     const st_phase_pbwt *p, const uint8_t *g1, const uint8_t *g2,
     size_t n_ind, uint8_t allele, size_t *best)
@@ -6228,7 +5003,6 @@ static int st_phase_cohort_pbwt_prefix_support(
   for (size_t h = 0; h < H; h++)
     best[h] = 0u;
 
-  /* Nearest eligible prefix on the left. */
   for (size_t pos = 0; pos < H; pos++)
   {
     size_t h = p->order[pos];
@@ -6276,7 +5050,6 @@ static int st_phase_cohort_pbwt_prefix_support(
     }
   }
 
-  /* Nearest eligible prefix on the right. */
   last1 = SIZE_MAX;
   last2 = SIZE_MAX;
   maxd1 = 0u;
@@ -6335,7 +5108,6 @@ static int st_phase_cohort_pbwt_prefix_support(
   return 0;
 }
 
-
 static uint8_t st_phase_cohort_missing_proxy(const uint8_t *g1,
                                              const uint8_t *g2,
                                              size_t n_ind)
@@ -6353,13 +5125,6 @@ static uint8_t st_phase_cohort_missing_proxy(const uint8_t *g1,
   return (count1 > count0) ? 1u : 0u;
 }
 
-
-/*
- * Initialize one biallelic chromosome from unordered diploid genotypes.
- * geno1/geno2 may contain 0/1 in either order.  Partial missing genotypes
- * and states other than 0,1,255 are rejected before the destination is
- * changed.
- */
 static int st_phase_cohort_initialize_binary(const uint8_t *geno1,
                                              const uint8_t *geno2,
                                              size_t n_marker, size_t n_ind,
@@ -6479,32 +5244,12 @@ fail:
   return -1;
 }
 
-/************************************************************************48
- * Reference-free cohort phasing -- Cohort Step 03
- *
- * Dataset-level provisional cohort haplotype snapshot.
- *
- * This layer applies the Cohort-Step-02 initializer independently to every
- * chromosome in the normalized Step-01 marker workspace.  A new PBWT is
- * therefore created at each chromosome boundary.  The provisional binary
- * haplotypes are retained in linkage-map marker order, while observed
- *missing genotypes are retained in a separate mask.  Consequently a 0/1
- *proxy used solely to keep the initialization PBWT complete at an
- *observed-missing genotype cannot be confused with observed or imputed
- *biological data.
- *
- * The snapshot is an initialization object only.  It does not modify
- *marker data, does not impute missing genotypes, and is not yet consumed
- *by an iterative cohort HMM.
- *************************************************************************/
-
 typedef struct
 {
   gs_UNSIGNED source_marker;
   int chrom_label;
   double pos_cm;
 } st_phase_cohort_snapshot_marker;
-
 
 typedef struct
 {
@@ -6516,7 +5261,6 @@ typedef struct
   size_t n_orientation_tie;
   size_t n_missing_proxy;
 } st_phase_cohort_snapshot_chrom;
-
 
 typedef struct
 {
@@ -6530,24 +5274,19 @@ typedef struct
   size_t n_orientation_tie;
   size_t n_missing_proxy;
 
-  /* marker-major: marker * (2*n_ind) + haplotype */
   uint8_t *hap;
 
-  /* marker-major: marker * n_ind + individual; 1 iff observed genotype
-   * missing */
   uint8_t *observed_missing;
 
   st_phase_cohort_snapshot_marker *marker;
   st_phase_cohort_snapshot_chrom *chrom;
 } st_phase_cohort_snapshot;
 
-
 static void st_phase_cohort_snapshot_init(st_phase_cohort_snapshot *s)
 {
   if (NULL != s)
     memset(s, 0, sizeof(*s));
 }
-
 
 static void st_phase_cohort_snapshot_free(st_phase_cohort_snapshot *s)
 {
@@ -6561,13 +5300,6 @@ static void st_phase_cohort_snapshot_free(st_phase_cohort_snapshot *s)
   st_phase_cohort_snapshot_init(s);
 }
 
-
-/*
- * Structural validation of a normalized binary cohort workspace before the
- * snapshot is constructed.  This is intentionally stricter than the
- * generic reference-based workspace: cohort initialization is currently
- * biallelic.
- */
 static int st_phase_cohort_snapshot_source_valid(const st_phase_data *d)
 {
   size_t expected_start = 0u;
@@ -6625,14 +5357,6 @@ static int st_phase_cohort_snapshot_source_valid(const st_phase_data *d)
   return 1;
 }
 
-
-/*
- * Validate a complete provisional snapshot against its immutable
- * normalized genotype workspace.  Missing observations are checked through
- * the separate mask; their provisional PBWT alleles are required only to
- * be binary.  For every non-missing observation, the two provisional
- * haplotypes must preserve the unordered observed genotype exactly.
- */
 static int
 st_phase_cohort_snapshot_valid(const st_phase_data *d,
                                const st_phase_cohort_snapshot *s)
@@ -6738,14 +5462,6 @@ st_phase_cohort_snapshot_valid(const st_phase_data *d,
   return 1;
 }
 
-
-/*
- * Build one complete provisional cohort snapshot.  Each chromosome is
- * passed to Cohort Step 02 independently; therefore its PBWT starts empty
- * and no prefix information can cross a chromosome boundary.  The
- * destination is changed only after the full snapshot has passed
- * structural validation.
- */
 static int st_phase_cohort_snapshot_build(const st_phase_data *d,
                                           st_phase_cohort_snapshot *out)
 {
@@ -6847,44 +5563,7 @@ fail:
   return -1;
 }
 
-/************************************************************************48
- * Reference-free cohort phasing -- Cohort Step 04
- *
- * One synchronous leave-one-individual-out HMM rephasing pass against a
- * frozen Cohort-Step-03 snapshot.
- *
- * Every target chromosome is phased against provisional haplotypes from
- *other individuals only.  The frozen snapshot is never changed while
- *targets are processed; all updated relative phase is written into a
- *separate snapshot that is published only after the complete pass
- *validates successfully.
- *
- * Cohort Step 01 same/switch posteriors, rather than absolute 12/21
- *labels, drive the update.  The first heterozygote on each target
- *chromosome retains its frozen global homologue label.  Each following
- *heterozygote is assigned from the posterior relation to the preceding
- *heterozygote.  Exact numerical ties retain the frozen relative relation.
- *No relation is fixed/scaffolded in this step; this is one burn-in-style
- *provisional update only.
- *
- * Missing-data rule in this correctness step:
- *   - a missing TARGET genotype is handled neutrally by the existing HMM
- *and its provisional PBWT proxy is retained in the output snapshot;
- *   - a DONOR individual is used for a target chromosome only if that
- *donor has no observed-missing genotype anywhere on that chromosome. This
- *deliberately prevents a Cohort-Step-02 missing proxy from being used as
- *if it were an observed donor allele.  Missing-aware donor states are a
- * later extension.
- *
- * Donor haplotypes are lexicographically sorted by their complete
- *chromosome sequence before bounded candidate selection.  Therefore
- *donor-index tie breaking in Step 17 cannot depend on the input individual
- *order.  Identical haplotypes are statistically indistinguishable under
- *the uniform pair prior.
- *************************************************************************/
-
 #define st_phase_cohort_rephase_malloc malloc
-
 
 typedef struct
 {
@@ -6894,7 +5573,6 @@ typedef struct
   size_t n_hap;
   size_t hap_index;
 } st_phase_cohort_reference_descriptor;
-
 
 static int st_phase_cohort_reference_descriptor_cmp(const void *va,
                                                     const void *vb)
@@ -6923,16 +5601,6 @@ static int st_phase_cohort_reference_descriptor_cmp(const void *va,
   return 0;
 }
 
-
-/*
- * Build one leave-one-individual-out binary reference panel from the
- * frozen snapshot.  Every non-target individual contributes both
- * provisional haplotypes.  Originally missing donor genotypes remain
- * represented only by the snapshot proxy during this iterative phasing
- * stage; the observed-missing mask is retained separately and no proxy is
- * committed as biological data. The resulting panel is marker-major and
- * lexicographically sorted.
- */
 static int st_phase_cohort_build_loo_reference(
     const st_phase_cohort_snapshot *frozen, size_t target,
     size_t chromosome, uint8_t **reference_out, size_t *n_ref_out)
@@ -6956,11 +5624,6 @@ static int st_phase_cohort_build_loo_reference(
   if ((0u == M) || (H != 2u * frozen->n_ind))
     return -1;
 
-  /* Imputation uses only donor individuals whose biological genotype was
-   * observed at every marker on this chromosome.  This deliberately
-   * excludes initialization/iteration proxies for originally missing donor
-   * genotypes from the ordinary Step-0 reference HMM and its
-   * missing-genotype decoder. */
   for (size_t i = 0u; i < frozen->n_ind; i++)
     if (i != target)
     {
@@ -7044,17 +5707,6 @@ typedef struct
   st_phase_relative_orientation_result relative;
 } st_phase_cohort_relative_chromosome_result;
 
-
-/*
- * Cohort-specific one-chromosome correctness driver.  It reuses the
- * validated Step-17 candidate set, Step-18 pair-state construction,
- * Step-19 factorized pair HMM, and Cohort-Step-01 relative posterior.  The
- * initial ordered-pair prior is uniform, which is appropriate because
- * absolute homologue labels are deliberately not identified in a
- * reference-free cohort pass.
- */
-
-
 typedef struct
 {
   st_phase_cohort_snapshot snapshot;
@@ -7069,7 +5721,6 @@ typedef struct
   size_t n_changed_relative_link;
   size_t n_changed_heterozygous_marker;
 } st_phase_cohort_rephase_once_result;
-
 
 static int
 st_phase_cohort_snapshot_clone(const st_phase_cohort_snapshot *src,
@@ -7127,7 +5778,6 @@ fail:
   return -1;
 }
 
-
 static int st_phase_cohort_relative_relation_from_snapshot(
     const st_phase_data *d, const st_phase_cohort_snapshot *s,
     size_t individual, size_t left, size_t right, int *same_out)
@@ -7161,64 +5811,8 @@ static int st_phase_cohort_relative_relation_from_snapshot(
   return 0;
 }
 
-
-/*
- * Apply one complete synchronous cohort pass.  frozen is immutable.  A
- * target chromosome with no complete leave-one-out donor is counted
- * unavailable and copied unchanged.  A mathematically impossible HMM is
- * counted impossible and likewise copied unchanged.  Every possible
- * chromosome uses the relative posterior MAP relation at each consecutive
- * heterozygote link; numerical ties within a tight roundoff band retain
- * the frozen relation.
- */
-
-/**************************************************************************
- * Cohort phasing Step 05: factorized same/switch posterior
- *
- * Cohort Step 01 deliberately used the direct O(K^4) ordered-pair
- *transition kernel to establish the label-invariant same/switch quantity
- *independently. Step 05 keeps that implementation unchanged as the
- *correctness oracle and adds a sibling implementation whose
- *forward/backward messages and the two orientation-split bridge recursions
- *use the validated Step-19 Cartesian transition factorization. Consecutive
- *heterozygote gaps are disjoint, so the complete set of relative links is
- *evaluated in O(M*K^2) time and O(M*K^2) log-message storage.
- *************************************************************************/
-
 #define st_phase_relative_factor_malloc malloc
 #define st_phase_relative_factor_calloc calloc
-
-
-/*
- * Factorized equivalent of Cohort-Step-01
- * st_phase_relative_log_messages(). The returned rows use exactly the same
- * per-marker normalization convention.
- */
-
-
-/*
- * O(M*K^2) sibling of Cohort-Step-01
- * st_phase_relative_orientation_posterior().  The direct implementation is
- * intentionally retained unchanged as the exhaustive correctness oracle.
- */
-
-
-/* Step-04 chromosome driver with only the relative-posterior kernel
- * replaced. */
-
-
-/*
- * Optimized sibling of Cohort Step 04.  Step 04 remains unchanged as the
- * end-to-end oracle; the only intended difference is the same/switch
- * bridge.
- */
-
-/* ------------------------------------------------------------------------
- */
-/* Reference-free cohort phasing: Cohort Step 06 */
-/* Repeated synchronous burn-in iterations with explicit convergence. */
-/* ------------------------------------------------------------------------
- */
 
 typedef struct
 {
@@ -7236,7 +5830,6 @@ typedef struct
   double change_fraction;
 } st_phase_cohort_burnin_iteration;
 
-
 typedef struct
 {
   st_phase_cohort_snapshot snapshot;
@@ -7248,29 +5841,7 @@ typedef struct
   st_phase_cohort_burnin_iteration *iteration;
 } st_phase_cohort_burnin_result;
 
-
-/* Step-06-owned allocation injection.  Lower-layer allocators retain their
- * own independent test hooks and are tested separately. */
 #define st_phase_cohort_burnin_malloc malloc
-
-
-/*
- * Repeated synchronous burn-in using the optimized Cohort-Step-05 pass.
- *
- * Every iteration reads one immutable snapshot and publishes its result
- * only after the complete leave-one-individual-out pass has succeeded.  No
- * phase relationship is fixed/scaffolded in this step: all heterozygous
- * relations remain free to change in every later burn-in iteration.
- *
- * Early convergence is explicit and caller controlled.  Once
- * min_iterations have completed, stop when
- *
- *   n_changed_relative_link / n_relative_link <= convergence_fraction.
- *
- * With no evaluable relative links the fraction is defined as zero.  This
- * allows a homozygous/unavailable cohort to terminate after min_iterations
- * without pretending that any phase evidence was observed.
- */
 
 typedef struct
 {
@@ -7297,14 +5868,6 @@ static void st_phase_cohort_viterbi_chromosome_result_free(
   st_phase_cohort_viterbi_chromosome_result_init(r);
 }
 
-
-/* ------------------------------------------------------------------------
- */
-/* Reference-free cohort phasing: Cohort Step 07 */
-/* Persistent fixed/unfixed relative-phase scaffold. */
-/* ------------------------------------------------------------------------
- */
-
 #define ST_PHASE_COHORT_SCAFFOLD_FREE ((uint8_t)0u)
 #define ST_PHASE_COHORT_SCAFFOLD_FIXED_SAME ((uint8_t)1u)
 #define ST_PHASE_COHORT_SCAFFOLD_FIXED_SWITCH ((uint8_t)2u)
@@ -7316,14 +5879,10 @@ typedef struct
   size_t n_chrom;
   size_t n_fixed_same;
   size_t n_fixed_switch;
-  /* marker-major: marker * n_ind + individual.  A nonzero entry is legal
-   * only at the right endpoint of a consecutive observed-heterozygote
-   * link. */
+
   uint8_t *relation;
 } st_phase_cohort_scaffold;
 
-
-/* Step-07-owned allocation hook: scaffold storage only. */
 #define st_phase_cohort_scaffold_malloc malloc
 
 static int st_phase_cohort_observed_heterozygous(const st_phase_data *d,
@@ -7338,15 +5897,6 @@ static int st_phase_cohort_observed_heterozygous(const st_phase_data *d,
   return (ST_PHASE_STATE_MISSING != a) && (ST_PHASE_STATE_MISSING != b) &&
          (a < b);
 }
-
-/* Find the preceding observed heterozygote on the same chromosome. */
-
-
-/* Fix exactly the relation currently present in snapshot.  This
- * deliberately does not accept an arbitrary SAME/SWITCH request: Step 07
- * validates only the persistence mechanism, not a policy for selecting new
- * fixed links. */
-
 
 typedef struct
 {
@@ -7368,42 +5918,6 @@ typedef struct
   size_t n_final_changed_heterozygous_marker;
 } st_phase_cohort_rephase_scaffold_result;
 
-
-/* Reconstruct all relative links left-to-right.  Free links retain the
- * unconstrained Step-05 relation; fixed links use the scaffold relation.
- */
-
-/* Scaffold-constrained sibling of the optimized Step-05 one-pass driver.
- * Step 05 remains unchanged as the all-free oracle. */
-
-/* ------------------------------------------------------------------------
- */
-/* Reference-free cohort phasing: Cohort Step 08 */
-/* Confidence-based selection of new fixed relative-phase scaffold links.
- */
-/* ------------------------------------------------------------------------
- */
-
-/*
- * Step 08 deliberately does not run repeated progressive iterations.  It
- * performs one auditable operation only: given
- *
- *   (1) a frozen snapshot used as the HMM donor panel,
- *   (2) the scaffold that constrained that pass, and
- *   (3) the resulting scaffold-compatible phased snapshot,
- *
- * recompute the factorized same/switch posterior for every leave-one-out
- * target chromosome and fix currently FREE links whose winning posterior
- * is at least confidence_threshold.
- *
- * A link is never fixed from a numerical tie.  The same tie tolerance used
- * by the Cohort-Step-04/05 update is applied before the confidence
- * threshold, so threshold == 0.5 cannot turn 0.5 versus
- * 0.49999999999999994 roundoff into a fixed phase relation.  Existing
- * fixed links are immutable and are copied unchanged into the output
- * scaffold.
- */
-
 typedef struct
 {
   st_phase_cohort_scaffold scaffold;
@@ -7421,25 +5935,7 @@ typedef struct
   size_t n_free_after;
 } st_phase_cohort_fix_confident_result;
 
-
-/* Step-08-owned allocation hook: only the cloned output scaffold. */
 #define st_phase_cohort_fix_malloc malloc
-
-
-/*
- * Select confident free links using the optimized Cohort-Step-05
- * posterior. The HMM evidence is always recomputed from frozen.  phased is
- * used only to verify that the free-link phase actually published by the
- * preceding Step-07 constrained pass agrees with the winning posterior
- * before that link is made persistent.
- */
-
-/* ------------------------------------------------------------------------
- */
-/* Reference-free cohort phasing: Cohort Step 09 */
-/* Repeated progressive scaffold-constrained iterations. */
-/* ------------------------------------------------------------------------
- */
 
 typedef struct
 {
@@ -7487,47 +5983,7 @@ typedef struct
   st_phase_cohort_progressive_iteration *iteration;
 } st_phase_cohort_progressive_result;
 
-
-/* Step-09-owned allocation hook: only the iteration-diagnostic vector. */
 #define st_phase_cohort_progressive_malloc malloc
-
-
-/*
- * Repeated progressive cohort phasing.  Each iteration is a two-stage
- * transaction over one immutable snapshot/scaffold pair:
- *
- *   (1) Cohort Step 07: constrained synchronous HMM rephasing;
- *   (2) Cohort Step 08: confidence-based enlargement of the scaffold.
- *
- * Only after both stages have succeeded are the new snapshot and scaffold
- * made the frozen inputs for the next iteration.  Newly fixed links are
- * never silently overwritten in later iterations because Step 07 treats
- * them as hard relative-phase constraints and Step 08 ignores already
- * fixed links.
- *
- * After min_iterations, stop when all valid links are fixed, or when no
- * new links were fixed in the current iteration and the phase-change
- * fraction is
- * <= convergence_fraction.  The latter rule intentionally requires
- * scaffold growth to have ceased before convergence is declared.
- */
-
-/************************************************************************48
- * Reference-free cohort phasing -- Cohort Step 10
- *
- * Private end-to-end cohort driver:
- *
- *   Cohort Step 03: PBWT/prefix initialization, chromosome by chromosome
- *       -> Cohort Step 06: repeated synchronous burn-in
- *       -> Cohort Step 07: build a fresh all-FREE relative-phase scaffold
- *       -> Cohort Step 09: repeated progressive constrained phasing/fixing
- *
- * This layer remains private C code.  It does not modify SelectionTools
- * genotype storage and it does not add an R-level cohort-phasing API.
- * Intermediate snapshots are deliberately not retained in the published
- * result: only the final snapshot/scaffold and the complete iteration
- * diagnostics are owned by the result object.
- *************************************************************************/
 
 typedef struct
 {
@@ -7561,29 +6017,6 @@ typedef struct
   st_phase_cohort_progressive_iteration *progressive_iteration;
 } st_phase_cohort_end_to_end_result;
 
-
-/* Validate the published end-to-end object by reusing the already
- * validated Step-06 and Step-09 result invariants through shallow
- * diagnostic views. The final snapshot can serve as the structurally valid
- * snapshot member of the Step-06 view because Step 06's validity checks
- * concern dataset identity, iteration accounting and stopping semantics,
- * not retention of an historical copy of the burn-in endpoint. */
-
-
-/* End-to-end private cohort phasing transaction.  No stage is allowed to
- * publish partial state to the caller.  The fresh scaffold is built only
- * after burn-in and therefore cannot carry constraints from
- * initialization/burn-in. Step 09's first diagnostic must consequently
- * report n_fixed_before == 0.
- */
-
-/* ------------------------------------------------------------------------
- */
-/* Reference-free cohort phasing: Cohort Step 11 */
-/* Biological-allele adapter + private confidence-aware dataset staging. */
-/* ------------------------------------------------------------------------
- */
-
 typedef struct
 {
   st_phase_dataset_stage stage;
@@ -7611,57 +6044,10 @@ typedef struct
   size_t n_confident_same_source_order;
   size_t n_confident_swapped_source_order;
 
-  /* One byte per individual x chromosome.  1 means all relative links on
-   * that chromosome are fixed, hence the complete observed heterozygous
-   * chain can safely be represented in All1/All2. */
   unsigned char *chromosome_phase_ready;
 } st_phase_cohort_stage_result;
 
-
 #define st_phase_cohort_stage_malloc malloc
-
-
-/* Convert the final binary cohort snapshot to biological allele codes and
- * construct a complete private Step-13 stage.  A chromosome is write-ready
- * only when every relative link between its observed heterozygotes is
- * fixed. This is intentionally stricter than "some links are fixed":
- * All1/All2 has no phase-block metadata, so publishing separated confident
- * blocks across a FREE boundary would falsely imply known phase between
- * those blocks. */
-
-/* ------------------------------------------------------------------------
- */
-/* Reference-free cohort phasing: Cohort Step 12 */
-/* Explicit double-audit commit bridge for a validated Step-11 stage. */
-/* ------------------------------------------------------------------------
- */
-
-/*
- * Commit a confidence-aware cohort stage explicitly.
- *
- * Step 12 adds no writer and performs no allocation.  The complete Step-11
- * result is first revalidated against the final cohort snapshot/scaffold.
- * A fresh Step-14 audit is then compared byte-for-byte at the diagnostic
- * level with the audit stored by Step 11.  Only a current AUDIT_OK result
- * is allowed to reach Step 15.  Step 15 remains the sole publisher and
- * performs its own second fresh audit immediately before the first
- * All1/All2 write.
- *
- * Because Step 11 leaves every unclaimed cell exactly equal to
- * base1/base2, this publication writes phase only for chromosomes whose
- * complete observed heterozygous chain is phase-ready.  Chromosomes
- * containing any FREE link therefore remain byte-identical to the source
- * even when other chromosomes are committed in the same dataset
- * transaction.
- */
-
-/* ------------------------------------------------------------------------
- */
-/* Reference-free cohort phasing: Cohort Step 13 */
-/* Stable public-facing C pipeline + scalar diagnostics + optional commit.
- */
-/* ------------------------------------------------------------------------
- */
 
 typedef enum
 {
@@ -7672,7 +6058,6 @@ typedef enum
   ST_PHASE_COHORT_PIPELINE_STAGING_FAILED = -4,
   ST_PHASE_COHORT_PIPELINE_COMMIT_FAILED = -5
 } st_phase_cohort_pipeline_status;
-
 
 typedef struct
 {
@@ -7747,39 +6132,6 @@ typedef struct
   int audit_workspace_current;
 } st_phase_cohort_pipeline_diagnostics;
 
-
-/*
- * Stable C entry point for reference-free cohort phasing.
- *
- * This function owns the normalized Step-01 workspace, the complete
- * Step-10 cohort result and the confidence-aware Step-11 stage.  Callers
- * receive only scalar diagnostics and therefore never own/free an internal
- * snapshot, scaffold or staging object.  commit_requested==0 is a
- * staging-only run and cannot write All1/All2.  commit_requested==1
- * explicitly delegates to the Step-12 double-audit bridge; Step 15 remains
- * the sole byte publisher.
- */
-
-
-/************************************************************************48
- * ROADMAP STEP 0 -- POSTERIOR MISSING-GENOTYPE IMPUTATION
- *
- * Agreed contract:
- * - available in both reference-panel and reference-free cohort phasing;
- * - missing observations keep neutral HMM emissions and are decoded only
- *from the smoothed ordered donor-pair posterior (never from PBWT init
- *proxies);
- * - imputation is explicit through impute_requested / impute=TRUE/FALSE;
- * - default R-level imputation threshold is 0.90;
- * - biallelic/monomorphic marker dictionaries only, matching the current
- *   phaser; no multiallelic imputation is introduced;
- * - confident imputed heterozygotes are phased when their conditional
- *   orientation support reaches the ordinary confidence threshold;
- * - an imputed heterozygote whose genotype is confident but whose phase is
- *not is written in canonical compact 0/1 order and counted as unphased;
- * - commit remains all-or-nothing and can publish accepted imputations.
- *************************************************************************/
-
 typedef struct
 {
   size_t n_marker;
@@ -7835,9 +6187,6 @@ static int st_phase_step0_probability_close(double x, double y,
   return fabs(x - y) <= tol;
 }
 
-/* Shared, transactional HMM work object.  The same builder is used by the
- * reference-panel Step-0 chromosome path and by the final reference-free
- * cohort imputation pass. */
 typedef struct
 {
   st_phase_diploid_input input;
@@ -8016,22 +6365,6 @@ cleanup:
   return status;
 }
 
-/* Beagle-style final completion of reference-mode phase calls.
- *
- * The posterior hard caller remains deliberately conservative.  Beagle's
- * final phasing iteration, however, emits a complete haplotype pair
- * instead of leaving low-confidence heterozygotes unresolved.  We
- * reproduce that policy without discarding the well-calibrated posterior
- * calls already made above: only unresolved observed heterozygotes are
- * completed here.
- *
- * The deterministic Viterbi donor-pair traceback supplies a continuous
- * labeled copying path across the chromosome.  At an unresolved
- * heterozygote we use the two ordered emission components for that
- * traceback state.  If they are tied, the current running orientation is
- * retained.  This is the reference-mode analogue of Beagle's final
- * continue/swap tie handling.
- */
 static int st_phase_step0_complete_reference_calls_viterbi(
     const st_phase_step0_hmm_work *w, st_phase_hard_call_result *hard)
 {
@@ -8097,11 +6430,6 @@ static int st_phase_step0_complete_reference_calls_viterbi(
   return 0;
 }
 
-
-/* Decode only truly missing target genotypes.  The HMM posterior row is
- * collapsed to P(0/0), P(0/1), P(1/1).  A genotype tie is deliberately
- * left unresolved rather than resolved by an arbitrary allele convention.
- */
 static int st_phase_step0_decode_missing(
     const st_phase_data *d, const uint8_t *reference_hap, size_t n_ref_hap,
     const st_phase_step0_hmm_work *w, double confidence_threshold,
@@ -8160,8 +6488,6 @@ static int st_phase_step0_decode_missing(
     tmp.is_missing[marker] = 1u;
     tmp.n_missing++;
 
-    /* A marker dictionary is needed to map an accepted compact call back
-     * to biological SelectionTools allele codes. */
     if ((0u == d->n_alleles[g]) || (d->n_alleles[g] > 2u) ||
         !w->hmm.possible)
     {
@@ -8369,11 +6695,6 @@ static int st_phase_step0_stage_structurally_valid(
   return (claimed == stage->n_written) && (covered == stage->n_covered);
 }
 
-/* Extend an already merged chromosome phase proposal with accepted missing
- * genotype calls.  The full chromosome is already covered; this operation
- * only turns previously missing/unclaimed cells into explicit staged
- * genotype writes.  It validates every candidate before the first stage
- * byte changes. */
 static int st_phase_step0_stage_apply_imputation(
     const st_phase_data *d, size_t individual, size_t chromosome,
     const st_phase_step0_imputation_result *imp,
@@ -8443,10 +6764,6 @@ static int st_phase_step0_stage_apply_imputation(
   return 0;
 }
 
-/* Imputation-aware independent audit.  Existing observed homozygotes and
- * observed heterozygous phase writes retain their old invariants.  A
- * source missing cell may now be claimed only when both staged alleles are
- * valid biological alleles from that marker dictionary. */
 typedef struct
 {
   st_phase_stage_audit audit;
@@ -8680,8 +6997,6 @@ st_phase_step0_chromosome_result_free(st_phase_step0_chromosome_result *x)
   st_phase_step0_chromosome_result_init(x);
 }
 
-/* One-HMM reference-panel path: existing phase calls and new missing
- * decoding are derived from the same smoothed posterior. */
 static int st_phase_step0_run_chromosome_reference(
     const st_phase_data *d, size_t individual, size_t chromosome,
     const uint8_t *reference_hap, size_t n_ref_hap, size_t max_states,
@@ -8832,12 +7147,8 @@ static int st_phase_step0_run_dataset_reference(
     goto cleanup;
   tmp.n_request = n_request;
   tmp.n_requested_markers = requested_markers;
-  /* First pass: chromosome HMMs are independent and may be computed in
-   * parallel.  Their proposals are merged in request order so the staged
-   * output, diagnostics, and failure semantics remain deterministic.
-   * Imputation results are retained privately and applied only afterward.
-   */
-#ifdef _OPENMP
+
+#ifdef MT
 #pragma omp parallel for schedule(static, 1) ordered
 #endif
   for (size_t r = 0u; r < n_request; r++)
@@ -8860,7 +7171,7 @@ static int st_phase_step0_run_dataset_reference(
                       confidence_threshold, impute_requested,
                       imputation_threshold, &chr))
       run_failed = 1;
-#ifdef _OPENMP
+#ifdef MT
 #pragma omp ordered
 #endif
     {
@@ -9086,12 +7397,6 @@ cleanup:
   return status;
 }
 
-/* Apply a final posterior-only imputation pass to the converged
- * reference-free cohort result.  Donor construction is the existing strict
- * LOO builder, which excludes every donor individual with any observed
- * missing genotype on the chromosome.  Therefore no PBWT missing proxy can
- * enter the imputation HMM as a reference allele. */
-
 typedef struct
 {
   st_phase_cohort_pipeline_diagnostics base;
@@ -9101,7 +7406,6 @@ typedef struct
   size_t n_imputed_hom0, n_imputed_hom1, n_imputed_heterozygous;
   size_t n_imputed_heterozygous_phased, n_imputed_heterozygous_unphased;
 } st_phase_step0_cohort_pipeline_diagnostics;
-
 
 static SEXP
 st_phase_step0_r_diagnostics(const st_phase_step0_pipeline_diagnostics *d)
@@ -9162,39 +7466,6 @@ st_phase_step0_r_diagnostics(const st_phase_step0_pipeline_diagnostics *d)
   return ans;
 }
 
-
-/************************************************************************48
- * ROADMAP STEP 1 -- SELECTIONTOOLS-DATA-SET R INTERFACE
- *
- * Public R contract:
- * - reference.data.set is either NULL (reference-free cohort phasing) or
- *the name of an already existing SelectionTools marker data set;
- * - arbitrary R haplotype matrices are no longer accepted by st.phase();
- * - reference.individuals optionally selects reference individuals by name
- *or one-based index; NULL means all individuals in the reference data set;
- * - selected reference individuals must be completely observed; an
- *all-homozygous reference retains the historical
- *one-haplotype-per-individual representation, while a reference containing
- *heterozygotes is interpreted as already phased and contributes the stored
- *All1/All2 chromosome tracks as two haplotypes;
- * - reference markers are matched to the target linkage-map order by
- *marker name and the biological allele codes are translated through the
- *existing target marker dictionaries;
- * - statistical defaults, population-specific map expansion, the Finfty
- *   copying-break estimate and the default donor-pair prior are resolved
- *in C; the R function is deliberately only an interface to this native
- *entry;
- * - reference.data.set == NULL dispatches to the already validated cohort
- *   pipeline with native defaults for the burn-in/progressive controls;
- * - cohort phasing is a whole-data-set algorithm in this implementation,
- *so target individuals/chromosomes are not silently subset in cohort mode.
- *************************************************************************/
-
-
-/* SelectionTools01.c exports these objects.  Using them directly here
- * avoids gs_fdta(), whose historical semantics create an empty data set
- * when a name is not found.  A read-only phasing interface must not create
- * data sets as a side effect of validating a name. */
 extern gs_varset_type *gv;
 extern gs_varset_type **gs_data;
 extern gs_UNSIGNED gs_ndta;
@@ -9288,7 +7559,6 @@ cleanup:
   return status;
 }
 
-
 static int st_switch_marker_alleles(const gs_varset_type *gv,
                                     size_t marker,
                                     GS_ALLELE_TYPE allele[2],
@@ -9333,7 +7603,6 @@ static int st_switch_marker_alleles(const gs_varset_type *gv,
   return 0;
 }
 
-
 static int st_phase_allele_rank(GS_ALLELE_TYPE x,
                                 const GS_ALLELE_TYPE allele[2], size_t n)
 {
@@ -9344,7 +7613,6 @@ static int st_phase_allele_rank(GS_ALLELE_TYPE x,
       return (int)k;
   return -2;
 }
-
 
 SEXP st_destroy_phase(SEXP data_set)
 {
@@ -9377,6 +7645,7 @@ SEXP st_destroy_phase(SEXP data_set)
       }
     }
   PutRNGstate();
+  gv0->phased = 0;
 
   PROTECT(ans = allocVector(VECSXP, 2));
   PROTECT(names = allocVector(STRSXP, 2));
@@ -9388,7 +7657,6 @@ SEXP st_destroy_phase(SEXP data_set)
   UNPROTECT(2);
   return ans;
 }
-
 
 SEXP st_switch_error(SEXP true_data_set, SEXP data_set)
 {
@@ -9537,8 +7805,6 @@ SEXP st_switch_error(SEXP true_data_set, SEXP data_set)
         continue;
       }
 
-      /* Both genotypes are biallelic heterozygotes.  Allele ranks make
-         the comparison invariant to SelectionTools/VCF allele labels. */
       orientation = (rt1 == rx1) ? 0 : 1;
       nscored++;
       if (have_previous)
@@ -9594,7 +7860,6 @@ SEXP st_switch_error(SEXP true_data_set, SEXP data_set)
   UNPROTECT(2);
   return ans;
 }
-
 
 static int st_phase_step1_build_reference_dataset(
     const gs_varset_type *target_gv, const st_phase_data *target,
@@ -9672,12 +7937,6 @@ static int st_phase_step1_build_reference_dataset(
     reference_marker[m] = marker_index[lo].index;
   }
 
-  /* Validate the complete selected reference first.  SelectionTools marker
-   * data do not carry a separate phase-status flag.  Consequently, when
-   * any selected reference individual is heterozygous, the stored
-   * All1/All2 order is interpreted as an already phased pair of chromosome
-   * haplotypes.  The caller is responsible for supplying genuinely phased
-   * reference data. Missing reference genotypes remain forbidden. */
   for (size_t m = 0u; m < M; m++)
   {
     const size_t off = target->allele_offset[m];
@@ -9707,12 +7966,12 @@ static int st_phase_step1_build_reference_dataset(
     }
   }
 
-  /* Preserve the historical inbred-reference contract byte-for-byte when
-   * all selected individuals are homozygous: one haplotype per individual.
-   * If at least one selected individual is heterozygous, use two stored
-   * phased haplotypes per selected individual.  Homozygous individuals are
-   * duplicated in that mode so H=2*N is explicit and predictable to the
-   * caller. */
+  if (has_heterozygous && !reference_gv->phased)
+  {
+    status = -2;
+    goto cleanup;
+  }
+
   if (has_heterozygous)
   {
     if (N > SIZE_MAX / 2u)
@@ -9771,11 +8030,6 @@ cleanup:
   free(compact);
   return status;
 }
-
-
-/* Native statistical/default layer.  The R wrapper intentionally performs
- * no calculations; all mode selection, defaults and data-derived
- * quantities are resolved here. */
 
 typedef enum
 {
@@ -10411,7 +8665,6 @@ static int st_phase_step1_resolve_breaks(
   return 1;
 }
 
-
 static const char *st_phase_step1_cohort_status_name(int x)
 {
   switch (x)
@@ -10825,16 +9078,20 @@ SEXP st_phase_03_step1(SEXP data_set, SEXP reference_data_set,
     st_phase_step0_pipeline_diagnostics_init(&diag);
     if (0 != st_phase_build_data(target_gv, &d))
       error("Cannot build phasing workspace for data.set '%s'", set_name);
-    if (0 != st_phase_step1_build_reference_dataset(
-                 target_gv, &d, reference_gv, reference_individuals, &ref,
-                 &R, &n_reference_individual, &heterozygous_reference))
     {
-      st_phase_data_free(&d);
-      error("reference.data.set/reference.individuals must define "
-            "completely observed reference individuals with the same "
-            "marker set and compatible allele codes; heterozygous "
-            "reference genotypes are interpreted as already phased in "
-            "stored All1/All2 order");
+      int reference_status = st_phase_step1_build_reference_dataset(
+          target_gv, &d, reference_gv, reference_individuals, &ref,
+          &R, &n_reference_individual, &heterozygous_reference);
+      if (0 != reference_status)
+      {
+        st_phase_data_free(&d);
+        if (-2 == reference_status)
+          error("reference.data.set contains heterozygous genotypes but "
+                "is not marked phased");
+        error("reference.data.set/reference.individuals must define "
+              "completely observed reference individuals with the same "
+              "marker set and compatible allele codes");
+      }
     }
     if (!st_phase_step1_resolve_population(
             population_type_, 1, n_reference_individual,
@@ -10919,12 +9176,19 @@ SEXP st_phase_03_step1(SEXP data_set, SEXP reference_data_set,
           z++;
         }
     }
-    (void)
-    st_phase_dataset_pipeline_binary_reference_bounded_factorized_step0(
+    {
+      int phase_status =
+        st_phase_dataset_pipeline_binary_reference_bounded_factorized_step0(
             target_gv, request, n_request, ref, d.n_marker, R,
             cfg.max_states, w, R * R, cfg.error_rate,
             cfg.break_rate1_per_morgan, cfg.break_rate2_per_morgan,
             threshold, do_impute, imp_threshold, do_commit, &diag);
+      if ((ST_PHASE_PIPELINE_OK == phase_status) && do_commit &&
+          diag.base.committed && (n_ind == (size_t)target_gv->NoInd) &&
+          (n_chrom == d.n_chrom) &&
+          (0u == diag.base.n_covered_heterozygous_unresolved))
+        target_gv->phased = 1;
+    }
     free(request);
     free(chrom);
     free(ind);
@@ -10999,32 +9263,22 @@ SEXP st_phase_03_step1(SEXP data_set, SEXP reference_data_set,
     st_phase_data_free(&estimate_data);
 
     st_phase_two_stage_pipeline_diagnostics_init(&diag);
-    (void)st_phase_dataset_pipeline_cohort_two_stage(
+    {
+      int phase_status = st_phase_dataset_pipeline_cohort_two_stage(
         target_gv, bmax, bmin, bconv, pmax, pmin, pconv, burn_states,
         local_states, cfg.max_states, mac_cutoff, provisional,
         cfg.error_rate, cfg.break_rate1_per_morgan,
         cfg.break_rate2_per_morgan, threshold, do_impute, imp_threshold,
         do_commit, &diag);
+      if ((ST_PHASE_COHORT_PIPELINE_OK == phase_status) && do_commit &&
+          diag.committed && (0u == diag.n_unresolved_heterozygous) &&
+          (0u == diag.n_covered_heterozygous_unresolved))
+        target_gv->phased = 1;
+    }
     base = st_phase_step1_cohort_diagnostics(&diag);
     return st_phase_step1_append_configuration(base, &cfg, 0);
   }
 }
-
-
-/* ------------------------------------------------------------------------
- * Experimental cohort max-product relative-phase max-marginals.
- *
- * For two consecutive observed heterozygotes L,R, compare the best
- * complete donor-pair HMM path subject to the endpoint phase orientations
- * being equal (SAME) with the best path subject to them being opposite
- * (SWITCH).  The calculation uses max-product forward/backward messages
- * and the existing factorized transition law; the heterozygote orientation
- * is constrained by replacing the unordered emission p12+p21 at an
- * endpoint with p12 or p21. Consecutive heterozygote intervals partition
- * the chromosome, so evaluating all links remains O(M*K^2).
- * ------------------------------------------------------------------------
- */
-
 
 static void st_phase_factor_normalize_max(double *x, size_t n)
 {
@@ -11045,21 +9299,9 @@ typedef struct
   int possible;
   size_t n_marker;
   size_t n_link;
-  uint8_t *relation; /* at right endpoint: 1=SAME, 0=SWITCH, 255=none */
-  double *margin;    /* max-score difference |same-switch| */
+  uint8_t *relation;
+  double *margin;
 } st_phase_cohort_maxlink_result;
-
-
-/* ------------------------------------------------------------------------
- * Experimental Beagle-style haploid link likelihood decoder.
- * Heterozygotes are masked in a full leave-one-out haploid Li-Stephens
- * HMM. For each consecutive heterozygote pair, the four endpoint allele
- * patterns are evaluated; diplotype SAME/SWITCH scores are products (log
- * sums) of the complementary haplotype likelihoods.  With a fixed full
- * donor panel the transition update is O(R) per marker because
- *   p'(c)=(1-q)p(c)+(q/R)sum_a p(a).
- * ------------------------------------------------------------------------
- */
 
 typedef struct
 {
@@ -11266,7 +9508,7 @@ static int st_phase_cohort_haploid_links_chromosome(
         goto cleanup;
     }
   }
-  /* Forward masked-HET model. */
+
   if (0 != st_phase_haploid_base_emission(
                input.observed1[0], input.observed2[0], ref, R,
                d->n_alleles[input.marker_start], e, loge))
@@ -11289,7 +9531,7 @@ static int st_phase_cohort_haploid_links_chromosome(
                          : -INFINITY;
     st_phase_factor_normalize_max(f + m * R, R);
   }
-  /* Backward masked-HET model, excluding current marker emission. */
+
   for (size_t r = 0u; r < R; r++)
     b[(M - 1u) * R + r] = 0.0;
   for (size_t m = M - 1u; m > 0u; m--)
@@ -11302,8 +9544,7 @@ static int st_phase_cohort_haploid_links_chromosome(
       x[r] = (b[m * R + r] > -INFINITY && loge[r] > -INFINITY)
                  ? b[m * R + r] + loge[r]
                  : -INFINITY;
-    /* reverse transition has same full-state formula because T is
-     * symmetric */
+
     if (0 != st_phase_haploid_full_transition(x, R, q[m - 1u],
                                               b + (m - 1u) * R))
       goto cleanup;
@@ -11363,11 +9604,6 @@ cleanup:
   return status;
 }
 
-
-/* Build all non-target provisional donor haplotypes plus a parallel HMM
- * panel in which originally missing donor genotypes are marked missing.
- * Both panels use the identical lexicographic order determined by the
- * complete provisional 0/1 snapshot. */
 static int st_phase_cohort_build_loo_reference_masked(
     const st_phase_cohort_snapshot *frozen, size_t target,
     size_t chromosome, uint8_t **proxy_out, uint8_t **masked_out,
@@ -11439,7 +9675,6 @@ cleanup:
   free(masked);
   return status;
 }
-
 
 static int st_phase_pair_emission_row_neutral(
     const st_phase_pair_state_set *pair, size_t marker,
@@ -11691,7 +9926,7 @@ static int st_phase_cohort_rephase_once_viterbi_neutral(
   if (0 != st_phase_cohort_snapshot_clone(frozen, &tmp))
     return -1;
 
-#ifdef _OPENMP
+#ifdef MT
 #pragma omp parallel for schedule(static) reduction(+ : changed)
 #endif
   for (size_t i = 0u; i < d->n_ind; i++)
@@ -11776,7 +10011,7 @@ static int st_phase_cohort_rephase_once_viterbi_neutral(
     }
     if (bad)
     {
-#ifdef _OPENMP
+#ifdef MT
 #pragma omp atomic write
 #endif
       failed = 1;
@@ -11794,7 +10029,6 @@ fail:
   return -1;
 }
 
-
 typedef struct
 {
   size_t donor, count;
@@ -11811,9 +10045,6 @@ static int st_phase_cohort_donor_support_better(
   return a->donor < b->donor;
 }
 
-/* Target-specific donor subset.  Phase-invariant local balanced candidate
- * rows rank raw donor identities chromosome-wide; the selected HMM panel
- * retains those donor identities at every scaffold marker. */
 static int st_phase_cohort_build_raw_subset_reference_dual(
     const st_phase_diploid_input *input, const uint8_t *n_alleles,
     const uint8_t *rank_ref, const uint8_t *hmm_ref, size_t R,
@@ -11893,13 +10124,6 @@ cleanup:
   return status;
 }
 
-
-/* Posterior bootstrap for cohort missing alleles.  Originally missing
- * donor alleles remain neutral until their leave-one-out posterior support
- * reaches provisional.threshold.  The provisional values are internal
- * only; biological imputation is handled later by the audited Step-0
- * stage. */
-
 typedef struct
 {
   size_t n_marker;
@@ -11953,14 +10177,6 @@ static int st_phase_haploid_emission_probability_posterior(
   return st_phase_hmm_hap_emission(observed, donor, A, e, p);
 }
 
-/*
- * Numerically stable probability-space haploid forward/backward recursion.
- * Every forward and backward marker row is normalized.  At an originally
- * missing target allele the observation is neutral.  A missing donor state
- * contributes uniformly over the marker allele states when the target
- * allele posterior is formed; it is never counted as an observed donor
- * allele.
- */
 static int st_phase_haploid_missing_posterior_fb(
     const st_phase_data *d, size_t marker_start, size_t M,
     const uint8_t *observed, const uint8_t *ref, size_t S, double e,
@@ -12009,7 +10225,6 @@ static int st_phase_haploid_missing_posterior_fb(
     }
   }
 
-  /* Forward. */
   {
     uint8_t A = d->n_alleles[marker_start];
     double sum = 0.0;
@@ -12053,8 +10268,6 @@ static int st_phase_haploid_missing_posterior_fb(
       f[m * S + r] /= sum;
   }
 
-  /* Backward, with the next-marker emission folded into each transition.
-   */
   for (size_t r = 0u; r < S; r++)
     b[(M - 1u) * S + r] = 1.0 / (double)S;
   for (size_t m = M - 1u; m > 0u; m--)
@@ -12085,7 +10298,6 @@ static int st_phase_haploid_missing_posterior_fb(
       b[(m - 1u) * S + r] /= sumb;
   }
 
-  /* Missing-target allele posterior. */
   for (size_t m = 0u; m < M; m++)
     if (ST_PHASE_STATE_MISSING == observed[m])
     {
@@ -12153,9 +10365,6 @@ cleanup:
   return status;
 }
 
-/* Same deterministic leave-one-out donor ordering as the checkpoint code,
- * but an originally missing donor allele becomes HMM-visible only when its
- * separate provisional-confidence mask says it is supported. */
 static int st_phase_cohort_build_loo_reference_posterior(
     const st_phase_cohort_snapshot *frozen, const uint8_t *hap_confident,
     size_t target, size_t chromosome, uint8_t **proxy_out,
@@ -12292,7 +10501,7 @@ static int st_phase_cohort_rephase_once_haploid_subset_posterior(
   st_phase_cohort_confidence_initialize(frozen, out_conf);
   memset(link_conf, 0, d->n_marker * d->n_ind * sizeof(*link_conf));
 
-#ifdef _OPENMP
+#ifdef MT
 #pragma omp parallel for schedule(static) reduction(+ : changed)
 #endif
   for (size_t i = 0u; i < d->n_ind; i++)
@@ -12437,7 +10646,7 @@ static int st_phase_cohort_rephase_once_haploid_subset_posterior(
     }
     if (bad)
     {
-#ifdef _OPENMP
+#ifdef MT
 #pragma omp atomic write
 #endif
       failed = 1;
@@ -12458,38 +10667,6 @@ fail:
   st_phase_cohort_snapshot_free(&tmp);
   return -1;
 }
-
-
-/* Experimental trace wrapper for choosing a truth-independent posterior
- * stopping rule.  It does not alter production dispatch or marker data. */
-
-
-/* Experimental adaptive posterior cohort wrapper.  Uses the same
- * convergence quantity already exposed by the public cohort API: fraction
- * of observed relative phase links changed in the last synchronous
- * iteration. */
-
-
-/* ========================================================================
- * Experimental two-stage cohort phasing for sequence-like data.
- *
- * High-frequency markers (minor-allele count >= max(4,ceil(0.002*2N))) are
- * phased iteratively with the existing fast cohort engine.  If
- * low-frequency markers comprise at least 25% of polymorphic markers, they
- * are omitted from that iterative scaffold and phased once afterward.  The
- * second stage follows the Beagle-5 two-stage principle: haploid HMM state
- * probabilities are computed only at scaffold markers, linearly
- * interpolated in genetic distance to low-frequency markers, and converted
- * to posterior allele probabilities. A heterozygous low-frequency genotype
- * is oriented by the product of the two haplotype-specific allele
- * probabilities.  The target individual's own two haplotypes are excluded
- * from its HMM reference panel.
- *
- * This remains an experimental/debug entry point until the full public
- * cohort pipeline, confidence staging and Step-0 final imputation are
- * reconnected.
- * ========================================================================
- */
 
 static int st_phase_data_subset_marker_mask(const st_phase_data *src,
                                             const uint8_t *keep,
@@ -12635,8 +10812,6 @@ static int st_phase_two_stage_highfreq_mask(const st_phase_data *d,
   return hi ? 0 : -1;
 }
 
-/* Raw, fixed-identity leave-one-out reference on one scaffold chromosome.
- * donor_ind[r] identifies the biological donor individual for state r. */
 static int st_phase_two_stage_scaffold_reference(
     const st_phase_cohort_snapshot *s, size_t target, size_t chromosome,
     uint8_t **ref_out, size_t **donor_ind_out, size_t *R_out)
@@ -12682,8 +10857,6 @@ static int st_phase_two_stage_scaffold_reference(
   return 0;
 }
 
-/* Forward/backward posterior over fixed raw donor-haplotype states at
- * scaffold markers for one target haplotype.  Rows of gamma sum to one. */
 static int st_phase_two_stage_state_posterior(
     const st_phase_data *d, const st_phase_cohort_snapshot *s,
     size_t target, size_t chromosome, size_t side, const uint8_t *ref,
@@ -12712,7 +10885,7 @@ static int st_phase_two_stage_state_posterior(
                                                 d->pos_cm[start + m - 1u],
                                             br, &q[m - 1u]))
       goto fail;
-  /* forward */
+
   {
     double sum = 0.0;
     uint8_t obs = s->hap[start * s->n_hap + 2u * target + side],
@@ -12753,7 +10926,7 @@ static int st_phase_two_stage_state_posterior(
     for (size_t r = 0u; r < R; r++)
       f[m * R + r] /= sum;
   }
-  /* backward */
+
   for (size_t r = 0u; r < R; r++)
     b[(M - 1u) * R + r] = 1.0 / (double)R;
   for (size_t m = M - 1u; m > 0u; m--)
@@ -12862,12 +11035,6 @@ st_phase_two_stage_interp_weight(const st_phase_data *common, size_t cc,
   }
 }
 
-
-/* Deterministic pseudo-random tie coin for Beagle-style Stage-2 ties.
- * Beagle uses Random.nextBoolean() when the two orientation scores are
- * equal. The public phaser has no seed argument, so a stable 64-bit mix of
- * biological coordinates gives a 50:50 tie policy while preserving OpenMP
- * reproducibility and independence from thread scheduling. */
 static int st_phase_two_stage_tie_coin(size_t individual, size_t marker,
                                        int chrom_label)
 {
@@ -12884,7 +11051,6 @@ static int st_phase_two_stage_tie_coin(size_t individual, size_t marker,
   return (int)(x & UINT64_C(1));
 }
 
-
 static int st_phase_two_stage_lowfreq_insert(
     const st_phase_data *full, const uint8_t *high_mask,
     const st_phase_data *common, const size_t *common_to_full,
@@ -12896,7 +11062,8 @@ static int st_phase_two_stage_lowfreq_insert(
   int failed = 0;
   st_phase_cohort_snapshot_init(&tmp);
   if (!full || !high_mask || !common || !common_to_full || !scaffold ||
-      !out || !orientation_conf || !isfinite(confidence_threshold) ||
+      !out || !orientation_conf || !st_phase_hmm_error_valid(e) ||
+      !isfinite(br) || br < 0.0 || !isfinite(confidence_threshold) ||
       confidence_threshold < 0.5 || confidence_threshold > 1.0 ||
       !st_phase_cohort_snapshot_valid(common, scaffold))
     return -1;
@@ -12904,7 +11071,7 @@ static int st_phase_two_stage_lowfreq_insert(
          full->n_marker * full->n_ind * sizeof(*orientation_conf));
   if (0 != st_phase_cohort_snapshot_build(full, &tmp))
     return -1;
-  /* Transfer the phased high-frequency scaffold into full marker order. */
+
   for (size_t cm = 0u; cm < common->n_marker; cm++)
   {
     size_t fm = common_to_full[cm];
@@ -12913,7 +11080,7 @@ static int st_phase_two_stage_lowfreq_insert(
           scaffold->hap[cm * scaffold->n_hap + h];
   }
 
-#ifdef _OPENMP
+#ifdef MT
 #pragma omp parallel for schedule(dynamic) reduction(| : failed)
 #endif
   for (size_t ii = 0u; ii < full->n_ind; ii++)
@@ -12927,6 +11094,23 @@ static int st_phase_two_stage_lowfreq_insert(
       size_t R = 0u;
       double *g0 = NULL, *g1 = NULL;
       int label = full->chrom_label[full->chrom_start[fc]];
+      int needs_phase = 0;
+
+      for (size_t fm = full->chrom_start[fc];
+           fm < full->chrom_start[fc] + full->chrom_length[fc]; fm++)
+      {
+        size_t z = fm * full->n_ind + i;
+        if (!high_mask[fm] && full->n_alleles[fm] == 2u &&
+            full->geno1[z] != ST_PHASE_STATE_MISSING &&
+            full->geno1[z] != full->geno2[z])
+        {
+          needs_phase = 1;
+          break;
+        }
+      }
+      if (!needs_phase)
+        continue;
+
       if (0 != st_phase_two_stage_find_scaffold_chrom(common, label, &cc))
         continue;
       if (0 != st_phase_two_stage_scaffold_reference(scaffold, i, cc, &ref,
@@ -12984,9 +11168,7 @@ static int st_phase_two_stage_lowfreq_insert(
             else if (x == y)
               carries = (x == minor) ? 1.0 : 0.0;
             else
-              carries = 1.0; /* Beagle-style: target heterozygote carries
-                                minor, so a heterozygous donor state is
-                                assigned the minor allele. */
+              carries = 1.0;
             pm[0] += w0 * carries;
             pm[1] += w1 * carries;
           }
@@ -13042,19 +11224,6 @@ static int st_phase_two_stage_lowfreq_insert(
   return 0;
 }
 
-
-/* ------------------------------------------------------------------------
- * Production two-stage reference-free cohort pipeline.
- *
- * The cohort itself is used as a leave-one-individual-out copying panel. A
- * common-marker scaffold is phased first; low-frequency variants are
- * inserted after scaffold convergence.  All iterations use frozen
- * snapshots and are synchronous across individuals.  The final biological
- * write is prepared in a private dataset stage and is published only after
- * the independent Step-0 audit has accepted the complete stage.
- * ------------------------------------------------------------------------
- */
-
 static size_t st_phase_two_stage_relative_links(const st_phase_data *d)
 {
   size_t links = 0u;
@@ -13074,11 +11243,6 @@ static size_t st_phase_two_stage_relative_links(const st_phase_data *d)
   return links;
 }
 
-/* Complete private cohort stage.  Direct staging avoids constructing one
- * proposal object per individual x chromosome.  Safety is not weakened:
- * the source bytes are snapshotted before any staged write, every cell is
- * covered exactly once, and the independent imputation-aware audit
- * rederives all invariants before a commit can occur. */
 static int st_phase_two_stage_stage_final(
     const gs_varset_type *gv, const st_phase_data *d,
     const st_phase_cohort_snapshot *phase, const uint8_t *high_mask,
@@ -13170,10 +11334,6 @@ static int st_phase_two_stage_stage_final(
         continue;
       }
 
-      /* Beagle-style final output is complete.  Confidence conditions are
-       * retained only as diagnostics; they do not suppress observed phase
-       * calls, and a locally ambiguous low-frequency marker never
-       * invalidates the rest of an individual's chromosome. */
       {
         size_t left = SIZE_MAX;
         diag->n_phase_ready_chromosome++;
@@ -13231,67 +11391,131 @@ static int st_phase_two_stage_impute_stage(
     double imputation_threshold, st_phase_dataset_stage *stage,
     st_phase_two_stage_pipeline_diagnostics *diag)
 {
+  typedef struct
+  {
+    st_phase_step0_imputation_result result;
+    size_t missing;
+    int status, has_reference;
+  } st_phase_impute_job;
+  st_phase_impute_job *jobs = NULL;
+  size_t n_job, batch_size = 1u, n_worker, longest = 0u;
+  int status = -1;
+
   if ((NULL == d) || (NULL == phase) || (NULL == stage) ||
       (NULL == diag) || !st_phase_cohort_snapshot_valid(d, phase) ||
       !st_phase_dataset_stage_structurally_valid(stage) ||
       0u == max_states ||
-      !st_phase_step0_imputation_threshold_valid(imputation_threshold))
+      !st_phase_step0_imputation_threshold_valid(imputation_threshold) ||
+      0 != st_phase_size_mul(d->n_ind, d->n_chrom, &n_job))
     return -1;
 
-  for (size_t i = 0u; i < d->n_ind; i++)
-    for (size_t c = 0u; c < d->n_chrom; c++)
+#ifdef MT
+  {
+    int requested = omp_get_max_threads();
+    if (requested > 1)
+      batch_size = (size_t)requested;
+  }
+#endif
+  for (size_t c = 0u; c < d->n_chrom; c++)
+    if (d->chrom_length[c] > longest)
+      longest = d->chrom_length[c];
+  {
+
+    double bytes = (double)longest *
+        (128.0 * (double)max_states * (double)max_states +
+         8.0 * (double)d->n_ind + 128.0 * (double)max_states + 1024.0);
+    double allowed = bytes > 0.0 ? floor(2147483648.0 / bytes) : 1.0;
+    if (allowed < 1.0)
+      allowed = 1.0;
+    if ((double)batch_size > allowed)
+      batch_size = (size_t)allowed;
+  }
+  if (batch_size > n_job)
+    batch_size = n_job;
+  n_worker = batch_size;
+
+  if (n_worker > 1u)
+    batch_size = n_worker > n_job / 4u ? n_job : 4u * n_worker;
+  if (0u == batch_size || batch_size > SIZE_MAX / sizeof(*jobs))
+    return -1;
+  jobs = calloc(batch_size, sizeof(*jobs));
+  if (NULL == jobs)
+    return -1;
+
+  for (size_t first = 0u; first < n_job; )
+  {
+    size_t count = n_job - first;
+    if (count > batch_size)
+      count = batch_size;
+#ifdef MT
+#pragma omp parallel for schedule(dynamic, 1) num_threads((int)n_worker) if(n_worker > 1u)
+#endif
+    for (size_t j = 0u; j < count; j++)
     {
-      size_t start = d->chrom_start[c], len = d->chrom_length[c],
-             missing = 0u;
+      size_t index = first + j, i = index / d->n_chrom,
+             c = index % d->n_chrom, start = d->chrom_start[c],
+             len = d->chrom_length[c], R = 0u;
       uint8_t *reference = NULL;
-      size_t R = 0u;
       st_phase_step0_hmm_work w;
-      st_phase_step0_imputation_result imp;
       st_phase_step0_hmm_work_init(&w);
-      st_phase_step0_imputation_result_init(&imp);
+      st_phase_step0_imputation_result_init(&jobs[j].result);
+      jobs[j].missing = 0u;
+      jobs[j].status = 0;
+      jobs[j].has_reference = 0;
       for (size_t m = start; m < start + len; m++)
         if (ST_PHASE_STATE_MISSING == d->geno1[m * d->n_ind + i])
-          missing++;
-      if (0u == missing)
+          jobs[j].missing++;
+      if (0u == jobs[j].missing)
         continue;
-      diag->n_missing_requested += missing;
-      if (0 !=
-          st_phase_cohort_build_loo_reference(phase, i, c, &reference, &R))
-        goto fail;
-      if (0u == R)
+      if (0 != st_phase_cohort_build_loo_reference(phase, i, c, &reference, &R))
+        jobs[j].status = -1;
+      else if (R > 0u)
       {
-        diag->n_imputation_unresolved += missing;
-        free(reference);
-        continue;
+        jobs[j].has_reference = 1;
+        if (0 != st_phase_step0_hmm_build(
+                     d, i, c, reference, R, max_states, NULL, 0u, error_rate,
+                     break_rate1_per_morgan, break_rate2_per_morgan, &w) ||
+            0 != st_phase_step0_decode_missing(
+                     d, reference, R, &w, confidence_threshold,
+                     imputation_threshold, &jobs[j].result))
+          jobs[j].status = -1;
       }
-      if (0 != st_phase_step0_hmm_build(
-                   d, i, c, reference, R, max_states, NULL, 0u, error_rate,
-                   break_rate1_per_morgan, break_rate2_per_morgan, &w) ||
-          0 != st_phase_step0_decode_missing(d, reference, R, &w,
-                                             confidence_threshold,
-                                             imputation_threshold, &imp) ||
-          0 != st_phase_step0_stage_apply_imputation(d, i, c, &imp, stage))
-        goto fail;
-      diag->n_imputed += imp.n_imputed;
-      diag->n_imputation_unresolved += imp.n_unresolved;
-      diag->n_imputed_hom0 += imp.n_imputed_hom0;
-      diag->n_imputed_hom1 += imp.n_imputed_hom1;
-      diag->n_imputed_heterozygous += imp.n_imputed_heterozygous;
-      diag->n_imputed_heterozygous_phased +=
-          imp.n_imputed_heterozygous_phased;
-      diag->n_imputed_heterozygous_unphased +=
-          imp.n_imputed_heterozygous_unphased;
       free(reference);
       st_phase_step0_hmm_work_free(&w);
-      st_phase_step0_imputation_result_free(&imp);
-      continue;
-    fail:
-      free(reference);
-      st_phase_step0_hmm_work_free(&w);
-      st_phase_step0_imputation_result_free(&imp);
-      return -1;
     }
-  return 0;
+
+    for (size_t j = 0u; j < count; j++)
+    {
+      size_t index = first + j, i = index / d->n_chrom,
+             c = index % d->n_chrom;
+      st_phase_step0_imputation_result *imp = &jobs[j].result;
+      diag->n_missing_requested += jobs[j].missing;
+      if (jobs[j].status != 0)
+        goto cleanup;
+      if (!jobs[j].has_reference)
+        diag->n_imputation_unresolved += jobs[j].missing;
+      else
+      {
+        if (0 != st_phase_step0_stage_apply_imputation(d, i, c, imp, stage))
+          goto cleanup;
+        diag->n_imputed += imp->n_imputed;
+        diag->n_imputation_unresolved += imp->n_unresolved;
+        diag->n_imputed_hom0 += imp->n_imputed_hom0;
+        diag->n_imputed_hom1 += imp->n_imputed_hom1;
+        diag->n_imputed_heterozygous += imp->n_imputed_heterozygous;
+        diag->n_imputed_heterozygous_phased += imp->n_imputed_heterozygous_phased;
+        diag->n_imputed_heterozygous_unphased += imp->n_imputed_heterozygous_unphased;
+      }
+      st_phase_step0_imputation_result_free(imp);
+    }
+    first += count;
+  }
+  status = 0;
+cleanup:
+  for (size_t j = 0u; j < batch_size; j++)
+    st_phase_step0_imputation_result_free(&jobs[j].result);
+  free(jobs);
+  return status;
 }
 
 static int st_phase_dataset_pipeline_cohort_two_stage(
@@ -13380,7 +11604,6 @@ static int st_phase_dataset_pipeline_cohort_two_stage(
   diag.stage1_markers = stage1;
   diag.stage2_markers = stage2;
 
-  /* Synchronous max-product burn-in on the common-marker scaffold. */
   {
     const st_phase_cohort_snapshot *frozen = &initial;
     size_t links = st_phase_two_stage_relative_links(&common);
@@ -13446,8 +11669,6 @@ static int st_phase_dataset_pipeline_cohort_two_stage(
   diag.progressive_relative_link =
       st_phase_two_stage_relative_links(&common);
 
-  /* Posterior bootstrap/refinement; missing donor alleles enter subsequent
-   * frozen panels only after reaching provisional.threshold. */
   for (size_t it = 0u; it < progressive_max; it++)
   {
     size_t changed = 0u, conf_missing = 0u;
@@ -13567,4 +11788,5052 @@ cleanup:
   st_phase_data_free(&common);
   st_phase_data_free(&full);
   return status;
+}
+
+/* st.phase */
+#include <R_ext/Rdynload.h>
+#include <setjmp.h>
+#include <stdatomic.h>
+#include <inttypes.h>
+#include <stdarg.h>
+
+#ifndef MT
+static int omp_get_thread_num(void)
+{
+  return 0;
+}
+static int omp_get_num_threads(void)
+{
+  return 1;
+}
+#endif
+
+typedef struct
+{
+  jmp_buf jump;
+  int stage;
+} st_guard;
+static _Thread_local st_guard *st_active_guard;
+static _Atomic int st_worker_error, st_max_team;
+static const char *st_phase_dataset;
+
+enum
+{
+  ST_PHASE_MEMORY = 1,
+  ST_PHASE_SIZE,
+  ST_PHASE_ALLELES,
+  ST_PHASE_DONORS,
+  ST_PHASE_SAMPLE_COUNT,
+  ST_PHASE_REFERENCE,
+  ST_PHASE_PBWT
+};
+
+static _Noreturn void st_phase_error(const char *format, ...)
+{
+  char message[gs_MAXSTR];
+  va_list args;
+  va_start(args, format);
+  vsnprintf(message, sizeof(message), format, args);
+  va_end(args);
+  if (st_phase_dataset)
+    Rf_error("Data set '%s': %s", st_phase_dataset, message);
+  Rf_error("st.phase: %s", message);
+}
+static _Noreturn void st_report_error(int code, int stage)
+{
+  const char *message;
+  switch (code)
+  {
+  case ST_PHASE_MEMORY:
+    message = "Memory allocation error";
+    break;
+  case ST_PHASE_SIZE:
+    message = "Memory allocation size overflow";
+    break;
+  case ST_PHASE_ALLELES:
+    message = "Selected markers must be monomorphic or biallelic";
+    break;
+  case ST_PHASE_DONORS:
+    message = "No donor haplotypes available";
+    break;
+  case ST_PHASE_SAMPLE_COUNT:
+    message = "Invalid sample count for parameter estimation";
+    break;
+  case ST_PHASE_REFERENCE:
+    message = "Phasing attempted to change a reference haplotype";
+    break;
+  case ST_PHASE_PBWT:
+    message = "Invalid donor-search workspace dimensions";
+    break;
+  default:
+    message = "Internal phasing error";
+  }
+  const char *stages[] = {"phasing", "parameter estimation",
+                           "common-marker phasing", "haplotype coding",
+                           "common-marker donor search",
+                           "rare-marker donor search",
+                           "rare-marker phasing and imputation"};
+  if (stage < 0 || stage > 6)
+    stage = 0;
+  st_phase_error("%s during %s", message, stages[stage]);
+}
+static _Noreturn void st_failure(int code)
+{
+  if (st_active_guard)
+  {
+    int expected = 0;
+    atomic_compare_exchange_strong(&st_worker_error, &expected,
+                                   code + 256 * st_active_guard->stage);
+    longjmp(st_active_guard->jump, 1);
+  }
+
+  st_report_error(code, 0);
+}
+static void st_worker_run(void (*work)(void *), void *data, int stage)
+{
+  if (atomic_load(&st_worker_error))
+    return;
+  int team = omp_get_num_threads(), previous = atomic_load(&st_max_team);
+  while (previous < team &&
+         !atomic_compare_exchange_weak(&st_max_team, &previous, team))
+  {
+  }
+  st_guard guard;
+  guard.stage = stage;
+  st_active_guard = &guard;
+  if (setjmp(guard.jump) == 0)
+  {
+    work(data);
+  }
+  st_active_guard = NULL;
+}
+static void st_workers_check(void)
+{
+  int code = atomic_load(&st_worker_error);
+  if (code)
+    st_report_error(code % 256, code / 256);
+  R_CheckUserInterrupt();
+}
+
+typedef union st_block st_block;
+union st_block
+{
+  struct
+  {
+    st_block *previous, *next;
+    size_t size;
+  } info;
+  max_align_t alignment;
+};
+static st_block *st_blocks;
+static int st_busy;
+static size_t st_block_count;
+static void *st_memory(size_t size)
+{
+  if (size > SIZE_MAX - sizeof(st_block))
+    st_failure(ST_PHASE_SIZE);
+  st_block *b = malloc(sizeof(*b) + size);
+  if (!b)
+    st_failure(ST_PHASE_MEMORY);
+#ifdef MT
+#pragma omp critical(st_allocation_list)
+#endif
+  {
+    b->info.previous = NULL;
+    b->info.next = st_blocks;
+    b->info.size = size;
+    if (st_blocks)
+      st_blocks->info.previous = b;
+    st_blocks = b;
+    ++st_block_count;
+  }
+  return b + 1;
+}
+static void st_release(void *p)
+{
+  if (!p)
+    return;
+  st_block *b = (st_block *)p - 1;
+#ifdef MT
+#pragma omp critical(st_allocation_list)
+#endif
+  {
+    if (b->info.previous)
+      b->info.previous->info.next = b->info.next;
+    else
+      st_blocks = b->info.next;
+    if (b->info.next)
+      b->info.next->info.previous = b->info.previous;
+    --st_block_count;
+  }
+  free(b);
+}
+static void *st_zero(size_t n, size_t size)
+{
+  if (size && n > SIZE_MAX / size)
+    st_failure(ST_PHASE_SIZE);
+  void *p = st_memory(n * size);
+  memset(p, 0, n * size);
+  return p;
+}
+static void *st_resize(void *p, size_t n)
+{
+  if (!p)
+    return st_memory(n);
+  size_t old = ((st_block *)p - 1)->info.size;
+  void *out = st_memory(n);
+  memcpy(out, p, old < n ? old : n);
+  st_release(p);
+  return out;
+}
+#define malloc st_memory
+#define calloc st_zero
+#define realloc st_resize
+#define free st_release
+#define ST_PHASE_CHECK_INTERRUPT() R_CheckUserInterrupt()
+
+static int er_thread_limit = 1;
+static int er_set_threads(int n)
+{
+  if (n < 1)
+    return 0;
+#ifndef MT
+  if (n != 1)
+    return 0;
+#endif
+  er_thread_limit = n;
+  return 1;
+}
+
+typedef struct
+{
+  uint64_t state;
+} j_random;
+static void jr_seed(j_random *r, uint64_t seed)
+{
+  r->state = (seed ^ UINT64_C(0x5deece66d)) & ((UINT64_C(1) << 48) - 1);
+}
+static uint32_t jr_bits(j_random *r, unsigned bits)
+{
+  r->state =
+      (r->state * UINT64_C(0x5deece66d) + 11) & ((UINT64_C(1) << 48) - 1);
+  return (uint32_t)(r->state >> (48 - bits));
+}
+static uint32_t jr_int(j_random *r, uint32_t bound)
+{
+  if ((bound & (bound - 1)) == 0)
+    return (uint32_t)(((uint64_t)bound * jr_bits(r, 31)) >> 31);
+  uint32_t b, v;
+  do
+  {
+    b = jr_bits(r, 31);
+    v = b % bound;
+  } while ((uint64_t)b - v + (bound - 1) > INT32_MAX);
+  return v;
+}
+
+typedef struct
+{
+  int hap, start, last, index;
+} cs_segment;
+typedef struct
+{
+  int M, H, S, K, min_steps, words;
+  int *starts, *donors;
+  uint64_t *haps;
+} cs_input;
+typedef struct
+{
+  int n, *last;
+  cs_segment *heap;
+  uint64_t *comp;
+} cs_work;
+
+static void *cs_alloc(size_t n, size_t size)
+{
+  if (size && n > SIZE_MAX / size)
+    st_failure(ST_PHASE_SIZE);
+  void *p = calloc(n ? n : 1, size);
+  if (!p)
+    st_failure(ST_PHASE_MEMORY);
+  return p;
+}
+
+static cs_work cs_create(const cs_input *in)
+{
+  cs_work w = {0, cs_alloc(in->H, sizeof(int)),
+               cs_alloc(in->K, sizeof(cs_segment)),
+               cs_alloc((size_t)in->K * in->words, sizeof(uint64_t))};
+  return w;
+}
+
+static void cs_destroy(cs_work *w)
+{
+  free(w->last);
+  free(w->heap);
+  free(w->comp);
+}
+
+static void cs_offer(cs_work *w, cs_segment x)
+{
+  int k = w->n++;
+  while (k > 0)
+  {
+    int parent = (k - 1) >> 1;
+    if (x.last >= w->heap[parent].last)
+      break;
+    w->heap[k] = w->heap[parent];
+    k = parent;
+  }
+  w->heap[k] = x;
+}
+
+static cs_segment cs_poll(cs_work *w)
+{
+  cs_segment out = w->heap[0], x = w->heap[--w->n];
+  int k = 0, half = w->n >> 1;
+  while (k < half)
+  {
+    int child = 2 * k + 1, right = child + 1;
+    if (right < w->n && w->heap[child].last > w->heap[right].last)
+      child = right;
+    if (x.last <= w->heap[child].last)
+      break;
+    w->heap[k] = w->heap[child];
+    k = child;
+  }
+  if (w->n)
+    w->heap[k] = x;
+  return out;
+}
+
+static void cs_copy(const cs_input *in, cs_work *w, cs_segment x, int end,
+                    FILE *trace)
+{
+  if (trace)
+    fprintf(trace, "SEG %d %d %d %d\n", x.index, x.hap, x.start, end);
+  uint64_t *dst = w->comp + (size_t)x.index * in->words;
+  const uint64_t *src = in->haps + (size_t)x.hap * in->words;
+  for (int start = x.start; start < end;)
+  {
+    int word = start >> 6, lo = start & 63;
+    int stop = end < (word + 1) * 64 ? end : (word + 1) * 64;
+    int hi = stop - word * 64;
+    uint64_t mask = UINT64_MAX << lo;
+    if (hi < 64)
+      mask &= (UINT64_C(1) << hi) - 1;
+    dst[word] = (dst[word] & ~mask) | (src[word] & mask);
+    start = stop;
+  }
+}
+
+static void cs_trace_queue(FILE *trace, const cs_work *w, int step, int hap)
+{
+  if (!trace)
+    return;
+  fprintf(trace, "Q %d %d %d", step, hap, w->n);
+  for (int i = 0; i < w->n; ++i)
+  {
+    cs_segment x = w->heap[i];
+    fprintf(trace, " %d %d %d %d %d", x.hap, x.start, x.last, x.index,
+            w->last[x.hap]);
+  }
+  fputc('\n', trace);
+}
+
+static void cs_add(const cs_input *in, cs_work *w, int hap, int step,
+                   FILE *trace)
+{
+  if (w->last[hap] == -103)
+  {
+    while (w->n && w->heap[0].last != w->last[w->heap[0].hap])
+    {
+      cs_segment head = cs_poll(w);
+      head.last = w->last[head.hap];
+      cs_offer(w, head);
+    }
+    if (w->n == in->K || (w->n && step - w->heap[0].last >= in->min_steps))
+    {
+      cs_segment head = cs_poll(w);
+      int next = in->starts[(head.last + step) >> 1];
+      w->last[head.hap] = -103;
+      cs_copy(in, w, head, next, trace);
+      head.hap = hap;
+      head.start = next;
+      head.last = step;
+      cs_offer(w, head);
+    }
+    else
+    {
+      cs_segment head = {hap, 0, step, w->n};
+      cs_offer(w, head);
+    }
+  }
+  w->last[hap] = step;
+  cs_trace_queue(trace, w, step, hap);
+}
+
+static int cs_run(const cs_input *in, cs_work *w, int sample, uint64_t seed,
+                  FILE *trace)
+{
+  w->n = 0;
+  for (int h = 0; h < in->H; ++h)
+    w->last[h] = -103;
+  for (int step = 0; step < in->S; ++step)
+  {
+    for (int j = 0; j < 2; ++j)
+    {
+      int hap = in->donors[2 * step + j];
+      if (hap >= 0)
+        cs_add(in, w, hap, step, trace);
+    }
+  }
+  if (!w->n)
+  {
+    int count = in->H - 2 < in->K ? in->H - 2 : in->K;
+    if (count <= 0)
+      st_failure(ST_PHASE_DONORS);
+    j_random rng;
+    jr_seed(&rng, seed + (uint64_t)sample);
+    int index = 0;
+    for (int j = 0; j < count; ++j)
+    {
+      int h;
+      do
+      {
+        h = (int)jr_int(&rng, (uint32_t)in->H);
+        if (trace)
+          fprintf(trace, "DRAW %d\n", h);
+      } while ((h >> 1) == sample);
+      if (w->last[h] == -103)
+      {
+        cs_segment head = {h, 0, 0, index++};
+        cs_offer(w, head);
+        w->last[h] = 0;
+      }
+      cs_trace_queue(trace, w, -1, h);
+    }
+  }
+  int count = w->n;
+  while (w->n)
+    cs_copy(in, w, cs_poll(w), in->M, trace);
+  if (trace)
+  {
+    fprintf(trace, "FINAL %d\n", count);
+    for (int c = 0; c < count; ++c)
+    {
+      fprintf(trace, "ALLELES %d", c);
+      for (int m = 0; m < in->M; ++m)
+        fprintf(
+            trace, " %d",
+            (int)((w->comp[(size_t)c * in->words + (m >> 6)] >> (m & 63)) & 1));
+      fputc('\n', trace);
+    }
+  }
+  return count;
+}
+
+typedef struct
+{
+  int count;
+  double mismatch, distance, switches;
+} pe_result;
+
+typedef struct
+{
+  pe_result initial;
+  int markers, states;
+  float mismatch;
+  const float *distance, *recomb;
+  const unsigned char *discord;
+} pe_input;
+
+typedef struct
+{
+  float *fwd, *bwd, *saved;
+} pe_work;
+
+static uint32_t pe_float_bits(float x)
+{
+  uint32_t b;
+  memcpy(&b, &x, sizeof b);
+  return b;
+}
+static uint64_t pe_double_bits(double x)
+{
+  uint64_t b;
+  memcpy(&b, &x, sizeof b);
+  return b;
+}
+static pe_work pe_create(int markers, int states)
+{
+  pe_work w;
+  w.fwd = calloc((size_t)states, sizeof(float));
+  w.bwd = calloc((size_t)states, sizeof(float));
+  w.saved = calloc((size_t)markers * states, sizeof(float));
+  if (!w.fwd || !w.bwd || !w.saved)
+  {
+    st_failure(ST_PHASE_MEMORY);
+  }
+  return w;
+}
+static void pe_destroy(pe_work *w)
+{
+  free(w->fwd);
+  free(w->bwd);
+  free(w->saved);
+}
+static void pe_row(FILE *trace, const char *tag, int marker, const float *a,
+                   int n)
+{
+  if (!trace)
+    return;
+  fprintf(trace, "%s %d", tag, marker);
+  for (int k = 0; k < n; ++k)
+    fprintf(trace, " %u", pe_float_bits(a[k]));
+  fputc('\n', trace);
+}
+static void pe_totals(FILE *trace, const char *tag, int marker, pe_result r)
+{
+  if (trace)
+    fprintf(trace, "%s %d %d %llu %llu %llu\n", tag, marker, r.count,
+            (unsigned long long)pe_double_bits(r.mismatch),
+            (unsigned long long)pe_double_bits(r.distance),
+            (unsigned long long)pe_double_bits(r.switches));
+}
+
+static pe_result pe_run(const pe_input *in, pe_work *w, FILE *trace)
+{
+  pe_result r = in->initial;
+  int M = in->markers, K = in->states;
+  if (K <= 1)
+    return r;
+  float emission[2] = {1.0f - in->mismatch, in->mismatch};
+  for (int k = 0; k < K; ++k)
+    w->bwd[k] = w->saved[(size_t)(M - 1) * K + k] = 1.0f;
+  pe_row(trace, "B", M - 1, w->bwd, K);
+  for (int m = M - 2; m >= 0; --m)
+  {
+    float sum = 0.0f;
+    const unsigned char *d = in->discord + (size_t)(m + 1) * K;
+    for (int k = 0; k < K; ++k)
+    {
+      w->bwd[k] *= emission[d[k]];
+      sum += w->bwd[k];
+    }
+    float shift = in->recomb[m + 1] / K;
+    float scale = (1.0f - in->recomb[m + 1]) / sum;
+    for (int k = 0; k < K; ++k)
+      w->bwd[k] = scale * w->bwd[k] + shift;
+    memcpy(w->saved + (size_t)m * K, w->bwd, (size_t)K * sizeof(float));
+    pe_row(trace, "B", m, w->bwd, K);
+  }
+  float hfactor = K / (K - 1.0f);
+  for (int k = 0; k < K; ++k)
+    w->fwd[k] = 1.0f / K;
+  float last_sum = 1.0f;
+  for (int m = 0; m < M; ++m)
+  {
+    float ps = in->recomb[m], shift = ps / K;
+    float scale = (1.0f - ps) / last_sum;
+    float no_switch_scale = ((1.0f - ps) + shift) / last_sum;
+    float joint = 0.0f, state_sum = 0.0f, fwd_sum = 0.0f, mismatch_sum = 0.0f;
+    const float *b = w->saved + (size_t)m * K;
+    const unsigned char *d = in->discord + (size_t)m * K;
+    for (int k = 0; k < K; ++k)
+    {
+      float em = emission[d[k]];
+      joint += b[k] * em * no_switch_scale * w->fwd[k];
+      w->fwd[k] = em * (scale * w->fwd[k] + shift);
+      fwd_sum += w->fwd[k];
+      float prob = w->fwd[k] * b[k];
+      state_sum += prob;
+      if (d[k] > 0)
+        mismatch_sum += prob;
+    }
+    ++r.count;
+    r.mismatch += mismatch_sum / state_sum;
+    double switch_prob = hfactor * (1.0f - joint / state_sum);
+    if (switch_prob > 0.0)
+    {
+      r.distance += in->distance[m];
+      r.switches += switch_prob;
+    }
+    last_sum = fwd_sum;
+    pe_row(trace, "F", m, w->fwd, K);
+    pe_totals(trace, "S", m, r);
+  }
+  return r;
+}
+
+static int pe_compare_mismatch(const void *aa, const void *bb)
+{
+  const pe_result *a = aa, *b = bb;
+  if (a->mismatch != b->mismatch)
+    return a->mismatch < b->mismatch ? -1 : 1;
+  return (a->count > b->count) - (a->count < b->count);
+}
+static int pe_compare_switch(const void *aa, const void *bb)
+{
+  const pe_result *a = aa, *b = bb;
+  if (a->distance != b->distance)
+    return a->distance < b->distance ? -1 : 1;
+  return (a->switches > b->switches) - (a->switches < b->switches);
+}
+static void pe_estimates(const pe_result *rows, int n, float *mismatch,
+                         float *intensity)
+{
+  pe_result *tmp = calloc((size_t)(n ? n : 1), sizeof(*tmp));
+  if (!tmp)
+    st_failure(ST_PHASE_MEMORY);
+  int count = 0;
+  for (int i = 0; i < n; ++i)
+  {
+    if (rows[i].count > 0 && rows[i].mismatch > 0 && isfinite(rows[i].mismatch))
+      tmp[count++] = rows[i];
+  }
+  qsort(tmp, (size_t)count, sizeof(*tmp), pe_compare_mismatch);
+  int64_t markers = 0;
+  double sum = 0.0;
+  for (int i = 0; i < count; ++i)
+  {
+    markers += tmp[i].count;
+    sum += tmp[i].mismatch;
+  }
+  *mismatch = markers == 0 ? NAN : (float)(sum / markers);
+  count = 0;
+  for (int i = 0; i < n; ++i)
+  {
+    if (rows[i].distance > 0 && rows[i].switches > 0 &&
+        isfinite(rows[i].distance) && isfinite(rows[i].switches))
+      tmp[count++] = rows[i];
+  }
+  qsort(tmp, (size_t)count, sizeof(*tmp), pe_compare_switch);
+  double distance = 0.0, switches = 0.0;
+  for (int i = 0; i < count; ++i)
+  {
+    switches += tmp[i].switches;
+    distance += tmp[i].distance;
+  }
+  *intensity = distance == 0.0 ? NAN : (float)(switches / distance);
+  free(tmp);
+}
+
+static int pe_samples(int *indices, int samples, j_random *rng)
+{
+  for (int i = 0; i < samples; ++i)
+    indices[i] = i;
+  if (samples <= 500)
+    return samples;
+  for (int j = 0; j < 500; ++j)
+  {
+    int k = j + (int)jr_int(rng, (uint32_t)(samples - j));
+    int tmp = indices[j];
+    indices[j] = indices[k];
+    indices[k] = tmp;
+  }
+  return 500;
+}
+
+typedef struct
+{
+  cs_input states;
+  int samples, initialize;
+  uint64_t seed;
+  int *donors;
+  float *distance;
+  float mismatch, intensity;
+} er_input;
+typedef struct
+{
+  float mismatch, intensity;
+  int rounds;
+} er_result;
+static uint64_t er_hash(const unsigned char *x, size_t n)
+{
+  uint64_t h = UINT64_C(1469598103934665603);
+  for (size_t j = 0; j < n; ++j)
+    h = (h ^ x[j]) * UINT64_C(1099511628211);
+  return h;
+}
+typedef struct
+{
+  cs_input ci;
+  cs_work cw;
+  pe_work work;
+  unsigned char *discord;
+} er_worker;
+typedef struct
+{
+  const er_input *in;
+  const int *selected;
+  float mismatch;
+  const float *recomb;
+  pe_result *rows;
+  FILE *trace;
+} er_context;
+static void er_process_sample(const er_context *ctx, er_worker *ws, int j)
+{
+  cs_input ci = ws->ci;
+  cs_work *cw = &ws->cw;
+  pe_work *work = &ws->work;
+  unsigned char *discord = ws->discord;
+  int sample = ctx->selected[j];
+  for (int s = 0; s < ci.S; ++s)
+    for (int h = 0; h < 2; ++h)
+      ci.donors[2 * s + h] = ctx->in->donors[(size_t)s * ci.H + 2 * sample + h];
+  int K = cs_run(&ci, cw, sample, ctx->in->seed, NULL);
+  for (int h = 0; h < 2; ++h)
+    for (int m = 0; m < ci.M; ++m)
+    {
+      int allele = (ci.haps[(size_t)(2 * sample + h) * ci.words + (m >> 6)] >>
+                    (m & 63)) &
+                   1;
+      for (int k = 0; k < K; ++k)
+      {
+        int ref = (cw->comp[(size_t)k * ci.words + (m >> 6)] >> (m & 63)) & 1;
+        discord[((size_t)h * ci.M + m) * K + k] =
+            (unsigned char)(allele != ref);
+      }
+    }
+  if (ctx->trace)
+    fprintf(ctx->trace, "STATES %d %d %llu\n", sample, K,
+            (unsigned long long)er_hash(discord, (size_t)2 * ci.M * K));
+  pe_input pi = {{0, 0, 0, 0},      ci.M,        K,      ctx->mismatch,
+                 ctx->in->distance, ctx->recomb, discord};
+  pe_result r = pe_run(&pi, work, NULL);
+  pi.initial = r;
+  pi.discord = discord + (size_t)ci.M * K;
+  ctx->rows[j] = pe_run(&pi, work, NULL);
+  pe_totals(ctx->trace, "SAMPLE", sample, ctx->rows[j]);
+}
+
+typedef struct
+{
+  const er_context *ctx;
+  er_worker *ws;
+  int j;
+} er_task;
+static void er_task_run(void *data)
+{
+  er_task *t = data;
+  er_process_sample(t->ctx, t->ws, t->j);
+}
+
+static er_result er_run(const er_input *in, FILE *trace)
+{
+  cs_input ci = in->states;
+  int workers = trace ? 1 : er_thread_limit;
+  if (workers > in->samples)
+    workers = in->samples;
+  er_worker *pool = cs_alloc(workers, sizeof(er_worker));
+  for (int w = 0; w < workers; ++w)
+  {
+    pool[w].ci = ci;
+    pool[w].ci.donors = cs_alloc((size_t)2 * ci.S, sizeof(int));
+    pool[w].cw = cs_create(&pool[w].ci);
+    pool[w].work = pe_create(ci.M, ci.K);
+    pool[w].discord = cs_alloc((size_t)2 * ci.M * ci.K, 1);
+  }
+  int *selected = cs_alloc(in->samples, sizeof(int));
+  pe_result *rows = cs_alloc(in->samples, sizeof(pe_result));
+  float *recomb = cs_alloc(ci.M, sizeof(float));
+  j_random rng;
+  jr_seed(&rng, in->seed);
+  er_result out = {in->mismatch, in->intensity, 0};
+  int limit = in->initialize ? 15 : 1;
+  for (int round = 0; round < limit; ++round)
+  {
+    float old_intensity = out.intensity;
+    for (int m = 0; m < ci.M; ++m)
+      recomb[m] = (float)-expm1(-(double)out.intensity * in->distance[m]);
+    int n = pe_samples(selected, in->samples, &rng);
+    if (n < 1 || n > 500)
+      st_failure(ST_PHASE_SAMPLE_COUNT);
+    if (trace)
+    {
+      fprintf(trace, "SELECT %d", round);
+      for (int j = 0; j < n; ++j)
+        fprintf(trace, " %d", selected[j]);
+      fputc('\n', trace);
+      fprintf(trace, "RECOMB %d", round);
+      for (int m = 0; m < ci.M; ++m)
+        fprintf(trace, " %u", pe_float_bits(recomb[m]));
+      fputc('\n', trace);
+    }
+    er_context context = {in, selected, out.mismatch, recomb, rows, trace};
+
+#ifdef MT
+#pragma omp parallel for num_threads(workers) schedule(static) if (workers > 1)
+#endif
+    for (int j = 0; j < n; ++j)
+    {
+      int tid = 0;
+#ifdef MT
+      tid = omp_get_thread_num();
+#endif
+      er_task task = {&context, pool + tid, j};
+      st_worker_run(er_task_run, &task, 1);
+    }
+    st_workers_check();
+    float pm, ri;
+    pe_estimates(rows, n, &pm, &ri);
+    if (isfinite(pm) && pm > out.mismatch)
+      out.mismatch = pm;
+    if (isfinite(ri) && ri > 0)
+      out.intensity = ri;
+    ++out.rounds;
+    if (trace)
+      fprintf(trace, "UPDATE %u %u %u %u\n", pe_float_bits(pm),
+              pe_float_bits(ri), pe_float_bits(out.mismatch),
+              pe_float_bits(out.intensity));
+    if (in->initialize &&
+        fabsf(out.intensity - old_intensity) <= 0.1 * (double)old_intensity)
+      break;
+  }
+  if (trace)
+    fprintf(trace, "FINAL %d %u %u\n", out.rounds, pe_float_bits(out.mismatch),
+            pe_float_bits(out.intensity));
+  for (int w = 0; w < workers; ++w)
+  {
+    pe_destroy(&pool[w].work);
+    cs_destroy(&pool[w].cw);
+    free(pool[w].ci.donors);
+    free(pool[w].discord);
+  }
+  free(pool);
+  free(selected);
+  free(rows);
+  free(recomb);
+  return out;
+}
+
+static int st_phase_threads = 1;
+
+#define it_find_donors st_serial_find_donors
+
+typedef struct
+{
+  int H;
+  int *p, *offset, *a, *d;
+} pbwt_workspace;
+static int pbwt_alloc(pbwt_workspace *w, int H)
+{
+  memset(w, 0, sizeof(*w));
+  if (H < 1 || (size_t)H > SIZE_MAX / sizeof(int))
+    return -1;
+  w->H = H;
+  w->p = calloc((size_t)H, sizeof(int));
+  w->offset = calloc((size_t)H, sizeof(int));
+  w->a = calloc((size_t)H, sizeof(int));
+  w->d = calloc((size_t)H, sizeof(int));
+  if (!w->p || !w->offset || !w->a || !w->d)
+  {
+    free(w->p);
+    free(w->offset);
+    free(w->a);
+    free(w->d);
+    memset(w, 0, sizeof(*w));
+    return -1;
+  }
+  return 0;
+}
+static void pbwt_free(pbwt_workspace *w)
+{
+  free(w->p);
+  free(w->offset);
+  free(w->a);
+  free(w->d);
+  memset(w, 0, sizeof(*w));
+}
+static void pbwt_update(pbwt_workspace *w, const int *rec, int K, int marker,
+                        int backward, int *a, int *d)
+{
+  int H = w->H;
+  memset(w->offset, 0, (size_t)K * sizeof(int));
+  for (int h = 0; h < H; ++h)
+    ++w->offset[rec[h]];
+  int n = 0;
+  for (int k = 0; k < K; ++k)
+  {
+    int count = w->offset[k];
+    w->offset[k] = n;
+    n += count;
+    w->p[k] = marker + (backward ? -1 : 1);
+  }
+  for (int i = 0; i < H; ++i)
+  {
+    int h = a[i], allele = rec[h];
+    for (int k = 0; k < K; ++k)
+    {
+      if (backward ? d[i] < w->p[k] : d[i] > w->p[k])
+        w->p[k] = d[i];
+    }
+    int at = w->offset[allele]++;
+    w->a[at] = h;
+    w->d[at] = w->p[allele];
+    w->p[allele] = backward ? INT_MAX : INT_MIN;
+  }
+  memcpy(a, w->a, (size_t)H * sizeof(int));
+  memcpy(d, w->d, (size_t)H * sizeof(int));
+}
+
+typedef struct
+{
+  int sample, start, end;
+} ibs_segment;
+typedef struct
+{
+  ibs_segment *v;
+  size_t n, cap;
+} ibs_list;
+typedef struct
+{
+  int M, N;
+  ibs_list *sample;
+} ibs_result;
+typedef struct
+{
+  int *v, n, hom;
+} ibs_cluster;
+typedef struct
+{
+  ibs_cluster *v;
+  size_t n, cap;
+} ibs_clusters;
+static void *ibs_calloc(size_t n, size_t size)
+{
+  if (size && n > SIZE_MAX / size)
+    st_failure(ST_PHASE_SIZE);
+  void *x = calloc(n ? n : 1, size);
+  if (!x)
+    st_failure(ST_PHASE_MEMORY);
+  return x;
+}
+static void *ibs_grow(void *old, size_t n, size_t size)
+{
+  if (size && n > SIZE_MAX / size)
+    st_failure(ST_PHASE_SIZE);
+  void *x = realloc(old, n * size);
+  if (!x)
+    st_failure(ST_PHASE_MEMORY);
+  return x;
+}
+static void ibs_append(ibs_list *l, ibs_segment x)
+{
+  if (l->n == l->cap)
+  {
+    l->cap = l->cap ? 2 * l->cap : 8;
+    l->v = ibs_grow(l->v, l->cap, sizeof(*l->v));
+  }
+  l->v[l->n++] = x;
+}
+static void ibs_cluster_append(ibs_clusters *l, ibs_cluster x)
+{
+  if (l->n == l->cap)
+  {
+    l->cap = l->cap ? 2 * l->cap : 8;
+    l->v = ibs_grow(l->v, l->cap, sizeof(*l->v));
+  }
+  l->v[l->n++] = x;
+}
+static int ibs_gt(const int *g, int N, int m, int s)
+{
+  size_t z = ((size_t)m * N + s) * 2;
+  return g[z] < 0 || g[z + 1] < 0 ? -1 : g[z] + g[z + 1];
+}
+static int ibs_next(const double *pos, int M, int start, int *use)
+{
+  double min = pos[start] + (double)0.02f;
+  int next = start + 1, n = 0;
+  while (next < M && n < 50)
+  {
+    if (use[next])
+    {
+      if (pos[next] < min)
+        use[next] = 0;
+      else
+      {
+        ++n;
+        min = pos[next] + (double)0.02f;
+      }
+    }
+    ++next;
+  }
+  return next;
+}
+static void ibs_trace_list(FILE *f, const char *stage, int s, const ibs_list *l)
+{
+  if (!f)
+    return;
+  fprintf(f, "%s %d", stage, s);
+  for (size_t j = 0; j < l->n; ++j)
+    fprintf(f, " %d %d %d", l->v[j].sample, l->v[j].start, l->v[j].end);
+  fputc('\n', f);
+}
+static int ibs_cmp(const void *av, const void *bv)
+{
+  const ibs_segment *a = av, *b = bv;
+  if (a->sample != b->sample)
+    return (a->sample > b->sample) - (a->sample < b->sample);
+  if (a->start != b->start)
+    return (a->start > b->start) - (a->start < b->start);
+  return (a->end > b->end) - (a->end < b->end);
+}
+static void ibs_merge(ibs_list *l, const double *pos)
+{
+  if (l->n < 2)
+    return;
+  size_t out = 0;
+  ibs_segment prev = l->v[0];
+  for (size_t j = 1; j < l->n; ++j)
+  {
+    ibs_segment next = l->v[j];
+    if (prev.sample == next.sample && pos[next.start] - pos[prev.end] <= 4.0)
+    {
+      prev.end = next.end;
+    }
+    else
+    {
+      l->v[out++] = prev;
+      prev = next;
+    }
+  }
+  l->v[out++] = prev;
+  l->n = out;
+}
+static int ibs_compatible(const int *g, int N, int m, int s, int t)
+{
+  size_t a = ((size_t)m * N + s) * 2, b = ((size_t)m * N + t) * 2;
+  int a1 = g[a], a2 = g[a + 1], b1 = g[b], b2 = g[b + 1];
+  return ((a1 < 0 || b1 < 0 || a1 == b1) && (a2 < 0 || b2 < 0 || a2 == b2)) ||
+         ((a1 < 0 || b2 < 0 || a1 == b2) && (a2 < 0 || b1 < 0 || a2 == b1));
+}
+static ibs_result ibs_build(const int *g, const double *pos, const float *maf,
+                            int M, int N, FILE *trace)
+{
+  ibs_result out = {M, N, ibs_calloc(N, sizeof(ibs_list))};
+  int *use = ibs_calloc(M, sizeof(int)), *starts = ibs_calloc(M, sizeof(int)),
+      *markers = ibs_calloc(M, sizeof(int));
+  float miss_product = 0.1f * (float)(2 * N);
+  int maxmiss = (int)ceil((double)miss_product);
+  for (int m = 0; m < M; ++m)
+  {
+    int missing = 0;
+    for (int h = 0; h < 2 * N; ++h)
+      missing += g[(size_t)m * 2 * N + h] < 0;
+    use[m] = maf[m] >= 0.1f && missing <= maxmiss;
+  }
+  int W = 0, last = 0, next = ibs_next(pos, M, 0, use);
+  while (next < M)
+  {
+    starts[W++] = last;
+    last = next;
+    next = ibs_next(pos, M, next, use);
+  }
+  if (trace)
+  {
+    fprintf(trace, "USE");
+    for (int m = 0; m < M; ++m)
+      fprintf(trace, " %d", use[m]);
+    fprintf(trace, "\nSTARTS");
+    for (int w = 0; w < W; ++w)
+      fprintf(trace, " %d", starts[w]);
+    fputc('\n', trace);
+  }
+  unsigned char *pairs = ibs_calloc((size_t)N * N, 1);
+  for (int w = 0; w < W; ++w)
+  {
+    int start = starts[w], end = w + 1 < W ? starts[w + 1] : M, L = 0;
+    for (int m = start; m < end; ++m)
+      if (use[m])
+        markers[L++] = m;
+    float p = 0.1f * (float)L;
+    int allowed = (int)floor((double)p);
+    ibs_cluster root = {ibs_calloc(N, sizeof(int)), 0, 1};
+    for (int s = 0; s < N; ++s)
+    {
+      int miss = 0;
+      for (int j = 0; j < L; ++j)
+        miss += ibs_gt(g, N, markers[j], s) < 0;
+      if (miss <= allowed)
+        root.v[root.n++] = s;
+    }
+    ibs_clusters current = {0};
+    ibs_cluster_append(&current, root);
+    for (int j = 0; j < L; ++j)
+    {
+      int m = markers[j];
+      ibs_clusters children = {0};
+      for (size_t c = 0; c < current.n; ++c)
+      {
+        ibs_cluster parent = current.v[c];
+        int present[3] = {0, 0, 0};
+        for (int i = 0; i < parent.n; ++i)
+        {
+          int code = ibs_gt(g, N, m, parent.v[i]);
+          if (code >= 0)
+            present[code] = 1;
+        }
+        for (int code = 0; code < 3; ++code)
+          if (present[code])
+          {
+            ibs_cluster child = {ibs_calloc(parent.n, sizeof(int)), 0,
+                                 parent.hom && code != 1};
+            for (int i = 0; i < parent.n; ++i)
+            {
+              int s = parent.v[i], v = ibs_gt(g, N, m, s);
+              if (v < 0 || v == code)
+                child.v[child.n++] = s;
+            }
+            if (child.n > 1)
+              ibs_cluster_append(&children, child);
+            else
+              free(child.v);
+          }
+        free(parent.v);
+      }
+      free(current.v);
+      current = children;
+    }
+    memset(pairs, 0, (size_t)N * N);
+    for (size_t c = 0; c < current.n; ++c)
+    {
+      ibs_cluster x = current.v[c];
+      if (!x.hom)
+        for (int i = 0; i < x.n; ++i)
+          for (int j = 0; j < x.n; ++j)
+            pairs[(size_t)x.v[i] * N + x.v[j]] = 1;
+      free(x.v);
+    }
+    free(current.v);
+    for (int s = 0; s < N; ++s)
+    {
+      if (trace)
+        fprintf(trace, "SET %d %d", w, s);
+      for (int t = 0; t < N; ++t)
+        if (pairs[(size_t)s * N + t])
+        {
+          if (trace)
+            fprintf(trace, " %d", t);
+          if (s != t)
+            ibs_append(out.sample + s, (ibs_segment){t, start, end - 1});
+        }
+      if (trace)
+        fputc('\n', trace);
+    }
+  }
+  for (int s = 0; s < N; ++s)
+  {
+    ibs_list *l = out.sample + s;
+    ibs_trace_list(trace, "RAW", s, l);
+    if (l->n)
+      qsort(l->v, l->n, sizeof(ibs_segment), ibs_cmp);
+    ibs_merge(l, pos);
+    ibs_trace_list(trace, "MERGE1", s, l);
+    for (size_t j = 0; j < l->n; ++j)
+    {
+      ibs_segment *v = l->v + j;
+      while (v->start > 0 && ibs_compatible(g, N, v->start - 1, s, v->sample))
+        --v->start;
+      while (v->end + 1 < M && ibs_compatible(g, N, v->end + 1, s, v->sample))
+        ++v->end;
+    }
+    ibs_trace_list(trace, "EXTEND", s, l);
+    ibs_merge(l, pos);
+    ibs_trace_list(trace, "MERGE2", s, l);
+    size_t n = 0;
+    for (size_t j = 0; j < l->n; ++j)
+      if (pos[l->v[j].end] - pos[l->v[j].start] >= 2.0)
+        l->v[n++] = l->v[j];
+    l->n = n;
+    ibs_trace_list(trace, "FINAL", s, l);
+  }
+  free(use);
+  free(starts);
+  free(markers);
+  free(pairs);
+  return out;
+}
+static int ibs_query(const ibs_result *x, int s, int t, int start, int end)
+{
+  if (s == t)
+    return 1;
+  const ibs_list *l = x->sample + s;
+  for (size_t j = 0; j < l->n; ++j)
+  {
+    ibs_segment v = l->v[j];
+    if (v.sample == t && start <= v.end && v.start <= end)
+      return 1;
+  }
+  return 0;
+}
+static void ibs_free(ibs_result *x)
+{
+  for (int s = 0; s < x->N; ++s)
+    free(x->sample[s].v);
+  free(x->sample);
+  x->sample = NULL;
+}
+
+static void choose_donors(int H, int T, int candidates, int step, int backward,
+                          uint64_t seed, const int *a, const int *d,
+                          const ibs_result *ibs, int start, int end,
+                          int *selected)
+{
+  j_random r;
+  jr_seed(&r, seed);
+  for (int i = 0; i < H; ++i)
+    if (a[i] < T)
+    {
+      int hap = a[i], u = i, v = i + 1, left = d[u], right = d[v];
+      while (v - u < candidates && (backward ? (step <= left || step <= right)
+                                             : (left <= step || right <= step)))
+      {
+        if (backward)
+        {
+          if (left <= right)
+          {
+            ++v;
+            if (d[v] < right)
+              right = d[v];
+          }
+          else
+          {
+            --u;
+            if (d[u] < left)
+              left = d[u];
+          }
+        }
+        else
+        {
+          if (right <= left)
+          {
+            ++v;
+            if (d[v] > right)
+              right = d[v];
+          }
+          else
+          {
+            --u;
+            if (d[u] > left)
+              left = d[u];
+          }
+        }
+      }
+      int n = v - u;
+      selected[hap] = -1;
+      if (n > 1)
+      {
+        int index = u + (int)jr_int(&r, (uint32_t)n);
+        for (int j = 0; j < n; ++j, ++index)
+        {
+          if (index == v)
+            index = u;
+          if (index != i && !ibs_query(ibs, hap / 2, a[index] / 2, start, end))
+          {
+            selected[hap] = a[index];
+            break;
+          }
+        }
+      }
+    }
+}
+
+typedef struct
+{
+  int n;
+  int *end, *type;
+} hi_clusters;
+static void *hi_alloc(size_t n, size_t size)
+{
+  if (size && n > SIZE_MAX / size)
+    st_failure(ST_PHASE_SIZE);
+  void *x = calloc(n ? n : 1, size);
+  if (!x)
+    st_failure(ST_PHASE_MEMORY);
+  return x;
+}
+static hi_clusters hi_cluster(int M, const int *a, const int *b,
+                              const double *pos, int U, const int *unph, int D,
+                              const int *missing)
+{
+  hi_clusters out = {0, hi_alloc(M, sizeof(int)), hi_alloc(M, sizeof(int))};
+  double max_end = pos[0] + (double)0.005f;
+  int prev_special = 0, last_end = 0, mi = 0, ui = 0, prev_type = 2;
+  int next_m = mi < D ? missing[mi++] : -1;
+  int next_u = ui < U ? unph[ui++] : -1;
+  for (int m = 0; m < M; ++m)
+  {
+    int type = m == next_m ? 0 : a[m] == b[m] ? 2 : m == next_u ? 4 : 3;
+    if (type == 0)
+      next_m = mi < D ? missing[mi++] : -1;
+    else if (type == 4)
+      next_u = ui < U ? unph[ui++] : -1;
+    int special = type != 2;
+    if (special || prev_special || pos[m] > max_end || m - last_end == 255)
+    {
+      if (m > 0)
+      {
+        out.end[out.n] = m;
+        out.type[out.n++] = prev_type;
+        max_end = pos[m] + (double)0.005f;
+        last_end = m;
+      }
+      prev_type = type;
+    }
+    prev_special = special;
+  }
+  out.end[out.n] = M;
+  out.type[out.n++] = prev_type;
+  return out;
+}
+static void hi_mask_group(hi_clusters *cl, const int *clusters,
+                          const int *markers, int n, const int *bp)
+{
+  if (n == 2)
+    cl->type[clusters[0]] = 1;
+  else if (n == 3 && bp[markers[1]] - bp[markers[0]] <= 3000)
+  {
+    cl->type[clusters[0]] = 1;
+    cl->type[clusters[1]] = 1;
+  }
+}
+static void hi_mask(hi_clusters *cl, const int *bp)
+{
+  int *clusters = hi_alloc(cl->n, sizeof(int)),
+      *markers = hi_alloc(cl->n, sizeof(int));
+  int n = 0, start = 0;
+  for (int c = 0; c < cl->n; ++c)
+  {
+    if (cl->type[c] == 3)
+    {
+      hi_mask_group(cl, clusters, markers, n, bp);
+      n = 0;
+    }
+    else if (cl->type[c] == 4)
+    {
+      clusters[n] = c;
+      markers[n++] = start;
+    }
+    start = cl->end[c];
+  }
+  hi_mask_group(cl, clusters, markers, n, bp);
+  free(clusters);
+  free(markers);
+}
+static void hi_recomb(const hi_clusters *cl, const float *p, float *out)
+{
+  out[0] = 0.0f;
+  for (int c = 1; c < cl->n; ++c)
+  {
+    float no = 1.0f;
+    for (int m = cl->end[c - 1]; m < cl->end[c]; ++m)
+      no *= 1.0f - p[m];
+    out[c] = 1.0f - no;
+  }
+}
+
+static int hi_equal(const uint64_t *a, const uint64_t *b, int start, int end)
+{
+  while (start < end)
+  {
+    int w = start >> 6, stop = end < (w + 1) * 64 ? end : (w + 1) * 64;
+    uint64_t mask = UINT64_MAX << (start & 63);
+    int hi = stop - w * 64;
+    if (hi < 64)
+      mask &= (UINT64_C(1) << hi) - 1;
+    if ((a[w] ^ b[w]) & mask)
+      return 0;
+    start = stop;
+  }
+  return 1;
+}
+static void hi_mismatches(const hi_clusters *cl, int K, int words,
+                          const uint64_t *a, const uint64_t *b,
+                          const uint64_t *refs, unsigned char *mismatch,
+                          int *missing)
+{
+  int start = 0, miss = 0;
+  size_t plane = (size_t)cl->n * K;
+  memset(mismatch, 0, plane * 3);
+  for (int c = 0; c < cl->n; ++c)
+  {
+    int end = cl->end[c];
+    if (cl->type[c] == 0 || cl->type[c] == 1)
+    {
+      for (int k = 0; k < K; ++k)
+        missing[(size_t)miss * K + k] =
+            (int)((refs[(size_t)k * words + (start >> 6)] >> (start & 63)) & 1);
+      ++miss;
+    }
+    else if ((start >> 6) == ((end - 1) >> 6))
+    {
+
+      int word = start >> 6, hi = end - word * 64;
+      uint64_t mask = UINT64_MAX << (start & 63);
+      if (hi < 64)
+        mask &= (UINT64_C(1) << hi) - 1;
+      uint64_t av = a[word] & mask, bv = b[word] & mask;
+      int same = av == bv;
+      for (int k = 0; k < K; ++k)
+      {
+        uint64_t rv = refs[(size_t)k * words + word] & mask;
+        size_t z = (size_t)c * K + k;
+        mismatch[plane + z] = av != rv;
+        mismatch[2 * plane + z] = bv != rv;
+        if (same)
+          mismatch[z] = av != rv;
+      }
+    }
+    else
+    {
+      int same = hi_equal(a, b, start, end);
+      for (int k = 0; k < K; ++k)
+      {
+        const uint64_t *ref = refs + (size_t)k * words;
+        size_t z = (size_t)c * K + k;
+        int x = !hi_equal(a, ref, start, end);
+        mismatch[plane + z] = x;
+        mismatch[2 * plane + z] = same ? x : !hi_equal(b, ref, start, end);
+        if (same)
+          mismatch[z] = x;
+      }
+    }
+    start = end;
+  }
+}
+static void hi_free(hi_clusters *cl)
+{
+  free(cl->end);
+  free(cl->type);
+}
+
+typedef struct
+{
+  int M, C, K, burnin;
+  float mismatch, threshold;
+  int *ends, *types, *a, *b, *refs;
+  float *recomb;
+  unsigned char *mm;
+} ba_input;
+typedef struct
+{
+  int *types, *a, *b, *unph;
+  unsigned char *mm, **rows;
+  float *fwd, *bwd, sums[3], *bmiss1, *bmiss2, *bhet1, *bhet2;
+  int nmiss, nunph, swap, swaps;
+} ba_work;
+static void *ba_alloc(size_t n, size_t size)
+{
+  if (size && n > SIZE_MAX / size)
+    st_failure(ST_PHASE_SIZE);
+  void *x = calloc(n ? n : 1, size);
+  if (!x)
+    st_failure(ST_PHASE_MEMORY);
+  return x;
+}
+static uint32_t ba_bits(float x)
+{
+  uint32_t b;
+  memcpy(&b, &x, sizeof b);
+  return b;
+}
+static void ba_vector(FILE *f, const float *v, int n)
+{
+  for (int k = 0; k < n; ++k)
+    fprintf(f, " %" PRIu32, ba_bits(v[k]));
+}
+static float ba_forward(float *fwd, float sum, float rec, const float em[2],
+                        const unsigned char *mm, int K)
+{
+  float shift = rec / K, scale = (1.0f - rec) / sum;
+  sum = 0.0f;
+  for (int k = 0; k < K; ++k)
+  {
+    fwd[k] = em[mm[k]] * (scale * fwd[k] + shift);
+    sum += fwd[k];
+  }
+  return sum;
+}
+static void ba_backward(float *bwd, float rec, const float em[2],
+                        const unsigned char *mm, int K)
+{
+  float sum = 0.0f;
+  for (int k = 0; k < K; ++k)
+  {
+    bwd[k] *= em[mm[k]];
+    sum += bwd[k];
+  }
+  float shift = rec / K, scale = (1.0f - rec) / sum;
+  for (int k = 0; k < K; ++k)
+    bwd[k] = scale * bwd[k] + shift;
+}
+static ba_work ba_create(const ba_input *in)
+{
+  ba_work w = {0};
+  w.types = ba_alloc(in->C, sizeof(int));
+  w.a = ba_alloc(in->M, sizeof(int));
+  w.b = ba_alloc(in->M, sizeof(int));
+  w.unph = ba_alloc(in->C, sizeof(int));
+  w.mm = ba_alloc((size_t)3 * in->C * in->K, 1);
+  w.rows = ba_alloc((size_t)3 * in->C, sizeof(unsigned char *));
+  w.fwd = ba_alloc((size_t)3 * in->K, sizeof(float));
+  w.bwd = ba_alloc((size_t)3 * in->K, sizeof(float));
+  for (int c = 0; c < in->C; ++c)
+  {
+    w.nmiss += in->types[c] < 2;
+    w.nunph += in->types[c] == 4;
+  }
+  w.bmiss1 = ba_alloc((size_t)w.nmiss * in->K, sizeof(float));
+  w.bmiss2 = ba_alloc((size_t)w.nmiss * in->K, sizeof(float));
+  w.bhet1 = ba_alloc((size_t)w.nunph * in->K, sizeof(float));
+  w.bhet2 = ba_alloc((size_t)w.nunph * in->K, sizeof(float));
+  return w;
+}
+static void ba_reset(const ba_input *in, ba_work *w)
+{
+  memcpy(w->types, in->types, (size_t)in->C * sizeof(int));
+  memcpy(w->a, in->a, (size_t)in->M * sizeof(int));
+  memcpy(w->b, in->b, (size_t)in->M * sizeof(int));
+  memcpy(w->mm, in->mm, (size_t)3 * in->C * in->K);
+  int u = 0;
+  for (int c = 0; c < in->C; ++c)
+    if (in->types[c] == 4)
+      w->unph[u++] = c;
+  for (int r = 0; r < 3 * in->C; ++r)
+    w->rows[r] = w->mm + (size_t)r * in->K;
+  w->swap = w->swaps = 0;
+}
+static void ba_step(const ba_input *in, ba_work *w, int c, int backward,
+                    FILE *trace)
+{
+  int start = c ? in->ends[c - 1] : 0;
+  float e = (in->ends[c] - start) * in->mismatch;
+  if (e >= 0.5f)
+    e = 0.5f;
+  float em[2] = {1.0f - e, e};
+  for (int t = 0; t < 3; ++t)
+  {
+    if (backward)
+      ba_backward(w->bwd + t * in->K, in->recomb[c], em, w->rows[t * in->C + c],
+                  in->K);
+    else
+      w->sums[t] = ba_forward(w->fwd + t * in->K, w->sums[t], in->recomb[c], em,
+                              w->rows[t * in->C + c], in->K);
+  }
+  if (trace)
+  {
+    fprintf(trace, "%c %d", backward ? 'B' : 'F', backward ? c - 1 : c);
+    if (!backward)
+      ba_vector(trace, w->sums, 3);
+    ba_vector(trace, backward ? w->bwd : w->fwd, 3 * in->K);
+    fputc('\n', trace);
+  }
+}
+static void ba_phase_het(const ba_input *in, ba_work *w, int c, int u,
+                         FILE *trace)
+{
+  float *b1 = w->bhet1 + (size_t)u * in->K, *b2 = w->bhet2 + (size_t)u * in->K;
+  float p11 = 0, p12 = 0, p21 = 0, p22 = 0;
+  for (int k = 0; k < in->K; ++k)
+  {
+    p11 += w->fwd[in->K + k] * b1[k];
+    p12 += w->fwd[in->K + k] * b2[k];
+    p21 += w->fwd[2 * in->K + k] * b1[k];
+    p22 += w->fwd[2 * in->K + k] * b2[k];
+  }
+  float num = p11 * p22, den = p12 * p21;
+  int last = w->swap;
+  w->swap = num < den;
+  if (last != w->swap)
+    ++w->swaps;
+  if (!in->burnin &&
+      (num >= den * in->threshold || (w->swap && den >= num * in->threshold)))
+    w->types[c] = 3;
+  if (trace)
+    fprintf(trace, "H %d %" PRIu32 " %" PRIu32 " %d %d %d\n", c, ba_bits(num),
+            ba_bits(den), w->swap, w->swaps, w->types[c]);
+}
+static void ba_impute(const ba_input *in, ba_work *w, int c, int i, FILE *trace)
+{
+  float *p1 = w->bmiss1 + (size_t)i * in->K,
+        *p2 = w->bmiss2 + (size_t)i * in->K;
+  if (w->swap)
+  {
+    float *tmp = p1;
+    p1 = p2;
+    p2 = tmp;
+  }
+  float a1[2] = {0, 0}, a2[2] = {0, 0};
+  for (int k = 0; k < in->K; ++k)
+  {
+    p1[k] *= w->fwd[in->K + k];
+    p2[k] *= w->fwd[2 * in->K + k];
+  }
+  for (int k = 0; k < in->K; ++k)
+  {
+    int al = in->refs[(size_t)i * in->K + k];
+    a1[al] += p1[k];
+    a2[al] += p2[k];
+  }
+  int m = c ? in->ends[c - 1] : 0;
+  if (w->types[c] == 0)
+  {
+    w->a[m] = a1[1] > a1[0];
+    w->b[m] = a2[1] > a2[0];
+  }
+  else
+  {
+    int x = w->a[m], y = w->b[m];
+    float no = a1[x] * a2[y], yes = a1[y] * a2[x];
+    if (yes > no)
+    {
+      w->a[m] = y;
+      w->b[m] = x;
+      if (yes >= in->threshold * no)
+        w->types[c] = 3;
+    }
+    else if (no >= in->threshold * yes)
+      w->types[c] = 3;
+  }
+  if (trace)
+  {
+    fprintf(trace, "I %d", c);
+    ba_vector(trace, a1, 2);
+    ba_vector(trace, a2, 2);
+    fprintf(trace, " %d %d %d\n", w->a[m], w->b[m], w->types[c]);
+  }
+}
+static void ba_run(const ba_input *in, ba_work *w, FILE *trace)
+{
+  int K = in->K, C = in->C, miss = w->nmiss - 1, unph = w->nunph - 1;
+  size_t bytes = (size_t)K * sizeof(float);
+  for (int k = 0; k < 3 * K; ++k)
+    w->bwd[k] = 1.0f / K;
+  if (w->types[C - 1] < 2)
+  {
+    memcpy(w->bmiss1 + (size_t)miss * K, w->bwd, bytes);
+    memcpy(w->bmiss2 + (size_t)miss * K, w->bwd, bytes);
+    --miss;
+  }
+  for (int c = C - 2; c >= 0; --c)
+  {
+    ba_step(in, w, c + 1, 1, trace);
+    if (w->types[c] < 2)
+    {
+      memcpy(w->bmiss1 + (size_t)miss * K, w->bwd + K, bytes);
+      memcpy(w->bmiss2 + (size_t)miss * K, w->bwd + 2 * K, bytes);
+      --miss;
+    }
+    if (w->types[c + 1] == 4)
+    {
+      memcpy(w->bhet1 + (size_t)unph * K, w->bwd + K, bytes);
+      memcpy(w->bhet2 + (size_t)unph * K, w->bwd + 2 * K, bytes);
+      memcpy(w->bwd + K, w->bwd, bytes);
+      memcpy(w->bwd + 2 * K, w->bwd, bytes);
+      --unph;
+    }
+  }
+  for (int k = 0; k < 3 * K; ++k)
+    w->fwd[k] = 1.0f / K;
+  for (int t = 0; t < 3; ++t)
+    w->sums[t] = 1.0f;
+  miss = unph = 0;
+  for (int c = 0; c < C; ++c)
+  {
+    if (w->types[c] == 4)
+    {
+      ba_phase_het(in, w, c, unph++, trace);
+      if (w->swap)
+      {
+        int end = unph < w->nunph ? w->unph[unph] : C;
+        for (int j = c; j < end; ++j)
+        {
+          unsigned char *tmp = w->rows[C + j];
+          w->rows[C + j] = w->rows[2 * C + j];
+          w->rows[2 * C + j] = tmp;
+        }
+        for (int m = c ? in->ends[c - 1] : 0; m < in->ends[end - 1]; ++m)
+        {
+          int tmp = w->a[m];
+          w->a[m] = w->b[m];
+          w->b[m] = tmp;
+        }
+      }
+      memcpy(w->fwd + K, w->fwd, bytes);
+      memcpy(w->fwd + 2 * K, w->fwd, bytes);
+      w->sums[1] = w->sums[2] = w->sums[0];
+    }
+    ba_step(in, w, c, 0, trace);
+    if (w->types[c] < 2)
+      ba_impute(in, w, c, miss++, trace);
+  }
+}
+static void ba_destroy(ba_work *w)
+{
+  free(w->types);
+  free(w->a);
+  free(w->b);
+  free(w->unph);
+  free(w->mm);
+  free(w->rows);
+  free(w->fwd);
+  free(w->bwd);
+  free(w->bmiss1);
+  free(w->bmiss2);
+  free(w->bhet1);
+  free(w->bhet2);
+}
+
+typedef struct
+{
+  int M, N, it, burnin, iterations, threads, max_states;
+  int T;
+  uint64_t seed;
+  float step, buffer, mismatch, threshold;
+  double *pos;
+  int *bp, *gt;
+  uint64_t *haps;
+  hi_clusters *clusters;
+  float *recomb;
+} it_input;
+typedef struct
+{
+  int S, per_batch, batches, overlap, backoff, candidates;
+  int *ends, *codes, *sizes, *donors;
+} it_donors;
+static void it_ints(FILE *f, const char *tag, int index, const int *v, int n)
+{
+  fprintf(f, "%s", tag);
+  if (index >= 0)
+    fprintf(f, " %d", index);
+  for (int j = 0; j < n; ++j)
+    fprintf(f, " %d", v[j]);
+  fputc('\n', f);
+}
+static it_donors it_find_donors(const it_input *in, const ibs_result *ibs,
+                                FILE *trace)
+{
+  int M = in->M, H = 2 * in->N, words = (M + 63) / 64;
+  it_donors out = {0};
+  out.ends = ba_alloc(M, sizeof(int));
+  for (int end = 0; end < M;)
+  {
+    double boundary = in->pos[end] + in->step;
+    ++end;
+    while (end < M && in->pos[end] < boundary)
+      ++end;
+    out.ends[out.S++] = end;
+  }
+  out.per_batch = (out.S + in->threads - 1) / in->threads;
+  out.batches = (out.S + out.per_batch - 1) / out.per_batch;
+  out.overlap = (int)rint((double)(in->buffer / in->step));
+  out.backoff = (int)rint((double)(0.3f / in->step));
+  int candidates = 100;
+  if (in->it >= in->burnin)
+  {
+    double remaining = in->burnin + in->iterations - in->it;
+    double proportion = remaining / in->iterations;
+    candidates = (int)floor(proportion * 90 + 0.5);
+    if (candidates < 5)
+      candidates = 5;
+  }
+  if (in->it >= in->burnin + in->iterations)
+    candidates = 10;
+  out.candidates = candidates < H ? candidates : H;
+  out.codes = ba_alloc((size_t)out.S * H, sizeof(int));
+  out.sizes = ba_alloc(out.S, sizeof(int));
+  out.donors = ba_alloc((size_t)out.S * H, sizeof(int));
+  uint32_t *hash = ba_alloc(H, sizeof(uint32_t));
+  for (int s = 0, start = 0; s < out.S; start = out.ends[s++])
+  {
+    int *code = out.codes + (size_t)s * H;
+    for (int h = 0; h < H; ++h)
+    {
+      uint32_t value = 0;
+      for (int m = start; m < out.ends[s]; ++m)
+        if ((in->haps[(size_t)h * words + (m >> 6)] >> (m & 63)) & 1)
+          value ^= UINT32_C(1) << (m % 32);
+      hash[h] = value;
+      int previous = 0;
+      while (previous < h && hash[previous] != value)
+        ++previous;
+      code[h] = previous < h ? code[previous] : out.sizes[s]++;
+    }
+  }
+  free(hash);
+  if (trace)
+  {
+    fprintf(trace, "SCHED %d %d %d %d %d %d\n", out.S, out.per_batch,
+            out.batches, out.overlap, out.backoff, out.candidates);
+    it_ints(trace, "ENDS", -1, out.ends, out.S);
+    for (int s = 0; s < out.S; ++s)
+      it_ints(trace, "CODE", s, out.codes + (size_t)s * H, H);
+  }
+  pbwt_workspace w;
+  if (pbwt_alloc(&w, H))
+    st_failure(ST_PHASE_PBWT);
+  int *a = ba_alloc(H, sizeof(int)), *d = ba_alloc(H + 1, sizeof(int));
+  int backward = (in->it & 1) == 0;
+  for (int batch = 0; batch < out.batches; ++batch)
+  {
+    int start = batch * out.per_batch, end = start + out.per_batch;
+    if (end > out.S)
+      end = out.S;
+    int first = backward ? end + out.overlap : start - out.overlap;
+    if (first < 0)
+      first = 0;
+    if (first > out.S)
+      first = out.S;
+    int initial = backward ? first - 1 : first;
+    for (int h = 0; h < H; ++h)
+      a[h] = h;
+    for (int h = 0; h <= H; ++h)
+      d[h] = initial;
+    for (int s = backward ? first - 1 : first; backward ? s >= start : s < end;
+         s += backward ? -1 : 1)
+    {
+      pbwt_update(&w, out.codes + (size_t)s * H, out.sizes[s], s, backward, a,
+                  d);
+      if (s >= start && s < end)
+      {
+        d[0] = d[H] = s + (backward ? -2 : 2);
+        choose_donors(H, 2 * in->T, out.candidates, s, backward,
+                      in->seed + (uint64_t)s, a, d, ibs,
+                      s ? out.ends[s - 1] : 0, out.ends[s] - 1,
+                      out.donors + (size_t)s * H);
+      }
+    }
+  }
+  pbwt_free(&w);
+  free(a);
+  free(d);
+  if (trace)
+    for (int s = 0; s < out.S; ++s)
+      it_ints(trace, "DONOR", s, out.donors + (size_t)s * H, H);
+  return out;
+}
+
+#undef it_find_donors
+
+typedef struct
+{
+  const uint64_t *haps;
+  const int *ends;
+  int H, words, begin, end;
+  int *codes, *sizes;
+} st_code_task;
+static uint32_t st_hash_slot(uint32_t x)
+{
+  x ^= x >> 16;
+  x *= UINT32_C(0x7feb352d);
+  x ^= x >> 15;
+  x *= UINT32_C(0x846ca68b);
+  return x ^ (x >> 16);
+}
+static void st_codes_worker(void *data)
+{
+  st_code_task *t = data;
+  size_t capacity = 1;
+  while (capacity < (size_t)2 * t->H)
+    capacity <<= 1;
+  uint32_t *keys = ba_alloc(capacity, sizeof(uint32_t));
+  int *first = ba_alloc(capacity, sizeof(int));
+  for (int s = t->begin; s < t->end; ++s)
+  {
+    memset(first, 0, capacity * sizeof(int));
+    int start = s ? t->ends[s - 1] : 0;
+    int *code = t->codes + (size_t)s * t->H;
+    for (int h = 0; h < t->H; ++h)
+    {
+      uint32_t value = 0;
+      for (int m = start; m < t->ends[s]; ++m)
+        if ((t->haps[(size_t)h * t->words + (m >> 6)] >> (m & 63)) & 1)
+          value ^= UINT32_C(1) << (m % 32);
+      size_t slot = st_hash_slot(value) & (capacity - 1);
+      while (first[slot] && keys[slot] != value)
+        slot = (slot + 1) & (capacity - 1);
+      if (first[slot])
+        code[h] = code[first[slot] - 1];
+      else
+      {
+        first[slot] = h + 1;
+        keys[slot] = value;
+        code[h] = t->sizes[s]++;
+      }
+    }
+  }
+  free(keys);
+  free(first);
+}
+static void st_build_codes(const uint64_t *haps, int H, int words, int S,
+                           const int *ends, int *codes, int *sizes, int workers)
+{
+  if (workers > S)
+    workers = S;
+  if (workers < 1)
+    workers = 1;
+#ifdef MT
+#pragma omp parallel num_threads(workers) if (workers > 1)
+#endif
+  {
+    int tid = omp_get_thread_num(), team = omp_get_num_threads();
+    st_code_task t = {haps,  ends,           H,
+                      words, S * tid / team, S * (tid + 1) / team,
+                      codes, sizes};
+    st_worker_run(st_codes_worker, &t, 3);
+  }
+  st_workers_check();
+}
+
+typedef struct
+{
+  const it_input *in;
+  const ibs_result *ibs;
+  it_donors *out;
+  const int *a, *d, *steps;
+  int begin, end, backward, stride;
+} st_donor_task;
+static void st_donors_worker(void *data)
+{
+  st_donor_task *t = data;
+  int H = 2 * t->in->N;
+  for (int j = t->begin; j < t->end; j += t->stride)
+  {
+    int s = t->steps[j];
+    choose_donors(H, 2 * t->in->T, t->out->candidates, s, t->backward,
+                  t->in->seed + (uint64_t)s, t->a + (size_t)j * H,
+                  t->d + (size_t)j * (H + 1), t->ibs,
+                  s ? t->out->ends[s - 1] : 0, t->out->ends[s] - 1,
+                  t->out->donors + (size_t)s * H);
+  }
+}
+static void st_donors_block(const it_input *in, const ibs_result *ibs,
+                            it_donors *out, int *a, int *d, int *steps,
+                            int count, int backward, int workers)
+{
+  if (workers > count)
+    workers = count;
+#ifdef MT
+#pragma omp parallel num_threads(workers) if (workers > 1)
+#endif
+  {
+    int tid = omp_get_thread_num(), team = omp_get_num_threads();
+    st_donor_task t = {in, ibs, out, a, d, steps, tid, count, backward, team};
+    st_worker_run(st_donors_worker, &t, 4);
+  }
+  st_workers_check();
+}
+static it_donors it_find_donors(const it_input *in, const ibs_result *ibs,
+                                FILE *trace)
+{
+  if (trace)
+    return st_serial_find_donors(in, ibs, trace);
+  int M = in->M, H = 2 * in->N, words = (M + 63) / 64,
+      workers = st_phase_threads;
+  it_donors out = {0};
+  out.ends = ba_alloc(M, sizeof(int));
+  for (int end = 0; end < M;)
+  {
+    double boundary = in->pos[end] + in->step;
+    ++end;
+    while (end < M && in->pos[end] < boundary)
+      ++end;
+    out.ends[out.S++] = end;
+  }
+
+  out.per_batch = (out.S + in->threads - 1) / in->threads;
+  out.batches = (out.S + out.per_batch - 1) / out.per_batch;
+  out.overlap = (int)rint((double)(in->buffer / in->step));
+  out.backoff = (int)rint((double)(0.3f / in->step));
+  int candidates = 100;
+  if (in->it >= in->burnin)
+  {
+    double remaining = in->burnin + in->iterations - in->it;
+    double proportion = remaining / in->iterations;
+    candidates = (int)floor(proportion * 90 + 0.5);
+    if (candidates < 5)
+      candidates = 5;
+  }
+  if (in->it >= in->burnin + in->iterations)
+    candidates = 10;
+  out.candidates = candidates < H ? candidates : H;
+  out.codes = ba_alloc((size_t)out.S * H, sizeof(int));
+  out.sizes = ba_alloc(out.S, sizeof(int));
+  out.donors = ba_alloc((size_t)out.S * H, sizeof(int));
+  st_build_codes(in->haps, H, words, out.S, out.ends, out.codes, out.sizes,
+                 workers);
+  pbwt_workspace w;
+  if (pbwt_alloc(&w, H))
+    st_failure(ST_PHASE_PBWT);
+  int *a = ba_alloc(H, sizeof(int)), *d = ba_alloc(H + 1, sizeof(int));
+  int backward = (in->it & 1) == 0;
+  enum
+  {
+    BLOCK = 128
+  };
+  int *snap_a = ba_alloc((size_t)BLOCK * H, sizeof(int));
+  int *snap_d = ba_alloc((size_t)BLOCK * (H + 1), sizeof(int));
+  int steps[BLOCK], count = 0;
+  for (int batch = 0; batch < out.batches; ++batch)
+  {
+    int start = batch * out.per_batch, end = start + out.per_batch;
+    if (end > out.S)
+      end = out.S;
+    int first = backward ? end + out.overlap : start - out.overlap;
+    if (first < 0)
+      first = 0;
+    if (first > out.S)
+      first = out.S;
+    int initial = backward ? first - 1 : first;
+    for (int h = 0; h < H; ++h)
+      a[h] = h;
+    for (int h = 0; h <= H; ++h)
+      d[h] = initial;
+    for (int s = backward ? first - 1 : first; backward ? s >= start : s < end;
+         s += backward ? -1 : 1)
+    {
+      pbwt_update(&w, out.codes + (size_t)s * H, out.sizes[s], s, backward, a,
+                  d);
+      if (s >= start && s < end)
+      {
+        d[0] = d[H] = s + (backward ? -2 : 2);
+        if (workers == 1)
+        {
+          choose_donors(H, 2 * in->T, out.candidates, s, backward,
+                        in->seed + (uint64_t)s, a, d, ibs,
+                        s ? out.ends[s - 1] : 0, out.ends[s] - 1,
+                        out.donors + (size_t)s * H);
+        }
+        else
+        {
+          memcpy(snap_a + (size_t)count * H, a, (size_t)H * sizeof(int));
+          memcpy(snap_d + (size_t)count * (H + 1), d,
+                 (size_t)(H + 1) * sizeof(int));
+          steps[count++] = s;
+          if (count == BLOCK)
+          {
+            st_donors_block(in, ibs, &out, snap_a, snap_d, steps, count,
+                            backward, workers);
+            count = 0;
+          }
+        }
+      }
+    }
+  }
+  if (count)
+    st_donors_block(in, ibs, &out, snap_a, snap_d, steps, count, backward,
+                    workers);
+  pbwt_free(&w);
+  free(a);
+  free(d);
+  free(snap_a);
+  free(snap_d);
+  return out;
+}
+
+typedef struct
+{
+  it_input input;
+  float *distance, intensity, initial_lr;
+  int em;
+} sq_input;
+typedef struct
+{
+  uint64_t checksum;
+  int iterations;
+  float mismatch, intensity;
+} sq_result;
+typedef struct
+{
+  uint64_t checksum, unphased, swaps;
+} sq_counts;
+typedef struct
+{
+  it_input *in;
+  it_donors donor;
+  cs_input ci;
+  uint64_t *next;
+  FILE *trace;
+  int begin, end, stride;
+  sq_counts *counts;
+} sq_task;
+
+static void sq_task_run(void *data)
+{
+  sq_task *task = data;
+  it_input *in = task->in;
+  it_donors donor = task->donor;
+  cs_input ci = task->ci;
+  uint64_t *next = task->next;
+  FILE *trace = task->trace;
+  int M = in->M, H = 2 * in->N, words = (M + 63) / 64;
+  uint64_t checksum = 0, unphased_count = 0, swap_count = 0;
+  ci.donors = ba_alloc((size_t)2 * donor.S, sizeof(int));
+  cs_work cw = cs_create(&ci);
+  for (int sample = task->begin; sample < task->end; sample += task->stride)
+  {
+    hi_clusters cl = {in->clusters[sample].n, in->clusters[sample].end,
+                      ba_alloc(in->clusters[sample].n, sizeof(int))};
+    memcpy(cl.type, in->clusters[sample].type, (size_t)cl.n * sizeof(int));
+    if (in->threshold < 50.0f)
+      hi_mask(&cl, in->bp);
+    int missing = 0, unph = 0;
+    for (int c = 0; c < cl.n; ++c)
+    {
+      missing += cl.type[c] < 2;
+      unph += cl.type[c] == 4;
+    }
+    const uint64_t *h1 = in->haps + (size_t)2 * sample * words,
+                   *h2 = h1 + words;
+    int *a = ba_alloc(M, sizeof(int)), *b = ba_alloc(M, sizeof(int));
+    for (int m = 0; m < M; ++m)
+    {
+      a[m] = (h1[m >> 6] >> (m & 63)) & 1;
+      b[m] = (h2[m >> 6] >> (m & 63)) & 1;
+    }
+    if (missing || unph)
+    {
+      for (int s = 0; s < donor.S; ++s)
+        for (int j = 0; j < 2; ++j)
+          ci.donors[2 * s + j] = donor.donors[(size_t)s * H + 2 * sample + j];
+      int K = cs_run(&ci, &cw, sample, in->seed, NULL);
+      ba_input bi = {M,
+                     cl.n,
+                     K,
+                     in->it < in->burnin,
+                     in->mismatch,
+                     in->threshold,
+                     cl.end,
+                     cl.type,
+                     a,
+                     b,
+                     NULL,
+                     NULL,
+                     NULL};
+      bi.refs = ba_alloc((size_t)missing * K, sizeof(int));
+      bi.recomb = ba_alloc(cl.n, sizeof(float));
+      bi.mm = ba_alloc((size_t)3 * cl.n * K, 1);
+      hi_recomb(&cl, in->recomb, bi.recomb);
+      hi_mismatches(&cl, K, words, h1, h2, cw.comp, bi.mm, bi.refs);
+      ba_work bw = ba_create(&bi);
+      ba_reset(&bi, &bw);
+      ba_run(&bi, &bw, NULL);
+      memcpy(a, bw.a, (size_t)M * sizeof(int));
+      memcpy(b, bw.b, (size_t)M * sizeof(int));
+      memcpy(cl.type, bw.types, (size_t)cl.n * sizeof(int));
+      unphased_count += (uint64_t)unph;
+      swap_count += (uint64_t)bw.swaps;
+      ba_destroy(&bw);
+      free(bi.refs);
+      free(bi.recomb);
+      free(bi.mm);
+    }
+    if (trace)
+    {
+      it_ints(trace, "TYPES", sample, cl.type, cl.n);
+      it_ints(trace, "A", sample, a, M);
+      it_ints(trace, "B", sample, b, M);
+    }
+    for (int m = 0; m < M; ++m)
+      checksum += (uint64_t)(sample + 1) * (m + 1) * (a[m] + 3 * b[m]);
+    for (int c = 0; c < cl.n; ++c)
+      checksum += (uint64_t)(sample + 1) * (c + 1) * cl.type[c];
+    for (int m = 0; m < M; ++m)
+    {
+      next[(size_t)2 * sample * words + (m >> 6)] |= (uint64_t)a[m] << (m & 63);
+      next[(size_t)(2 * sample + 1) * words + (m >> 6)] |= (uint64_t)b[m]
+                                                           << (m & 63);
+    }
+    memcpy(in->clusters[sample].type, cl.type, (size_t)cl.n * sizeof(int));
+    free(a);
+    free(b);
+    free(cl.type);
+  }
+  cs_destroy(&cw);
+  free(ci.donors);
+  *task->counts = (sq_counts){checksum, unphased_count, swap_count};
+}
+static uint64_t sq_phase(it_input *in, it_donors donor, uint64_t *unphased,
+                         uint64_t *swaps, FILE *trace)
+{
+  int M = in->M, H = 2 * in->N, words = (M + 63) / 64;
+  cs_input ci = {M,     H,    donor.S, in->max_states, 200,
+                 words, NULL, NULL,    in->haps};
+  int min_steps = (int)ceil((double)(1.0f / in->step));
+  if (min_steps > ci.min_steps)
+    ci.min_steps = min_steps;
+  ci.starts = ba_alloc(donor.S, sizeof(int));
+  for (int s = 1; s < donor.S; ++s)
+    ci.starts[s] = donor.ends[s - 1];
+  uint64_t checksum = 0, unphased_count = 0, swap_count = 0;
+  uint64_t *next = ba_alloc((size_t)H * words, sizeof(uint64_t));
+
+  memcpy(next + (size_t)2 * in->T * words, in->haps + (size_t)2 * in->T * words,
+         (size_t)2 * (in->N - in->T) * words * sizeof(uint64_t));
+  int workers = trace ? 1 : st_phase_threads;
+  if (workers > in->T)
+    workers = in->T;
+  sq_counts *counts = ba_alloc(workers, sizeof(sq_counts));
+
+#ifdef MT
+#pragma omp parallel num_threads(workers) if (workers > 1)
+#endif
+  {
+    int tid = 0, team = 1;
+#ifdef MT
+    tid = omp_get_thread_num();
+    team = omp_get_num_threads();
+#endif
+    sq_task task = {in, donor, ci, next, trace, tid, in->T, team, counts + tid};
+    st_worker_run(sq_task_run, &task, 2);
+  }
+  st_workers_check();
+  for (int w = 0; w < workers; ++w)
+  {
+    checksum += counts[w].checksum;
+    unphased_count += counts[w].unphased;
+    swap_count += counts[w].swaps;
+  }
+  free(counts);
+  *unphased = unphased_count;
+  *swaps = swap_count;
+  free(ci.starts);
+  memcpy(in->haps, next, (size_t)H * words * sizeof(uint64_t));
+  free(next);
+  return checksum;
+}
+
+static float sq_threshold(const it_input *in, float initial)
+{
+  if (in->it < in->burnin)
+    return INFINITY;
+  int last = in->iterations - 1;
+  if (in->it == last + in->burnin)
+    return 1.0f;
+  double exponent = (double)(last - (in->it - in->burnin)) / last;
+  return (float)(4.0 * pow((double)initial / 4.0, exponent));
+}
+static void sq_check_reference(const it_input *in)
+{
+  int H = 2 * in->N, words = (in->M + 63) / 64;
+  for (int h = 2 * in->T; h < H; ++h)
+    for (int m = 0; m < in->M; ++m)
+      if ((int)((in->haps[(size_t)h * words + (m >> 6)] >> (m & 63)) & 1) !=
+          in->gt[(size_t)m * H + h])
+        st_failure(ST_PHASE_REFERENCE);
+}
+static sq_result sq_run(sq_input *seq, const ibs_result *ibs, FILE *trace)
+{
+  it_input *in = &seq->input;
+  uint64_t base_seed = in->seed - (uint64_t)in->it;
+  sq_result result = {0, 0, in->mismatch, seq->intensity};
+  while (in->it < in->burnin + in->iterations)
+  {
+    in->seed = base_seed + (uint64_t)in->it;
+    in->threshold = sq_threshold(in, seq->initial_lr);
+    if (trace)
+      fprintf(trace, "ITER %d %u\n", in->it, pe_float_bits(in->threshold));
+    it_donors donor = it_find_donors(in, ibs, trace);
+    if (seq->em && (in->it == 0 || in->it < in->burnin))
+    {
+      int min_steps = (int)ceil((double)(1.0f / in->step));
+      if (min_steps < 200)
+        min_steps = 200;
+      int *starts = ba_alloc(donor.S, sizeof(int));
+      for (int s = 1; s < donor.S; ++s)
+        starts[s] = donor.ends[s - 1];
+      er_input est = {{in->M, 2 * in->N, donor.S, in->max_states, min_steps,
+                       (in->M + 63) / 64, starts, NULL, in->haps},
+                      in->T,
+                      in->it == 0,
+                      in->seed,
+                      donor.donors,
+                      seq->distance,
+                      in->mismatch,
+                      seq->intensity};
+      er_result e = er_run(&est, NULL);
+      in->mismatch = e.mismatch;
+      seq->intensity = e.intensity;
+      for (int m = 0; m < in->M; ++m)
+        in->recomb[m] = (float)-expm1(-(double)e.intensity * seq->distance[m]);
+      free(starts);
+    }
+    if (trace)
+    {
+      fprintf(trace, "PARAM %u %u\nRECOMB", pe_float_bits(in->mismatch),
+              pe_float_bits(seq->intensity));
+      for (int m = 0; m < in->M; ++m)
+        fprintf(trace, " %u", pe_float_bits(in->recomb[m]));
+      fputc('\n', trace);
+    }
+    uint64_t unphased, swaps;
+    result.checksum = sq_phase(in, donor, &unphased, &swaps, trace);
+    sq_check_reference(in);
+    if (trace)
+      fprintf(trace, "COUNTS %llu %llu\n", (unsigned long long)unphased,
+              (unsigned long long)swaps);
+    free(donor.ends);
+    free(donor.codes);
+    free(donor.sizes);
+    free(donor.donors);
+    ++result.iterations;
+    ++in->it;
+    double rate = unphased ? (double)swaps / unphased : NAN;
+    if (in->it < in->burnin && rate <= 0.01)
+      in->it = in->burnin;
+  }
+  result.mismatch = in->mismatch;
+  result.intensity = seq->intensity;
+  return result;
+}
+
+static uint64_t rng;
+static uint32_t next_bits(unsigned bits)
+{
+  rng = (rng * UINT64_C(0x5deece66d) + 11) & ((UINT64_C(1) << 48) - 1);
+  return (uint32_t)(rng >> (48 - bits));
+}
+static uint32_t next_int(uint32_t bound)
+{
+  if ((bound & (bound - 1)) == 0)
+    return (uint32_t)(((uint64_t)bound * next_bits(31)) >> 31);
+  uint32_t bits, val;
+  do
+  {
+    bits = next_bits(31);
+    val = bits % bound;
+  } while ((uint64_t)bits - val + (bound - 1) > INT32_MAX);
+  return val;
+}
+static int vote(int h, int a1, int a2, const int *order, const int *rank,
+                const int *allele, const int *unph, int H)
+{
+  int r = rank[h], total = 0;
+  for (int side = 0; side < 2; ++side)
+  {
+    int j = r + (side ? 1 : -1);
+    if (j < 0 || j >= H)
+      continue;
+    int d = order[j];
+    if (!unph[d / 2])
+      total += (allele[d] == a1) - (allele[d] == a2);
+  }
+  return total;
+}
+static int fill(int h, const int *order, const int *rank, const int *a,
+                const int *unph, int H)
+{
+  int r = rank[h], left = -1, right = -1;
+  if (r > 0 && !unph[order[r - 1] / 2])
+    left = a[order[r - 1]];
+  if (r + 1 < H && !unph[order[r + 1] / 2])
+    right = a[order[r + 1]];
+  if (left >= 0 && (left == right || right < 0))
+    return left;
+  if (left < 0 && right >= 0)
+    return right;
+  return -1;
+}
+static void partial(int *a, int *unph, const int *order, const int *rank, int N)
+{
+  int threshold = 2, change = 1;
+  while (threshold > 0 || change)
+  {
+    change = 0;
+    for (int s = 0; s < N; ++s)
+    {
+      int h = 2 * s;
+      if (unph[s])
+      {
+        int count = vote(h, a[h], a[h + 1], order, rank, a, unph, 2 * N) +
+                    vote(h + 1, a[h + 1], a[h], order, rank, a, unph, 2 * N);
+        if (count >= threshold)
+        {
+          unph[s] = 0;
+          change = 1;
+        }
+        else if (count <= -threshold)
+        {
+          int t = a[h];
+          a[h] = a[h + 1];
+          a[h + 1] = t;
+          unph[s] = 0;
+          change = 1;
+        }
+      }
+      else
+      {
+        for (int side = 0; side < 2; ++side)
+          if (a[h + side] < 0)
+          {
+            a[h + side] = fill(h + side, order, rank, a, unph, 2 * N);
+            change |= a[h + side] >= 0;
+          }
+      }
+    }
+    if (!change)
+      --threshold;
+  }
+}
+
+typedef struct
+{
+  int M, N, burn, iterations, K, em;
+  uint64_t seed;
+  float rare, scale, ne, buffer, lr;
+  double *pos;
+  int *bp, *gt;
+  int T;
+} np_input;
+static int np_cmp(const void *a, const void *b)
+{
+  double x = *(const double *)a, y = *(const double *)b;
+  return (x > y) - (x < y);
+}
+static void np_free(sq_input *seq)
+{
+  it_input *in = &seq->input;
+  for (int s = 0; s < in->N; ++s)
+    hi_free(in->clusters + s);
+  free(in->clusters);
+  free(in->gt);
+  free(in->pos);
+  free(in->bp);
+  free(in->haps);
+  free(in->recomb);
+  free(seq->distance);
+}
+
+static sq_input fp_select(const np_input *raw, const int *na, int **selected)
+{
+  int M = raw->M, N = raw->N, H = 2 * N;
+  int *ix = ba_alloc(M, sizeof(int));
+  int S = 0;
+  int max = (int)floor((double)((float)N * raw->rare));
+  if (max < 3)
+    max = 3;
+  for (int m = 0; m < M; ++m)
+  {
+    int *cnt = ba_alloc(na[m], sizeof(int));
+    for (int s = 0; s < N; ++s)
+    {
+      int a = raw->gt[(size_t)m * H + 2 * s],
+          b = raw->gt[(size_t)m * H + 2 * s + 1];
+      if (a >= 0)
+        ++cnt[a];
+      if (b >= 0 && b != a)
+        ++cnt[b];
+    }
+    int high = 0;
+    for (int a = 0; a < na[m]; ++a)
+      high += cnt[a] > max;
+    free(cnt);
+    if (high > 1)
+      ix[S++] = m;
+  }
+  if (S < 2 || (float)S > 0.75f * (float)M)
+  {
+    S = M;
+    for (int m = 0; m < M; ++m)
+      ix[m] = m;
+  }
+  for (int j = 0; j < S; ++j)
+    if (na[ix[j]] > 2)
+    {
+      st_failure(ST_PHASE_ALLELES);
+    }
+  sq_input out = {0};
+  it_input *in = &out.input;
+  in->M = S;
+  in->N = N;
+  in->T = raw->T;
+  in->burnin = raw->burn;
+  in->iterations = raw->iterations;
+  in->threads = 1;
+  in->max_states = raw->K;
+  in->buffer = raw->buffer;
+  j_random jr;
+  jr_seed(&jr, raw->seed);
+  uint64_t high = (uint64_t)(int64_t)(int32_t)jr_bits(&jr, 32);
+  int64_t low = (int32_t)jr_bits(&jr, 32);
+  in->seed = (high << 32) + (uint64_t)low;
+  in->pos = ba_alloc(S, sizeof(double));
+  in->bp = ba_alloc(S, sizeof(int));
+  in->gt = ba_alloc((size_t)S * H, sizeof(int));
+  in->haps = ba_alloc((size_t)H * ((S + 63) / 64), sizeof(uint64_t));
+  in->clusters = ba_alloc(N, sizeof(hi_clusters));
+  in->recomb = ba_alloc(S, sizeof(float));
+  out.distance = ba_alloc(S, sizeof(float));
+  out.initial_lr = raw->lr;
+  out.em = raw->em;
+  double *diff = ba_alloc(S - 1, sizeof(double));
+  for (int m = 0; m < S; ++m)
+  {
+    in->pos[m] = raw->pos[ix[m]];
+    in->bp[m] = raw->bp[ix[m]];
+    memcpy(in->gt + (size_t)m * H, raw->gt + (size_t)ix[m] * H,
+           (size_t)H * sizeof(int));
+    if (m)
+    {
+      out.distance[m] = (float)(in->pos[m] - in->pos[m - 1]);
+      diff[m - 1] = in->pos[m] - in->pos[m - 1];
+    }
+  }
+  qsort(diff, S - 1, sizeof(double), np_cmp);
+  int n = S - 1;
+  float median = 0.5f * (float)(diff[(n - 1) / 2] + diff[n / 2]);
+  in->step = raw->scale * median;
+  free(diff);
+  *selected = ix;
+  return out;
+}
+
+typedef struct
+{
+  int H, T, S, per_batch, overlap, backoff, candidates, backward;
+  uint64_t seed;
+  int *sizes, *codes, *list_start, *lengths, **lists;
+  const ibs_result *ibs;
+  const int *starts, *ends;
+} rp_input;
+static int rp_min(int a, int b)
+{
+  return a < b ? a : b;
+}
+static int rp_max(int a, int b)
+{
+  return a > b ? a : b;
+}
+static int rp_cmp(const void *a, const void *b)
+{
+  int x = *(const int *)a, y = *(const int *)b;
+  return (x > y) - (x < y);
+}
+static int rp_excluded(const rp_input *in, int step, int hap, int other)
+{
+  return ibs_query(in->ibs, hap / 2, other / 2, in->starts[step],
+                   in->ends[step] - 1);
+}
+static void rp_neighbors(const rp_input *in, int step, const int *a, int *inv,
+                         int *prev, int *next, int *scratch)
+{
+  for (int i = 0; i < in->H; ++i)
+  {
+    inv[a[i]] = i;
+    prev[i] = INT_MIN;
+    next[i] = INT_MAX;
+  }
+  for (int list = in->list_start[step]; list < in->list_start[step + 1]; ++list)
+  {
+    int n = in->lengths[list];
+    for (int j = 0; j < n; ++j)
+      scratch[j] = inv[in->lists[list][j]];
+    qsort(scratch, (size_t)n, sizeof(int), rp_cmp);
+    for (int j = 1; j < n; ++j)
+    {
+      int x = scratch[j - 1], y = scratch[j];
+      if (x > prev[y])
+        prev[y] = x;
+      if (y < next[x])
+        next[x] = y;
+    }
+  }
+}
+static int rp_best(const rp_input *in, int step, int i, const int *a,
+                   const int *d, const int *prev, const int *next)
+{
+  int best_prev = -1, best_next = -1;
+  int left = in->backward ? in->S - 1 : 0, right = left;
+  int edge = (i + 1) < in->H ? (in->backward ? rp_max(d[i], d[i + 1])
+                                             : rp_min(d[i], d[i + 1]))
+                             : d[i];
+  int limit = in->backward ? rp_max(edge - in->backoff, step)
+                           : rp_min(edge + in->backoff, step);
+  int pi = prev[i];
+  while (pi > INT_MIN && rp_excluded(in, step, a[i], a[pi]))
+    pi = prev[pi];
+  if (pi > INT_MIN)
+  {
+    int u = i;
+    while (u - 1 != pi && (in->backward ? d[u] >= limit : d[u] <= limit))
+    {
+      left = in->backward ? rp_min(left, d[u]) : rp_max(left, d[u]);
+      --u;
+    }
+    if (u - 1 == pi && (in->backward ? d[u] >= limit : d[u] <= limit))
+    {
+      left = in->backward ? rp_min(left, d[u]) : rp_max(left, d[u]);
+      best_prev = pi;
+    }
+  }
+  int ni = next[i];
+  while (ni < INT_MAX && rp_excluded(in, step, a[i], a[ni]))
+    ni = next[ni];
+  if (ni < INT_MAX)
+  {
+    int v = i;
+    while (v + 1 != ni &&
+           (in->backward ? d[v + 1] >= limit : d[v + 1] <= limit))
+    {
+      ++v;
+      right = in->backward ? rp_min(right, d[v]) : rp_max(right, d[v]);
+    }
+    if (v + 1 == ni && (in->backward ? d[v + 1] >= limit : d[v + 1] <= limit))
+    {
+      ++v;
+      right = in->backward ? rp_min(right, d[v]) : rp_max(right, d[v]);
+      best_next = ni;
+    }
+  }
+
+  if ((in->backward ? left > right : left < right) && best_prev != -1)
+    return best_prev;
+  return best_next;
+}
+static void rp_select(const rp_input *in, int step, const int *a, int *d,
+                      const int *prev, const int *next, int *out)
+{
+  j_random rng;
+  jr_seed(&rng, in->seed + (uint64_t)step);
+  d[in->H] = step + (in->backward ? -1 : 1);
+  for (int i = 0; i < in->H; ++i)
+    if (a[i] < in->T)
+    {
+      int best = rp_best(in, step, i, a, d, prev, next);
+      if (best >= 0)
+      {
+        out[a[i]] = a[best];
+        continue;
+      }
+      int u = i, v = i + 1, left = d[u], right = d[v];
+      while (v - u < in->candidates &&
+             (in->backward ? (step <= left || step <= right)
+                           : (left <= step || right <= step)))
+      {
+        if (in->backward)
+        {
+          if (left <= right)
+          {
+            ++v;
+            right = rp_min(d[v], right);
+          }
+          else
+          {
+            --u;
+            left = rp_min(d[u], left);
+          }
+        }
+        else
+        {
+          if (right <= left)
+          {
+            ++v;
+            right = rp_max(d[v], right);
+          }
+          else
+          {
+            --u;
+            left = rp_max(d[u], left);
+          }
+        }
+      }
+      int n = v - u, match = -1;
+      if (n > 1)
+      {
+        int index = u + (int)jr_int(&rng, (uint32_t)n);
+        for (int j = 0; j < n && match == -1; ++j)
+        {
+          if (!rp_excluded(in, step, a[i], a[index]))
+            match = a[index];
+          if (++index == v)
+            index = u;
+        }
+      }
+      out[a[i]] = match;
+    }
+}
+static void rp_print(FILE *f, const char *name, int step, const int *x, int n)
+{
+  if (!f)
+    return;
+  fprintf(f, "%s %d", name, step);
+  for (int j = 0; j < n; ++j)
+    fprintf(f, " %d", x[j]);
+  fputc('\n', f);
+}
+static void rp_run(const rp_input *in, int *selected, FILE *trace)
+{
+  int H = in->H;
+  int *a = malloc((size_t)H * sizeof(int)),
+      *d = malloc((size_t)(H + 1) * sizeof(int));
+  int *inv = malloc((size_t)H * sizeof(int)),
+      *prev = malloc((size_t)H * sizeof(int)),
+      *next = malloc((size_t)H * sizeof(int)),
+      *tmp = malloc((size_t)H * sizeof(int));
+  pbwt_workspace w;
+  if (!a || !d || !inv || !prev || !next || !tmp || pbwt_alloc(&w, H))
+    st_failure(ST_PHASE_PBWT);
+  for (int start = 0; start < in->S; start += in->per_batch)
+  {
+    int end = rp_min(start + in->per_batch, in->S);
+    int buffer = in->backward ? rp_min(end + in->overlap, in->S)
+                              : rp_max(0, start - in->overlap);
+    for (int i = 0; i < H; ++i)
+      a[i] = i;
+    for (int i = 0; i <= H; ++i)
+      d[i] = buffer - (in->backward ? 1 : 0);
+    int first = in->backward ? buffer - 1 : buffer,
+        stop = in->backward ? start - 1 : end, delta = in->backward ? -1 : 1;
+    for (int s = first; s != stop; s += delta)
+    {
+      pbwt_update(&w, in->codes + (size_t)s * H, in->sizes[s], s, in->backward,
+                  a, d);
+      if (s < start || s >= end)
+        continue;
+      rp_neighbors(in, s, a, inv, prev, next, tmp);
+      int *out = selected + (size_t)s * in->T;
+      rp_select(in, s, a, d, prev, next, out);
+      rp_print(trace, "A", s, a, H);
+      rp_print(trace, "D", s, d, H + 1);
+      rp_print(trace, "PREV", s, prev, H);
+      rp_print(trace, "NEXT", s, next, H);
+      rp_print(trace, "DONOR", s, out, in->T);
+    }
+  }
+  pbwt_free(&w);
+  free(a);
+  free(d);
+  free(inv);
+  free(prev);
+  free(next);
+  free(tmp);
+}
+
+typedef struct
+{
+  int M, H, S, K, min_steps, target;
+  uint64_t seed;
+  const int *starts, *donors, *alleles;
+} ls_input;
+typedef struct
+{
+  int hap, end, next;
+} ls_node;
+typedef struct
+{
+  cs_work queue;
+  int used, *first, *last, *cursor;
+  ls_node *nodes;
+  int *ids;
+  unsigned char *mismatch;
+} ls_work;
+static ls_work ls_create(const ls_input *in)
+{
+  ls_work w = {0};
+  w.queue.last = cs_alloc(in->H, sizeof(int));
+  w.queue.heap = cs_alloc(in->K, sizeof(cs_segment));
+  w.first = cs_alloc(in->K, sizeof(int));
+  w.last = cs_alloc(in->K, sizeof(int));
+  w.cursor = cs_alloc(in->K, sizeof(int));
+  w.nodes = cs_alloc((size_t)2 * in->S + in->K, sizeof(ls_node));
+  w.ids = cs_alloc((size_t)in->M * in->K, sizeof(int));
+  w.mismatch = cs_alloc((size_t)in->M * in->K, sizeof(unsigned char));
+  return w;
+}
+static void ls_destroy(ls_work *w)
+{
+  cs_destroy(&w->queue);
+  free(w->ids);
+  free(w->mismatch);
+  free(w->first);
+  free(w->last);
+  free(w->cursor);
+  free(w->nodes);
+}
+static void ls_append(ls_work *w, cs_segment segment, int end)
+{
+  int n = w->used++, index = segment.index;
+  w->nodes[n] = (ls_node){segment.hap, end, -1};
+  if (w->first[index] < 0)
+    w->first[index] = n;
+  else
+    w->nodes[w->last[index]].next = n;
+  w->last[index] = n;
+}
+static void ls_add(const ls_input *in, ls_work *w, int hap, int step)
+{
+  if (hap < 0)
+    return;
+  cs_work *q = &w->queue;
+  if (q->last[hap] == -103)
+  {
+    while (q->n && q->heap[0].last != q->last[q->heap[0].hap])
+    {
+      cs_segment head = cs_poll(q);
+      head.last = q->last[head.hap];
+      cs_offer(q, head);
+    }
+    if (q->n == in->K || (q->n && step - q->heap[0].last >= in->min_steps))
+    {
+      cs_segment head = cs_poll(q);
+      int next = in->starts[(head.last + step) >> 1];
+      q->last[head.hap] = -103;
+      ls_append(w, head, next);
+      head.hap = hap;
+      head.start = next;
+      head.last = step;
+      cs_offer(q, head);
+    }
+    else
+    {
+      cs_segment head = {hap, 0, step, q->n};
+      cs_offer(q, head);
+    }
+  }
+  q->last[hap] = step;
+}
+static int ls_run(const ls_input *in, ls_work *w)
+{
+  cs_work *q = &w->queue;
+  q->n = 0;
+  w->used = 0;
+  for (int j = 0; j < in->K; ++j)
+    w->first[j] = w->last[j] = -1;
+  for (int h = 0; h < in->H; ++h)
+    q->last[h] = -103;
+  for (int step = 0; step < in->S; ++step)
+  {
+    ls_add(in, w, in->donors[2 * step], step);
+    ls_add(in, w, in->donors[2 * step + 1], step);
+  }
+  if (!q->n)
+  {
+    int count = in->H - 2 < in->K ? in->H - 2 : in->K;
+    if (count <= 0)
+      return 0;
+    j_random rng;
+    jr_seed(&rng, in->seed + (uint64_t)in->target);
+    for (int j = 0; j < count; ++j)
+    {
+      int h;
+      do
+      {
+        h = (int)jr_int(&rng, (uint32_t)in->H);
+      } while ((h >> 1) == (in->target >> 1));
+
+      cs_segment head = {h, 0, 0, j};
+      cs_offer(q, head);
+    }
+  }
+  int count = q->n;
+  while (q->n)
+    ls_append(w, cs_poll(q), in->M);
+  for (int j = 0; j < count; ++j)
+    w->cursor[j] = w->first[j];
+  for (int m = 0; m < in->M; ++m)
+  {
+    const int *alleles = in->alleles + (size_t)m * in->H;
+    for (int j = 0; j < count; ++j)
+    {
+      size_t index = (size_t)m * in->K + j;
+      int cursor = w->cursor[j];
+
+      if (m == w->nodes[cursor].end)
+        cursor = w->nodes[cursor].next;
+      w->cursor[j] = cursor;
+      w->ids[index] = w->nodes[cursor].hap;
+      w->mismatch[index] = alleles[w->ids[index]] != alleles[in->target];
+    }
+  }
+  return count;
+}
+
+typedef struct
+{
+  int markers, states;
+  float emission[2];
+  const float *recomb;
+  const unsigned char *mismatch;
+} sp_input;
+static void sp_forward(const sp_input *in, float *restrict probs)
+{
+  int K = in->states;
+  float last_sum = 0.0f;
+  for (int j = 0; j < K; ++j)
+  {
+    probs[j] = in->emission[in->mismatch[j]];
+    last_sum += probs[j];
+  }
+  for (int m = 1; m < in->markers; ++m)
+  {
+    size_t row = (size_t)m * K, previous = row - K;
+    float p_rec = in->recomb[m];
+    float shift = p_rec / K;
+    float scale = (1.0f - p_rec) / last_sum;
+    last_sum = 0.0f;
+    for (int j = 0; j < K; ++j)
+    {
+      float emission = in->emission[in->mismatch[row + j]];
+      probs[row + j] = emission * (scale * probs[previous + j] + shift);
+      last_sum += probs[row + j];
+    }
+  }
+}
+static void sp_backward(const sp_input *in, float *restrict probs,
+                        float *restrict backward)
+{
+  int K = in->states;
+  for (int j = 0; j < K; ++j)
+    backward[j] = 1.0f / K;
+
+  for (int m = in->markers - 2; m >= 0; --m)
+  {
+    size_t row = (size_t)m * K, next = row + K;
+    float sum = 0.0f;
+    for (int j = 0; j < K; ++j)
+    {
+      backward[j] *= in->emission[in->mismatch[next + j]];
+      sum += backward[j];
+    }
+    float p_rec = in->recomb[m + 1];
+    float scale = (1.0f - p_rec) / sum;
+    float shift = p_rec / K;
+    sum = 0.0f;
+    for (int j = 0; j < K; ++j)
+    {
+      backward[j] = scale * backward[j] + shift;
+      probs[row + j] *= backward[j];
+      sum += probs[row + j];
+    }
+    for (int j = 0; j < K; ++j)
+      probs[row + j] /= sum;
+  }
+}
+
+typedef struct
+{
+  int a, b, reference;
+  float left, right;
+} rr_donor;
+typedef struct
+{
+  int alleles, a, b, count[2];
+  float weight;
+  int *rare;
+  rr_donor *donors[2];
+} rr_input;
+static void rr_probabilities(const rr_input *in, int bit, int impute,
+                             float *out)
+{
+  memset(out, 0, (size_t)in->alleles * sizeof(*out));
+  for (int j = 0; j < in->count[bit]; ++j)
+  {
+    rr_donor d = in->donors[bit][j];
+    if (d.a < 0 || d.b < 0)
+      continue;
+    float probability = in->weight * d.left + (1.0f - in->weight) * d.right;
+    if (d.a == d.b || (impute && d.reference))
+    {
+      out[d.a] += probability;
+    }
+    else if (!impute)
+    {
+      int x = in->rare[in->a] && (in->a == d.a || in->a == d.b);
+      int y = in->rare[in->b] && (in->b == d.a || in->b == d.b);
+      if (x != y)
+        out[x ? in->a : in->b] += probability;
+    }
+    else
+    {
+      int x = in->rare[d.a], y = in->rare[d.b];
+
+      double wa = x != y ? (x ? 0.55 : 0.45) : 0.5;
+      double wb = x != y ? (x ? 0.45 : 0.55) : 0.5;
+      out[d.a] = (float)((double)out[d.a] + wa * probability);
+      out[d.b] = (float)((double)out[d.b] + wb * probability);
+    }
+  }
+}
+static int rr_max(const float *p, int n)
+{
+  int best = 0;
+  for (int j = 1; j < n; ++j)
+    if (p[j] > p[best])
+      best = j;
+  return best;
+}
+static void rr_run(const rr_input *in, j_random *rng, float *p, float *q,
+                   int *a, int *b)
+{
+  *a = in->a;
+  *b = in->b;
+  if (*a >= 0 && *b >= 0 && *a == *b)
+    return;
+  int impute = *a < 0 || *b < 0;
+  rr_probabilities(in, 0, impute, p);
+  rr_probabilities(in, 1, impute, q);
+  if (impute)
+  {
+    *a = rr_max(p, in->alleles);
+    *b = rr_max(q, in->alleles);
+  }
+  else
+  {
+    float x = p[*a] * q[*b], y = p[*b] * q[*a];
+    if (x < y || (x == y && jr_bits(rng, 1)))
+    {
+      int tmp = *a;
+      *a = *b;
+      *b = tmp;
+    }
+  }
+}
+
+typedef struct
+{
+  int n, rare, *samples;
+} fp_carrier;
+typedef struct
+{
+  const np_input *raw;
+  const int *na;
+  int *selected, *offset, *previous, *full_to_common;
+  float *weight;
+  fp_carrier *carriers;
+  sq_input seq;
+  ibs_result ibs;
+  uint64_t phase_seed;
+} fp_data;
+static fp_data fp_prepare(const np_input *raw, const int *na,
+                          const np_input *spliced)
+{
+  fp_data f = {0};
+  f.raw = spliced;
+  f.na = na;
+  f.seq = fp_select(raw, na, &f.selected);
+  it_input *in = &f.seq.input;
+  int M = raw->M, N = raw->N, H = 2 * N, C = in->M;
+  for (int m = 0; m < C; ++m)
+    memcpy(in->gt + (size_t)m * H, spliced->gt + (size_t)f.selected[m] * H,
+           (size_t)H * sizeof(int));
+  f.phase_seed = in->seed;
+  float *maf = ba_alloc(C, sizeof(float));
+  for (int m = 0; m < C; ++m)
+  {
+    int count[2] = {0, 0};
+    for (int h = 0; h < H; ++h)
+    {
+      int a = in->gt[(size_t)m * H + h];
+      if (a >= 0)
+        ++count[a];
+    }
+    int n = count[0] + count[1];
+    maf[m] = n ? (float)((double)rp_min(count[0], count[1]) / n) : 0;
+  }
+
+  if (in->T == N)
+    f.ibs = ibs_build(in->gt, in->pos, maf, C, N, NULL);
+  else
+  {
+    int *target = ba_alloc((size_t)C * 2 * in->T, sizeof(int));
+    for (int m = 0; m < C; ++m)
+      memcpy(target + (size_t)m * 2 * in->T, in->gt + (size_t)m * H,
+             (size_t)2 * in->T * sizeof(int));
+    f.ibs = ibs_build(target, in->pos, maf, C, in->T, NULL);
+    free(target);
+  }
+  free(maf);
+  f.offset = ba_alloc(M + 1, sizeof(int));
+  f.previous = ba_alloc(M, sizeof(int));
+  f.weight = ba_alloc(M, sizeof(float));
+  f.full_to_common = ba_alloc(M, sizeof(int));
+  for (int m = 0; m < M; ++m)
+  {
+    f.offset[m + 1] = f.offset[m] + na[m];
+    f.full_to_common[m] = -1;
+  }
+  for (int m = 0; m < C; ++m)
+    f.full_to_common[f.selected[m]] = m;
+  f.carriers = ba_alloc(f.offset[M], sizeof(fp_carrier));
+  int limit = (int)floor((double)((float)N * raw->rare));
+  if (limit < 3)
+    limit = 3;
+  for (int m = 0; m < M; ++m)
+  {
+    fp_carrier *c = f.carriers + f.offset[m];
+    for (int a = 0; a < na[m]; ++a)
+      c[a].samples = ba_alloc(limit, sizeof(int));
+    for (int s = 0; s < N; ++s)
+    {
+      int a = raw->gt[(size_t)m * H + 2 * s],
+          b = raw->gt[(size_t)m * H + 2 * s + 1];
+      if (a >= 0)
+      {
+        if (c[a].n < limit)
+          c[a].samples[c[a].n] = s;
+        ++c[a].n;
+      }
+      if (b >= 0 && b != a)
+      {
+        if (c[b].n < limit)
+          c[b].samples[c[b].n] = s;
+        ++c[b].n;
+      }
+    }
+    for (int a = 0; a < na[m]; ++a)
+      c[a].rare = (C < M && c[a].n <= limit);
+  }
+  for (int m = 0, left = 0; m < M; ++m)
+  {
+    while (left + 1 < C && f.selected[left + 1] <= m)
+      ++left;
+    f.previous[m] = left;
+    f.weight[m] = (m <= f.selected[0] || left == C - 1)
+                      ? 1.0f
+                      : (float)((in->pos[left + 1] - raw->pos[m]) /
+                                (in->pos[left + 1] - in->pos[left]));
+  }
+  return f;
+}
+
+static void fp_codes(const it_input *in, rp_input *rp, int **starts, int **ends)
+{
+  int M = in->M, H = 2 * in->N, words = (M + 63) / 64;
+  *starts = ba_alloc(M, sizeof(int));
+  *ends = ba_alloc(M, sizeof(int));
+  for (int end = 0; end < M;)
+  {
+    (*starts)[rp->S] = end;
+    double boundary = in->pos[end] + in->step;
+    ++end;
+    while (end < M && in->pos[end] < boundary)
+      ++end;
+    (*ends)[rp->S++] = end;
+  }
+  rp->H = H;
+  rp->T = 2 * in->T;
+  rp->per_batch = (rp->S + in->threads - 1) / in->threads;
+  rp->overlap = (int)rint((double)(in->buffer / in->step));
+  rp->backoff = (int)rint((double)(0.3f / in->step));
+  rp->candidates = rp_min(10, H);
+  rp->seed = in->seed;
+  rp->starts = *starts;
+  rp->ends = *ends;
+  rp->codes = ba_alloc((size_t)rp->S * H, sizeof(int));
+  rp->sizes = ba_alloc(rp->S, sizeof(int));
+  st_build_codes(in->haps, H, words, rp->S, *ends, rp->codes, rp->sizes,
+                 st_phase_threads);
+}
+typedef struct
+{
+  rp_input input;
+  int *donors;
+} fp_direction_task;
+static void fp_direction_run(void *data)
+{
+  fp_direction_task *t = data;
+  rp_run(&t->input, t->donors, NULL);
+}
+typedef struct
+{
+  fp_data *f;
+  int *out, *phase;
+  rp_input *rp;
+  int *starts, **donors;
+  int begin, end;
+} fp_sample_task;
+static void fp_samples_run(void *data)
+{
+  fp_sample_task *t = data;
+  fp_data *f = t->f;
+  int *out = t->out, *phase = t->phase;
+  rp_input rp = *t->rp;
+  int *starts = t->starts, **donors = t->donors;
+  it_input *in = &f->seq.input;
+  const np_input *raw = f->raw;
+  int M = raw->M, C = in->M, N = raw->N, H = 2 * N;
+  int Kmax = in->max_states / 2,
+      min_steps = rp_max(200, (int)ceil((double)(1.0f / in->step)));
+  int *pair = ba_alloc((size_t)2 * rp.S, sizeof(int));
+  ls_input li = {C, H, rp.S, Kmax, min_steps, 0, in->seed, starts, pair, phase};
+  ls_work lw = ls_create(&li);
+  int *ids[2] = {ba_alloc((size_t)C * Kmax, sizeof(int)),
+                 ba_alloc((size_t)C * Kmax, sizeof(int))};
+  float *prob[2] = {ba_alloc((size_t)C * Kmax, sizeof(float)),
+                    ba_alloc((size_t)C * Kmax, sizeof(float))};
+  unsigned char *mm = ba_alloc((size_t)C * Kmax, 1);
+  float *back = ba_alloc(Kmax, sizeof(float));
+  rr_donor *rd[2] = {ba_alloc(Kmax, sizeof(rr_donor)),
+                     ba_alloc(Kmax, sizeof(rr_donor))};
+  int max_alleles = 0;
+  for (int m = 0; m < M; ++m)
+    max_alleles = rp_max(max_alleles, f->na[m]);
+  int *rare = ba_alloc(max_alleles, sizeof(int));
+  float *p = ba_alloc(max_alleles, sizeof(float)),
+        *q = ba_alloc(max_alleles, sizeof(float));
+  for (int sample = t->begin; sample < t->end; ++sample)
+  {
+    int K[2];
+    for (int bit = 0; bit < 2; ++bit)
+    {
+      li.target = 2 * sample + bit;
+      for (int s = 0; s < rp.S; ++s)
+      {
+        pair[2 * s] = donors[0][(size_t)s * rp.T + li.target];
+        pair[2 * s + 1] = donors[1][(size_t)s * rp.T + li.target];
+      }
+      K[bit] = ls_run(&li, &lw);
+      memcpy(ids[bit], lw.ids, (size_t)C * Kmax * sizeof(int));
+      for (int m = 0; m < C; ++m)
+        memcpy(mm + (size_t)m * K[bit], lw.mismatch + (size_t)m * Kmax, K[bit]);
+      sp_input si = {
+          C, K[bit], {1.0f - in->mismatch, in->mismatch}, in->recomb, mm};
+      sp_forward(&si, prob[bit]);
+      sp_backward(&si, prob[bit], back);
+    }
+    j_random rng;
+    jr_seed(&rng, in->seed + (uint64_t)sample);
+    for (int m = 0; m < M; ++m)
+      if (f->full_to_common[m] < 0)
+      {
+        int left = f->previous[m], right = rp_min(left + 1, C - 1);
+        for (int a = 0; a < f->na[m]; ++a)
+          rare[a] = f->carriers[f->offset[m] + a].rare;
+        for (int bit = 0; bit < 2; ++bit)
+          for (int j = 0; j < K[bit]; ++j)
+          {
+            int h = ids[bit][(size_t)left * Kmax + j];
+            rd[bit][j] = (rr_donor){
+                raw->gt[(size_t)m * H + h], raw->gt[(size_t)m * H + (h ^ 1)],
+                h >= 2 * in->T, prob[bit][(size_t)left * K[bit] + j],
+                prob[bit][(size_t)right * K[bit] + j]};
+          }
+        rr_input ri = {f->na[m],
+                       raw->gt[(size_t)m * H + 2 * sample],
+                       raw->gt[(size_t)m * H + 2 * sample + 1],
+                       {K[0], K[1]},
+                       f->weight[m],
+                       rare,
+                       {rd[0], rd[1]}};
+        int a, b;
+        rr_run(&ri, &rng, p, q, &a, &b);
+        out[(size_t)m * H + 2 * sample] = a;
+        out[(size_t)m * H + 2 * sample + 1] = b;
+      }
+  }
+  ls_destroy(&lw);
+  free(pair);
+  free(ids[0]);
+  free(ids[1]);
+  free(prob[0]);
+  free(prob[1]);
+  free(mm);
+  free(back);
+  free(rd[0]);
+  free(rd[1]);
+  free(rare);
+  free(p);
+  free(q);
+}
+static void fp_stage2(fp_data *f, int *out, FILE *trace)
+{
+  it_input *in = &f->seq.input;
+  const np_input *raw = f->raw;
+  int M = raw->M, C = in->M, N = raw->N, H = 2 * N, words = (C + 63) / 64;
+  int *phase = ba_alloc((size_t)C * H, sizeof(int));
+  for (int m = 0; m < M; ++m)
+    memcpy(out + (size_t)m * H + 2 * in->T, raw->gt + (size_t)m * H + 2 * in->T,
+           (size_t)2 * (N - in->T) * sizeof(int));
+  for (int m = 0; m < C; ++m)
+    for (int h = 0; h < H; ++h)
+    {
+      int a = (in->haps[(size_t)h * words + (m >> 6)] >> (m & 63)) & 1;
+      phase[(size_t)m * H + h] = a;
+      out[(size_t)f->selected[m] * H + h] = a;
+    }
+  if (C == M)
+  {
+    free(phase);
+    return;
+  }
+  rp_input rp = {0};
+  int *starts, *ends;
+  fp_codes(in, &rp, &starts, &ends);
+  rp.ibs = &f->ibs;
+  rp.list_start = ba_alloc(rp.S + 1, sizeof(int));
+  int capacity = f->offset[M];
+  rp.lists = ba_alloc(capacity, sizeof(int *));
+  rp.lengths = ba_alloc(capacity, sizeof(int));
+  int lists = 0;
+  for (int s = 0; s < rp.S; ++s)
+  {
+    rp.list_start[s] = lists;
+    int begin = s ? f->selected[starts[s]] : 0,
+        end = s + 1 < rp.S ? f->selected[starts[s + 1]] : M;
+    for (int m = begin; m < end; ++m)
+      for (int a = 0; a < f->na[m]; ++a)
+      {
+        fp_carrier c = f->carriers[f->offset[m] + a];
+        if (c.rare && c.n > 1)
+        {
+          rp.lengths[lists] = 2 * c.n;
+          int *v = ba_alloc(2 * c.n, sizeof(int));
+          for (int j = 0; j < c.n; ++j)
+          {
+            v[2 * j] = 2 * c.samples[j];
+            v[2 * j + 1] = 2 * c.samples[j] + 1;
+          }
+          rp.lists[lists++] = v;
+        }
+      }
+  }
+  rp.list_start[rp.S] = lists;
+  int *donors[2] = {ba_alloc((size_t)rp.S * rp.T, sizeof(int)),
+                    ba_alloc((size_t)rp.S * rp.T, sizeof(int))};
+#ifdef MT
+  int directions = trace ? 1 : (st_phase_threads < 2 ? 1 : 2);
+#pragma omp parallel for num_threads(directions) if (directions > 1)
+#endif
+  for (int b = 0; b < 2; ++b)
+  {
+    fp_direction_task t = {rp, donors[b]};
+    t.input.backward = b;
+    st_worker_run(fp_direction_run, &t, 5);
+  }
+  st_workers_check();
+  if (trace)
+    for (int b = 0; b < 2; ++b)
+      for (int s = 0; s < rp.S; ++s)
+        it_ints(trace, b ? "BWD" : "FWD", s, donors[b] + (size_t)s * rp.T,
+                rp.T);
+  int workers = trace ? 1 : st_phase_threads;
+  if (workers > in->T)
+    workers = in->T;
+#ifdef MT
+#pragma omp parallel num_threads(workers) if (workers > 1)
+#endif
+  {
+    int tid = omp_get_thread_num(), team = omp_get_num_threads();
+    fp_sample_task t = {f,
+                        out,
+                        phase,
+                        &rp,
+                        starts,
+                        donors,
+                        in->T * tid / team,
+                        in->T * (tid + 1) / team};
+    st_worker_run(fp_samples_run, &t, 6);
+  }
+  st_workers_check();
+  free(phase);
+  free(starts);
+  free(ends);
+  free(rp.codes);
+  free(rp.sizes);
+  free(rp.list_start);
+  for (int j = 0; j < lists; ++j)
+    free(rp.lists[j]);
+  free(rp.lists);
+  free(rp.lengths);
+  free(donors[0]);
+  free(donors[1]);
+}
+static void fp_free(fp_data *f)
+{
+  for (int a = 0; a < f->offset[f->raw->M]; ++a)
+    free(f->carriers[a].samples);
+  free(f->carriers);
+  free(f->offset);
+  free(f->previous);
+  free(f->weight);
+  free(f->full_to_common);
+  free(f->selected);
+  ibs_free(&f->ibs);
+  np_free(&f->seq);
+}
+
+static int *np_phase_overlap(int M, int N, const int *g, uint64_t seed,
+                             int overlap, int T)
+{
+  int H = 2 * N;
+  size_t Z = (size_t)M * H;
+  int *rev = calloc(Z, sizeof(int)), *fwd = calloc(Z, sizeof(int));
+  int *a = calloc(H, sizeof(int)), *order = calloc(H, sizeof(int)),
+      *next = calloc(H, sizeof(int));
+  int *rank = calloc(H, sizeof(int)), *unph = calloc(N, sizeof(int)),
+      *missing = calloc(N, sizeof(int));
+  int *last = calloc(N, sizeof(int));
+  if (!rev || !fwd || !a || !order || !next || !rank || !unph || !missing ||
+      !last)
+    st_failure(ST_PHASE_MEMORY);
+  rng = ((uint64_t)seed ^ UINT64_C(0x5deece66d)) & ((UINT64_C(1) << 48) - 1);
+  for (int pass = 0; pass < 2; ++pass)
+  {
+    for (int h = 0; h < H; ++h)
+      order[h] = h;
+    for (int s = 0; s < N; ++s)
+      last[s] = -1;
+    for (int t = 0; t < M; ++t)
+    {
+      int m = pass ? t : M - 1 - t;
+      if (t)
+      {
+        int zeros = 0;
+        for (int h = 0; h < H; ++h)
+          zeros += a[h] == 0;
+        int offset[2] = {0, zeros};
+        for (int j = 0; j < H; ++j)
+        {
+          int h = order[j];
+          next[offset[a[h]]++] = h;
+        }
+        memcpy(order, next, (size_t)H * sizeof(int));
+      }
+      for (int h = 0; h < H; ++h)
+        rank[order[h]] = h;
+      memcpy(a, g + (size_t)m * H, (size_t)H * sizeof(int));
+      int cdf[2] = {0, 0};
+      for (int s = 0; s < N; ++s)
+      {
+        int h = 2 * s;
+        missing[s] = a[h] < 0 || a[h + 1] < 0;
+        unph[s] = s < T && !missing[s] && a[h] != a[h + 1];
+        if (a[h] >= 0)
+          ++cdf[a[h]];
+        if (a[h + 1] >= 0)
+          ++cdf[a[h + 1]];
+      }
+      cdf[1] += cdf[0];
+      if (m >= overlap)
+        partial(a, unph, order, rank, N);
+      if (m >= overlap)
+        for (int s = 0; s < T; ++s)
+        {
+          int h = 2 * s, prev = last[s];
+          if (unph[s])
+          {
+            int swap = 0;
+            if (!pass)
+              swap = (int)next_bits(1);
+            else if (prev >= 0)
+            {
+              size_t q = (size_t)prev * H + h, z = (size_t)m * H + h;
+              int sameRev = (rev[q] < rev[q + 1]) == (rev[z] < rev[z + 1]);
+              int sameFwd = (fwd[q] < fwd[q + 1]) == (a[h] < a[h + 1]);
+              swap = sameRev != sameFwd;
+            }
+            if (swap)
+            {
+              int x = a[h];
+              a[h] = a[h + 1];
+              a[h + 1] = x;
+            }
+            unph[s] = 0;
+          }
+          else
+          {
+            for (int side = 0; side < 2; ++side)
+              if (a[h + side] < 0)
+              {
+                if (!pass)
+                  a[h + side] =
+                      cdf[1] ? (next_int((uint32_t)cdf[1]) >= (uint32_t)cdf[0])
+                             : 0;
+                else
+                {
+                  int aligned = side;
+                  if (prev >= 0)
+                  {
+                    size_t q = (size_t)prev * H + h;
+                    if ((rev[q] < rev[q + 1]) != (fwd[q] < fwd[q + 1]))
+                      aligned ^= 1;
+                  }
+                  a[h + side] = rev[(size_t)m * H + h + aligned];
+                }
+              }
+          }
+        }
+      memcpy((pass ? fwd : rev) + (size_t)m * H, a, (size_t)H * sizeof(int));
+      if (pass)
+      {
+        for (int s = 0; s < N; ++s)
+          if (!missing[s] && a[2 * s] != a[2 * s + 1])
+            last[s] = m;
+      }
+    }
+  }
+  free(rev);
+  free(a);
+  free(order);
+  free(next);
+  free(rank);
+  free(unph);
+  free(missing);
+  free(last);
+  return fwd;
+}
+
+static int gm_search_double(const double *a, int n, double key)
+{
+  int lo = 0, hi = n - 1;
+  while (lo <= hi)
+  {
+    int mid = (lo + hi) >> 1;
+    if (a[mid] < key)
+      lo = mid + 1;
+    else if (a[mid] > key)
+      hi = mid - 1;
+    else
+    {
+      int64_t abits, kbits;
+      memcpy(&abits, a + mid, sizeof(abits));
+      memcpy(&kbits, &key, sizeof(kbits));
+      if (abits == kbits)
+        return mid;
+      if (abits < kbits)
+        lo = mid + 1;
+      else
+        hi = mid - 1;
+    }
+  }
+  return -lo - 1;
+}
+static double gm_position(const int *bp, const double *cm, int n, int x)
+{
+  int lo = 0, hi = n - 1;
+  while (lo <= hi)
+  {
+    int mid = (lo + hi) >> 1;
+    if (bp[mid] < x)
+      lo = mid + 1;
+    else if (bp[mid] > x)
+      hi = mid - 1;
+    else
+      return cm[mid];
+  }
+  int a = lo - 1, b = lo;
+  if (a == n - 1)
+  {
+    int i = gm_search_double(cm, n, cm[n - 1] - 5.0);
+    if (i < 0)
+      i = -i - 2;
+    a = i > 0 ? i : 0;
+    b = n - 1;
+  }
+  else if (b == 0)
+  {
+    int i = gm_search_double(cm, n, cm[0] + 5.0);
+    if (i < 0)
+      i = -i - 1;
+    a = 0;
+    b = i < n - 1 ? i : n - 1;
+  }
+  return cm[a] +
+         ((double)(x - bp[a]) / (double)(bp[b] - bp[a])) * (cm[b] - cm[a]);
+}
+
+static int gm_prepare(const int *bp, const double *cm, int n,
+                      const int *positions, int m, double *out)
+{
+  if (m < 2 || positions[0] == positions[m - 1] || n == 1 || n < 0)
+    return 0;
+  for (int i = 0; i < m; ++i)
+    if (positions[i] < 0 || (i && positions[i] < positions[i - 1]))
+      return 0;
+  for (int i = 0; i < n; ++i)
+    if (bp[i] < 0 || !isfinite(cm[i]) ||
+        (i && (bp[i] <= bp[i - 1] || cm[i] < cm[i - 1])))
+      return 0;
+  if (n && cm[0] == cm[n - 1])
+    return 0;
+  double first = n ? gm_position(bp, cm, n, positions[0]) : positions[0] * 1e-6;
+  double last =
+      n ? gm_position(bp, cm, n, positions[m - 1]) : positions[m - 1] * 1e-6;
+  double minimum =
+      fmax(fabs(last - first) / (positions[m - 1] - positions[0]), 1e-8);
+  double previous = first;
+  out[0] = first;
+  for (int i = 1; i < m; ++i)
+  {
+    double current =
+        n ? gm_position(bp, cm, n, positions[i]) : positions[i] * 1e-6;
+    out[i] = out[i - 1] + fmax(current - previous, minimum);
+    previous = current;
+  }
+  return 1;
+}
+
+static int st_pbwt_to(const double *pos, int m, double key)
+{
+  int i = gm_search_double(pos, m, key);
+  return i < 0 ? -i - 1 : i + 1;
+}
+static int *np_phase_windows(int M, int N, const int *gt, const double *pos,
+                             uint64_t seed, int overlap, int T)
+{
+  double advance = fmax(2.0, pos[M - 1] - pos[0]);
+  int end = st_pbwt_to(pos, M, pos[0] + advance);
+  if (end == M)
+    return np_phase_overlap(M, N, gt, seed, overlap, T);
+  int haps = 2 * N, start = 0, previous_end = 0, part = 0;
+  int *out = ba_alloc((size_t)M * haps, sizeof(int));
+  int *hets = ba_alloc(M, sizeof(int));
+  for (;;)
+  {
+    int fixed = overlap > start ? overlap - start : 0;
+    int *phase = np_phase_overlap(end - start, N, gt + (size_t)start * haps,
+                                  seed + part, fixed, T);
+    int copy_start = (start + previous_end) >> 1;
+    for (int s = 0; s < N; ++s)
+    {
+      int swap = 0;
+      if (start > 0 && s < T)
+      {
+        int n = 0, seen = 0;
+        for (int m = 0; m < M; ++m)
+        {
+          int a = gt[(size_t)m * haps + 2 * s],
+              b = gt[(size_t)m * haps + 2 * s + 1];
+          if (a >= 0 && b >= 0 && a != b)
+          {
+            if (seen && m >= overlap)
+              hets[n++] = m;
+            seen = 1;
+          }
+        }
+        if (n)
+        {
+          int i = 0;
+          while (i < n && hets[i] < copy_start)
+            ++i;
+          if (i == n || (hets[i] >= previous_end && i > 0))
+            --i;
+          int het = hets[i];
+          if (start <= het && het < previous_end)
+          {
+            size_t a = (size_t)het * haps + 2 * s;
+            size_t b = (size_t)(het - start) * haps + 2 * s;
+            swap = out[a] == phase[b + 1] && out[a + 1] == phase[b];
+          }
+        }
+      }
+      for (int m = copy_start; m < end; ++m)
+      {
+        size_t a = (size_t)m * haps + 2 * s;
+        size_t b = (size_t)(m - start) * haps + 2 * s;
+        out[a] = phase[b + swap];
+        out[a + 1] = phase[b + (swap ^ 1)];
+      }
+    }
+    free(phase);
+    if (end == M)
+      break;
+    int next_start = gm_search_double(pos, M, pos[end] - 0.5);
+    start = next_start < 0 ? -next_start - 1 : next_start;
+    previous_end = end;
+    end = st_pbwt_to(pos, M, pos[end] + advance);
+    ++part;
+  }
+  free(hets);
+  return out;
+}
+
+static void np_initialize_overlap(sq_input *seq, float ne, FILE *trace,
+                                  int overlap)
+{
+  it_input *in = &seq->input;
+  int M = in->M, N = in->N, H = 2 * N, words = (M + 63) / 64;
+  int *phase =
+      np_phase_windows(M, N, in->gt, in->pos, in->seed, overlap, in->T);
+  memset(in->haps, 0, (size_t)H * words * sizeof(uint64_t));
+  int *a = ba_alloc(M, sizeof(int)), *b = ba_alloc(M, sizeof(int)),
+      *unph = ba_alloc(M, sizeof(int)), *miss = ba_alloc(M, sizeof(int));
+  for (int s = 0; s < N; ++s)
+  {
+    int U = 0, D = 0, seen = 0;
+    for (int m = 0; m < M; ++m)
+    {
+      a[m] = phase[(size_t)m * H + 2 * s];
+      b[m] = phase[(size_t)m * H + 2 * s + 1];
+      int ga = in->gt[(size_t)m * H + 2 * s],
+          gb = in->gt[(size_t)m * H + 2 * s + 1];
+      if (ga < 0 || gb < 0)
+        miss[D++] = m;
+      else if (s < in->T && ga != gb)
+      {
+        if (seen && m >= overlap)
+          unph[U++] = m;
+        seen = 1;
+      }
+      in->haps[(size_t)(2 * s) * words + (m >> 6)] |= (uint64_t)a[m]
+                                                      << (m & 63);
+      in->haps[(size_t)(2 * s + 1) * words + (m >> 6)] |= (uint64_t)b[m]
+                                                          << (m & 63);
+    }
+    hi_free(in->clusters + s);
+    in->clusters[s] = hi_cluster(M, a, b, in->pos, U, unph, D, miss);
+    if (trace)
+    {
+      it_ints(trace, "INITENDS", s, in->clusters[s].end, in->clusters[s].n);
+      it_ints(trace, "INITTYPES", s, in->clusters[s].type, in->clusters[s].n);
+      it_ints(trace, "INITA", s, a, M);
+      it_ints(trace, "INITB", s, b, M);
+    }
+  }
+  double theta = 1.0 / (log(H) + 0.5);
+  in->mismatch = (float)(theta / (2 * (theta + H)));
+  seq->intensity = (0.04f * ne) / H;
+  in->it = 0;
+  in->threshold = sq_threshold(in, seq->initial_lr);
+  for (int m = 0; m < M; ++m)
+    in->recomb[m] = (float)-expm1(-(double)seq->intensity * seq->distance[m]);
+  if (trace)
+  {
+    fprintf(trace, "INITPARAM %u %u\n", pe_float_bits(in->mismatch),
+            pe_float_bits(seq->intensity));
+  }
+  free(phase);
+  free(a);
+  free(b);
+  free(unph);
+  free(miss);
+}
+
+typedef struct
+{
+  double window_cm;
+  double overlap_cm;
+  int max_markers;
+} st_window_options;
+
+typedef struct
+{
+  int start, end;
+  int emit_start, emit_end, overlap_start, fixed_prefix;
+} st_window;
+
+static int st_map_base(const int *bp, const double *cm, int n, double genetic,
+                       int *out)
+{
+  double value;
+  if (!n)
+    value = genetic * 1e6;
+  else
+  {
+    int index = gm_search_double(cm, n, genetic);
+    if (index >= 0)
+    {
+      *out = bp[index];
+      return 1;
+    }
+    int a = -index - 2, b = -index - 1;
+    if (a == n - 1)
+    {
+      int i = gm_search_double(cm, n, cm[n - 1] - 5.0);
+      if (i < 0)
+        i = -i - 2;
+      a = i > 0 ? i : 0;
+      b = n - 1;
+    }
+    else if (b == 0)
+    {
+      int i = gm_search_double(cm, n, cm[0] + 5.0);
+      if (i < 0)
+        i = -i - 1;
+      a = 0;
+      b = i < n - 1 ? i : n - 1;
+    }
+    if (cm[b] <= cm[a])
+      return 0;
+    value = bp[a] + ((genetic - cm[a]) / (cm[b] - cm[a])) * (bp[b] - bp[a]);
+  }
+  if (!isfinite(value) || value >= INT_MAX || value < INT_MIN)
+    return 0;
+  *out = (int)floor(value + 0.5);
+  return 1;
+}
+
+static int st_plan_windows(const int *map_bp, const double *map_cm, int map_n,
+                           const int *positions, int m,
+                           st_window_options options, st_window **plan,
+                           int *count)
+{
+  *plan = NULL;
+  *count = 0;
+  if (!positions || m < 2 || map_n < 0 || map_n == 1 ||
+      (map_n && (!map_bp || !map_cm)))
+    return 0;
+  int whole = isinf(options.window_cm) && options.window_cm > 0;
+  if ((!whole && (!isfinite(options.window_cm) || options.window_cm <= 0)) ||
+      !isfinite(options.overlap_cm) || options.overlap_cm < 0 ||
+      options.max_markers < 4)
+    return 0;
+  float window = (float)options.window_cm, overlap = (float)options.overlap_cm;
+  if (!whole && (!isfinite(window) || !isfinite(overlap) || window <= 0 ||
+                 window < 1.1 * overlap))
+    return 0;
+  for (int i = 0; i < m; ++i)
+    if (positions[i] < 0 || (i && positions[i] < positions[i - 1]))
+      return 0;
+  if (positions[0] == positions[m - 1])
+    return 0;
+  for (int i = 0; i < map_n; ++i)
+    if (map_bp[i] < 0 || !isfinite(map_cm[i]) ||
+        (i && (map_bp[i] <= map_bp[i - 1] || map_cm[i] < map_cm[i - 1])))
+      return 0;
+  if (map_n && map_cm[0] == map_cm[map_n - 1])
+    return 0;
+  st_window *windows = calloc((size_t)m, sizeof(*windows));
+  if (!windows)
+    return 0;
+  int start = 0, next = 0, used = 0;
+  while (next < m)
+  {
+    int carried = next - start, end = next;
+    if (whole)
+      end = m;
+    else
+    {
+      double cm = map_n ? gm_position(map_bp, map_cm, map_n, positions[next])
+                        : positions[next] * 1e-6;
+      cm += carried ? (window - overlap) : window;
+      int end_bp;
+      if (!st_map_base(map_bp, map_cm, map_n, cm, &end_bp))
+        goto invalid;
+      while (end < m && positions[end] < end_bp &&
+             end - start < options.max_markers)
+        ++end;
+    }
+    int n = end - start;
+    if (end <= next || n < 2 || positions[start] == positions[end - 1])
+      goto invalid;
+    int keep = n;
+    if (end < m)
+    {
+      double cm = map_n ? gm_position(map_bp, map_cm, map_n, positions[end - 1])
+                        : positions[end - 1] * 1e-6;
+      int key;
+      if (!st_map_base(map_bp, map_cm, map_n, cm - overlap, &key))
+        goto invalid;
+      int lo = n - (options.max_markers >> 2), hi = n - 1;
+      if (lo < 0)
+        lo = 0;
+      while (lo <= hi)
+      {
+        int mid = (lo + hi) >> 1;
+        if (positions[start + mid] < key)
+          lo = mid + 1;
+        else if (positions[start + mid] > key)
+          hi = mid - 1;
+        else
+        {
+          hi = mid;
+          break;
+        }
+      }
+      keep = hi > 0 ? hi : 0;
+      while (keep > 0 && positions[start + keep - 1] == positions[start + keep])
+        --keep;
+    }
+    int emit_start = carried >> 1, emit_end = (n + keep) >> 1;
+    if (emit_end <= emit_start ||
+        (used && windows[used - 1].start + windows[used - 1].emit_end !=
+                     start + emit_start))
+      goto invalid;
+    windows[used++] =
+        (st_window){start, end, emit_start, emit_end, keep, emit_start};
+    start += keep;
+    next = end;
+  }
+  *plan = windows;
+  *count = used;
+  return 1;
+invalid:
+  free(windows);
+  return 0;
+}
+
+static int st_phase_windowed(const np_input *chromosome, const int *alleles,
+                             const int *map_bp, const double *map_cm, int map_n,
+                             st_window_options options, double initial_error,
+                             j_random *master, int chrom, int *window_number,
+                             int *output, FILE *trace)
+{
+  if (!chromosome || !alleles || !master || !window_number || !output ||
+      chrom < 1)
+    return 0;
+  if (!isnan(initial_error) &&
+      (!isfinite(initial_error) || initial_error < 0 || initial_error > 1))
+    return 0;
+  const np_input *c = chromosome;
+  if (c->M < 2 || c->N < 2 || c->N > 5000 || c->T < 1 || c->T > c->N ||
+      c->K < 2 || c->burn < 0 || c->iterations < 1 || !c->gt || !c->bp ||
+      !isfinite(c->rare) || c->rare < 0 || c->rare > 1 || !isfinite(c->scale) ||
+      c->scale <= 0 || !isfinite(c->ne) || c->ne <= 0 || !isfinite(c->buffer) ||
+      c->buffer <= 0 || !isfinite(c->lr) || c->lr <= 0)
+    return 0;
+  int haps = 2 * c->N;
+  for (int m = 0; m < c->M; ++m)
+  {
+    if (alleles[m] < 1 || alleles[m] > 100)
+      return 0;
+    for (int h = 0; h < haps; ++h)
+      if (c->gt[(size_t)m * haps + h] < -1 ||
+          c->gt[(size_t)m * haps + h] >= alleles[m] ||
+          (h >= 2 * c->T && c->gt[(size_t)m * haps + h] < 0))
+        return 0;
+  }
+
+  for (int s = 0; s < c->N; ++s)
+  {
+    int observed = 0;
+    for (int m = 0; m < c->M && !observed; ++m)
+      observed = c->gt[(size_t)m * haps + 2 * s] >= 0 ||
+                 c->gt[(size_t)m * haps + 2 * s + 1] >= 0;
+    if (!observed)
+      return 0;
+  }
+  st_window *plan = NULL;
+  int count = 0;
+  if (!st_plan_windows(map_bp, map_cm, map_n, c->bp, c->M, options, &plan,
+                       &count))
+    return 0;
+  int *previous = NULL, previous_start = 0, previous_end = 0, ok = 1;
+  for (int j = 0; j < count; ++j)
+  {
+#ifdef ST_PHASE_CHECK_INTERRUPT
+    ST_PHASE_CHECK_INTERRUPT();
+#endif
+    st_window w = plan[j];
+    np_input raw = *c;
+    raw.M = w.end - w.start;
+    raw.bp = c->bp + w.start;
+    raw.gt = c->gt + (size_t)w.start * haps;
+    raw.pos = ba_alloc(raw.M, sizeof(double));
+    if (!gm_prepare(map_bp, map_cm, map_n, raw.bp, raw.M, raw.pos))
+    {
+      free(raw.pos);
+      ok = 0;
+      break;
+    }
+    np_input spliced = raw;
+    spliced.gt = ba_alloc((size_t)raw.M * haps, sizeof(int));
+    memcpy(spliced.gt, raw.gt, (size_t)raw.M * haps * sizeof(int));
+    if (w.fixed_prefix)
+    {
+      if (!previous || previous_end - previous_start != w.fixed_prefix)
+      {
+        free(raw.pos);
+        free(spliced.gt);
+        ok = 0;
+        break;
+      }
+      memcpy(spliced.gt, previous + (size_t)previous_start * haps,
+             (size_t)w.fixed_prefix * haps * sizeof(int));
+    }
+    fp_data f = fp_prepare(&raw, alleles + w.start, &spliced);
+    if (!isfinite(f.seq.input.step) || f.seq.input.step <= 0 ||
+        (double)(1.0f / f.seq.input.step) > INT_MAX - 1024.0)
+    {
+      fp_free(&f);
+      free(raw.pos);
+      free(spliced.gt);
+      ok = 0;
+      break;
+    }
+    int common_fixed = 0;
+    while (common_fixed < f.seq.input.M &&
+           f.selected[common_fixed] < w.fixed_prefix)
+      ++common_fixed;
+
+    uint64_t high = (uint64_t)(int64_t)(int32_t)jr_bits(master, 32);
+    int64_t low = (int32_t)jr_bits(master, 32);
+    f.phase_seed = (high << 32) + (uint64_t)low;
+    it_input *in = &f.seq.input;
+    in->seed = f.phase_seed;
+    np_initialize_overlap(&f.seq, raw.ne, NULL, common_fixed);
+    sq_check_reference(in);
+    if (!isnan(initial_error))
+      in->mismatch = (float)initial_error;
+    sq_result result = sq_run(&f.seq, &f.ibs, NULL);
+    in->seed = f.phase_seed + (uint64_t)in->it;
+    int *out = ba_alloc((size_t)raw.M * haps, sizeof(int));
+    fp_stage2(&f, out, NULL);
+    for (int m = 0; m < raw.M; ++m)
+      for (int h = 2 * c->T; h < haps; ++h)
+        if (out[(size_t)m * haps + h] != raw.gt[(size_t)m * haps + h])
+          st_failure(ST_PHASE_REFERENCE);
+    memcpy(output + (size_t)(w.start + w.emit_start) * haps,
+           out + (size_t)w.emit_start * haps,
+           (size_t)(w.emit_end - w.emit_start) * haps * sizeof(int));
+    ++*window_number;
+    if (trace)
+    {
+      fprintf(trace, "WINDOW %d %d %d %d %d %d\n", *window_number, chrom,
+              w.emit_start, w.emit_end, w.overlap_start, w.fixed_prefix);
+      it_ints(trace, "SELECTED", -1, f.selected, f.seq.input.M);
+      fprintf(trace, "WINDOWSEED %" PRIu64 "\n", f.phase_seed);
+      fprintf(trace, "FINAL %d %" PRIu64 " %u %u\n", result.iterations,
+              in->seed, pe_float_bits(in->mismatch),
+              pe_float_bits(f.seq.intensity));
+      for (int m = 0; m < raw.M; ++m)
+        it_ints(trace, "CALL", m, out + (size_t)m * haps, haps);
+    }
+    free(previous);
+    previous = out;
+    previous_start = w.overlap_start;
+    previous_end = w.emit_end;
+    fp_free(&f);
+    free(raw.pos);
+    free(spliced.gt);
+  }
+  free(previous);
+  free(plan);
+  return ok;
+}
+
+#undef malloc
+#undef calloc
+#undef realloc
+#undef free
+#undef ST_PHASE_CHECK_INTERRUPT
+
+typedef struct
+{
+  SEXP chrom, cm, bp, a, b, na, options, result;
+  int seed, windows, targets;
+} st_context;
+static void st_cleanup(void *unused)
+{
+  (void)unused;
+  while (st_blocks)
+    st_release(st_blocks + 1);
+  er_set_threads(1);
+  st_phase_threads = 1;
+  atomic_store(&st_worker_error, 0);
+  atomic_store(&st_max_team, 1);
+  st_active_guard = NULL;
+  st_phase_dataset = NULL;
+  st_busy = 0;
+}
+static SEXP st_compute(void *data)
+{
+  st_context *c = data;
+  int M = Rf_length(c->chrom), N = INTEGER(Rf_getAttrib(c->a, R_DimSymbol))[1];
+  atomic_store(&st_max_team, 1);
+  j_random master;
+  jr_seed(&master, (uint64_t)(int64_t)c->seed);
+  int column = 0;
+  for (int start = 0; start < M; ++column)
+  {
+    R_CheckUserInterrupt();
+    const double *o = REAL(c->options) +
+                      (XLENGTH(c->options) == 14 ? 0 : (R_xlen_t)14 * column);
+    er_set_threads((int)o[13]);
+    st_phase_threads = (int)o[13];
+    int chrom = INTEGER(c->chrom)[start], end = start + 1;
+    while (end < M && INTEGER(c->chrom)[end] == chrom)
+      ++end;
+    int m = end - start;
+    np_input raw = {0};
+    raw.M = m;
+    raw.N = N;
+    raw.T = c->targets;
+    raw.seed = (uint64_t)(int64_t)c->seed;
+    raw.burn = (int)o[2];
+    raw.iterations = (int)o[3];
+    raw.K = (int)o[4];
+    raw.rare = (float)o[5];
+    raw.scale = (float)o[6];
+    raw.ne = (float)o[7];
+    raw.buffer = (float)o[8];
+    raw.lr = (float)o[9];
+    raw.em = (int)o[10];
+    raw.bp = INTEGER(c->bp) + start;
+    raw.gt = st_zero((size_t)m * 2 * N, sizeof(int));
+    int *output = st_zero((size_t)m * 2 * N, sizeof(int));
+    for (int j = 0; j < m; ++j)
+      for (int s = 0; s < N; ++s)
+      {
+        size_t q = start + j + (size_t)M * s, z = (size_t)j * 2 * N + 2 * s;
+        raw.gt[z] = RAW(c->a)[q] == 255 ? -1 : RAW(c->a)[q];
+        raw.gt[z + 1] = RAW(c->b)[q] == 255 ? -1 : RAW(c->b)[q];
+      }
+    int before = c->windows;
+    int ok = st_phase_windowed(
+        &raw, INTEGER(c->na) + start, raw.bp, REAL(c->cm) + start, m,
+        (st_window_options){o[0], o[1], (int)o[12]}, o[11], &master, chrom,
+        &c->windows, output, NULL);
+    if (!ok)
+      st_phase_error("Invalid data or options for chromosome %d", chrom);
+    INTEGER(VECTOR_ELT(c->result, 4))[column] = c->windows - before;
+    for (int j = 0; j < m; ++j)
+      for (int s = 0; s < N; ++s)
+      {
+        size_t q = start + j + (size_t)M * s, z = (size_t)j * 2 * N + 2 * s;
+        RAW(VECTOR_ELT(c->result, 0))[q] = (Rbyte)output[z];
+        RAW(VECTOR_ELT(c->result, 1))[q] = (Rbyte)output[z + 1];
+      }
+    st_release(raw.gt);
+    st_release(output);
+    start = end;
+  }
+  INTEGER(VECTOR_ELT(c->result, 2))[0] = c->windows;
+  INTEGER(VECTOR_ELT(c->result, 3))[0] = atomic_load(&st_max_team);
+  return c->result;
+}
+static SEXP st_hd_phase_impl(SEXP chrom, SEXP cm, SEXP bp, SEXP a, SEXP b,
+                             SEXP na, SEXP options, SEXP seed, int targets)
+{
+  if (TYPEOF(chrom) != INTSXP || TYPEOF(cm) != REALSXP ||
+      TYPEOF(bp) != INTSXP || TYPEOF(a) != RAWSXP || TYPEOF(b) != RAWSXP ||
+      TYPEOF(na) != INTSXP || TYPEOF(options) != REALSXP ||
+      XLENGTH(options) < 14 || XLENGTH(options) % 14 ||
+      TYPEOF(seed) != INTSXP || XLENGTH(seed) != 1 ||
+      INTEGER(seed)[0] == NA_INTEGER)
+    st_phase_error("Invalid phasing argument types");
+  int M = Rf_length(chrom);
+  SEXP dim = Rf_getAttrib(a, R_DimSymbol), dim2 = Rf_getAttrib(b, R_DimSymbol);
+  if (TYPEOF(dim) != INTSXP || XLENGTH(dim) != 2 || TYPEOF(dim2) != INTSXP ||
+      XLENGTH(dim2) != 2 || M < 2 || INTEGER(dim)[0] != M ||
+      INTEGER(dim2)[0] != M || INTEGER(dim)[1] < 2 || INTEGER(dim)[1] > 5000 ||
+      INTEGER(dim2)[1] != INTEGER(dim)[1] ||
+      XLENGTH(a) != (R_xlen_t)M * INTEGER(dim)[1] || XLENGTH(b) != XLENGTH(a) ||
+      XLENGTH(cm) != M || XLENGTH(bp) != M || XLENGTH(na) != M)
+    st_phase_error("Invalid phasing dimensions");
+  if (targets < 0)
+    targets = INTEGER(dim)[1];
+  if (targets < 1 || targets > INTEGER(dim)[1])
+    st_phase_error("Invalid target/reference count");
+  int chromosomes = 0;
+  for (int m = 0; m < M; ++m)
+  {
+    if (INTEGER(chrom)[m] < 1 ||
+        (m && INTEGER(chrom)[m] < INTEGER(chrom)[m - 1]) ||
+        !R_FINITE(REAL(cm)[m]) || INTEGER(bp)[m] < 1 || INTEGER(na)[m] < 1 ||
+        INTEGER(na)[m] > 100)
+      st_phase_error("Invalid marker map or allele count");
+    if (!m || INTEGER(chrom)[m] != INTEGER(chrom)[m - 1])
+      ++chromosomes;
+  }
+  if (XLENGTH(options) != 14 && XLENGTH(options) != (R_xlen_t)14 * chromosomes)
+    st_phase_error("Options need one column or one column per chromosome");
+  for (R_xlen_t column = 0; column < XLENGTH(options) / 14; ++column)
+  {
+    const double *o = REAL(options) + 14 * column;
+    for (int i = 0; i < 14; ++i)
+      if (i != 0 && i != 11 && !R_FINITE(o[i]))
+        st_phase_error("Nonfinite phasing option");
+    int indices[] = {2, 3, 4, 10, 12, 13};
+    for (int j = 0; j < 6; ++j)
+    {
+      double v = o[indices[j]];
+      if (v < 0 || v > INT_MAX || v != floor(v))
+        st_phase_error("Invalid integer phasing option");
+    }
+    if (o[2] < 1 || o[3] < 1 || o[4] < 2 || o[4] > 1000000 || o[5] <= 0 ||
+        o[5] > .5 || o[6] <= 0 || o[7] <= 0 || o[8] <= 0 || o[9] < 1 ||
+        o[10] > 1 || o[12] < 4 || o[13] < 1)
+      st_phase_error("Invalid phasing option value");
+  }
+  SEXP out = PROTECT(Rf_allocVector(VECSXP, 5));
+  SET_VECTOR_ELT(out, 0, Rf_allocMatrix(RAWSXP, M, INTEGER(dim)[1]));
+  SET_VECTOR_ELT(out, 1, Rf_allocMatrix(RAWSXP, M, INTEGER(dim)[1]));
+  SET_VECTOR_ELT(out, 2, Rf_ScalarInteger(0));
+  SET_VECTOR_ELT(out, 3, Rf_ScalarInteger(1));
+  SET_VECTOR_ELT(out, 4, Rf_allocVector(INTSXP, chromosomes));
+  st_context context = {
+      chrom, cm, bp, a, b, na, options, out, INTEGER(seed)[0], 0, targets};
+  SEXP result = st_compute(&context);
+  UNPROTECT(1);
+  return result;
+}
+
+extern gs_varset_type *gs_fdta(char *set_name);
+
+static SEXP phase_field(SEXP x, const char *name)
+{
+  SEXP names = Rf_getAttrib(x, R_NamesSymbol);
+  if (TYPEOF(x) != VECSXP || TYPEOF(names) != STRSXP)
+    st_phase_error("Invalid phase snapshot");
+  for (R_xlen_t j = 0; j < XLENGTH(x); ++j)
+    if (!strcmp(CHAR(STRING_ELT(names, j)), name))
+      return VECTOR_ELT(x, j);
+  st_phase_error("Missing phase snapshot field: %s", name);
+  return R_NilValue;
+}
+static SEXP st_phase_apply(SEXP before, SEXP after, SEXP dataset)
+{
+  if (TYPEOF(dataset) != STRSXP || XLENGTH(dataset) != 1 ||
+      STRING_ELT(dataset, 0) == NA_STRING)
+    st_phase_error("Invalid phase destination");
+  gs_varset_type *gv = gs_fdta((char *)CHAR(STRING_ELT(dataset, 0)));
+  SEXP id = phase_field(before, "ID"), ind = phase_field(before, "individual");
+  SEXP a = phase_field(before, "allele1"), b = phase_field(before, "allele2");
+  SEXP x = phase_field(after, "allele1"), y = phase_field(after, "allele2");
+  size_t M = gv->NoMar, N = gv->NoInd;
+  if (!M || !N || M > SIZE_MAX / N || TYPEOF(id) != STRSXP ||
+      TYPEOF(ind) != STRSXP || XLENGTH(id) != (R_xlen_t)M ||
+      XLENGTH(ind) != (R_xlen_t)N || !gv->All1 || !gv->All2)
+    st_phase_error("Phase destination dimensions changed");
+  size_t n = M * N;
+  if (TYPEOF(a) != RAWSXP || TYPEOF(b) != RAWSXP || TYPEOF(x) != RAWSXP ||
+      TYPEOF(y) != RAWSXP || XLENGTH(a) != (R_xlen_t)n ||
+      XLENGTH(b) != (R_xlen_t)n || XLENGTH(x) != (R_xlen_t)n ||
+      XLENGTH(y) != (R_xlen_t)n)
+    st_phase_error("Invalid phase result dimensions");
+  for (size_t i = 0; i < N; ++i)
+    if (strcmp(gv->IndName[i], CHAR(STRING_ELT(ind, i))))
+      st_phase_error("Phase destination individuals changed");
+  GS_ALLELE_TYPE *s1 = (GS_ALLELE_TYPE *)R_alloc(n, sizeof(*s1));
+  GS_ALLELE_TYPE *s2 = (GS_ALLELE_TYPE *)R_alloc(n, sizeof(*s2));
+  for (size_t m = 0; m < M; ++m)
+  {
+    R_CheckUserInterrupt();
+    if (strcmp(gv->MarName[m], CHAR(STRING_ELT(id, m))))
+      st_phase_error("Phase destination markers changed");
+    int coding[100], used[255] = {0};
+    for (int j = 0; j < 100; ++j)
+      coding[j] = -1;
+    int maximum = -1;
+    for (size_t i = 0; i < N; ++i)
+    {
+      size_t r = m + M * i, c = m * N + i;
+      int old[2] = {RAW(a)[r], RAW(b)[r]};
+      int actual[2] = {gv->All1[c], gv->All2[c]};
+      for (int h = 0; h < 2; ++h)
+      {
+        if (old[h] == 255)
+        {
+          if (actual[h] != 255)
+            st_phase_error("Phase destination calls changed");
+          continue;
+        }
+        if (old[h] >= 100 || actual[h] == 255)
+          st_phase_error("Invalid phase source coding");
+        if (coding[old[h]] >= 0 && coding[old[h]] != actual[h])
+          st_phase_error("Phase destination calls changed");
+        coding[old[h]] = actual[h];
+        used[actual[h]] = 1;
+        if (actual[h] > maximum)
+          maximum = actual[h];
+      }
+      int p = RAW(x)[r], q = RAW(y)[r];
+      if ((p != 255 && p >= 100) || (q != 255 && q >= 100))
+        st_phase_error("Invalid phase result allele");
+      if (old[0] != 255 && old[1] != 255 &&
+          !((p == old[0] && q == old[1]) || (p == old[1] && q == old[0])))
+        st_phase_error("Phasing attempted to change an observed genotype");
+    }
+
+    for (size_t i = 0; i < N; ++i)
+    {
+      size_t r = m + M * i, c = m * N + i;
+      int out[2] = {RAW(x)[r], RAW(y)[r]};
+      for (int h = 0; h < 2; ++h)
+        if (out[h] != 255 && coding[out[h]] < 0)
+        {
+          int code = maximum < 1 ? 1 : maximum + 1;
+          if (code >= 255)
+          {
+            code = 1;
+            while (code < 255 && used[code])
+              ++code;
+          }
+          if (code >= 255)
+            st_phase_error("No available internal allele code");
+          coding[out[h]] = code;
+          used[code] = 1;
+          if (code > maximum)
+            maximum = code;
+        }
+      s1[c] =
+          out[0] == 255 ? GS_ALLELE_MISSING : (GS_ALLELE_TYPE)coding[out[0]];
+      s2[c] =
+          out[1] == 255 ? GS_ALLELE_MISSING : (GS_ALLELE_TYPE)coding[out[1]];
+    }
+  }
+
+  memcpy(gv->All1, s1, n * sizeof(*s1));
+  memcpy(gv->All2, s2, n * sizeof(*s2));
+  gv->phased = 1;
+  return R_NilValue;
+}
+
+extern SEXP st_markerdata_to_STvcf(SEXP dataset);
+
+enum
+{
+  STP_WINDOW,
+  STP_OVERLAP,
+  STP_MARKERS,
+  STP_BURNIN,
+  STP_ITERATIONS,
+  STP_STATES,
+  STP_NE,
+  STP_ERR,
+  STP_EM,
+  STP_LR,
+  STP_SCALE,
+  STP_RARE,
+  STP_BUFFER,
+  STP_SEED,
+  STP_OPTIONS
+};
+
+static const char *stp_option_names[] = {
+    "window",     "overlap",    "window.markers",
+    "burnin",     "iterations", "phase.states",
+    "ne",         "err",        "em",
+    "initial.lr", "step.scale", "rare",
+    "buffer",     "seed"};
+
+static SEXP stp_list(int n, const char *const *labels)
+{
+  SEXP result = PROTECT(Rf_allocVector(VECSXP, n));
+  SEXP names = PROTECT(Rf_allocVector(STRSXP, n));
+  for (int i = 0; i < n; i++)
+    SET_STRING_ELT(names, i, Rf_mkChar(labels[i]));
+  Rf_setAttrib(result, R_NamesSymbol, names);
+  UNPROTECT(2);
+  return result;
+}
+
+static int stp_field_index(SEXP x, const char *name)
+{
+  SEXP names = Rf_getAttrib(x, R_NamesSymbol);
+  if (TYPEOF(x) != VECSXP || TYPEOF(names) != STRSXP ||
+      XLENGTH(names) != XLENGTH(x))
+    st_phase_error("Invalid STvcf fields");
+  for (int i = 0; i < Rf_length(x); i++)
+    if (STRING_ELT(names, i) != NA_STRING &&
+        !strcmp(CHAR(STRING_ELT(names, i)), name))
+      return i;
+  st_phase_error("Missing STvcf field: %s", name);
+  return -1;
+}
+
+static SEXP stp_field(SEXP x, const char *name)
+{
+  return VECTOR_ELT(x, stp_field_index(x, name));
+}
+
+static double stp_number_at(SEXP x, R_xlen_t i)
+{
+  if (TYPEOF(x) == REALSXP)
+    return REAL(x)[i];
+  return INTEGER(x)[i] == NA_INTEGER ? NA_REAL : INTEGER(x)[i];
+}
+
+static int stp_logical(SEXP x, const char *name)
+{
+  if (TYPEOF(x) != LGLSXP || XLENGTH(x) != 1 || LOGICAL(x)[0] == NA_LOGICAL)
+    st_phase_error("%s must be TRUE or FALSE", name);
+  return LOGICAL(x)[0];
+}
+
+static int stp_automatic(SEXP x)
+{
+  return TYPEOF(x) == STRSXP && XLENGTH(x) == 1 &&
+         STRING_ELT(x, 0) != NA_STRING &&
+         !strcmp(CHAR(STRING_ELT(x, 0)), "auto");
+}
+
+static void stp_number(SEXP options, int index, double lower, double upper,
+                       int whole, int vector, int infinity)
+{
+  SEXP x = VECTOR_ELT(options, index);
+  if ((TYPEOF(x) != INTSXP && TYPEOF(x) != REALSXP) || XLENGTH(x) < 1 ||
+      (!vector && XLENGTH(x) != 1))
+    st_phase_error("Invalid option: %s", stp_option_names[index]);
+  for (R_xlen_t i = 0; i < XLENGTH(x); i++)
+  {
+    double value = stp_number_at(x, i);
+    if (ISNAN(value) || (!infinity && !R_FINITE(value)) || value < lower ||
+        value > upper || (whole && value != trunc(value)))
+      st_phase_error("Invalid option: %s", stp_option_names[index]);
+  }
+}
+
+static SEXP stp_options(SEXP input)
+{
+  SEXP names = Rf_getAttrib(input, R_NamesSymbol);
+  if (TYPEOF(input) != VECSXP ||
+      (XLENGTH(input) &&
+       (TYPEOF(names) != STRSXP || XLENGTH(names) != XLENGTH(input))))
+    st_phase_error("phasing.options must be a uniquely named list");
+
+  SEXP out = PROTECT(stp_list(STP_OPTIONS, stp_option_names));
+  const double defaults[] = {0, 2, 4000000, 3, 12, 280, 100000, 0,
+                             1, 100000, 3, .002, 1, 0};
+  for (int i = 0; i < STP_OPTIONS; i++)
+  {
+    if (i == STP_ERR || i == STP_SEED)
+      continue;
+    if (i == STP_WINDOW)
+      SET_VECTOR_ELT(out, i, Rf_mkString("auto"));
+    else if (i == STP_EM)
+      SET_VECTOR_ELT(out, i, Rf_ScalarLogical(1));
+    else if (i >= STP_MARKERS && i <= STP_STATES)
+      SET_VECTOR_ELT(out, i, Rf_ScalarInteger((int)defaults[i]));
+    else
+      SET_VECTOR_ELT(out, i, Rf_ScalarReal(defaults[i]));
+  }
+  int supplied[STP_OPTIONS] = {0};
+  if (XLENGTH(input) && Rf_any_duplicated(names, FALSE))
+    st_phase_error("phasing.options must be a uniquely named list");
+  for (R_xlen_t i = 0; i < XLENGTH(input); i++)
+  {
+    if (STRING_ELT(names, i) == NA_STRING || !CHAR(STRING_ELT(names, i))[0])
+      st_phase_error("phasing.options must be a uniquely named list");
+    const char *name = CHAR(STRING_ELT(names, i));
+    size_t size = strlen(name);
+    char *normalized = (char *)R_alloc(size + 1, 1);
+    for (size_t j = 0; j <= size; j++)
+      normalized[j] = name[j] == '-' ? '.' : name[j];
+    if (!strcmp(normalized, "nthreads"))
+      st_phase_error("Set threads with st.set.num.threads(); nthreads is not a "
+                     "phasing.options entry");
+    if (!strcmp(normalized, "ref"))
+      st_phase_error("Use the top-level ref argument");
+    if (!strcmp(normalized, "impute"))
+      st_phase_error("Use the top-level impute argument for missing calls at typed "
+                     "markers");
+    int index = -1;
+    for (int j = 0; j < STP_OPTIONS; j++)
+      if (!strcmp(normalized, stp_option_names[j]))
+        index = j;
+    if (index < 0)
+      st_phase_error("Unsupported phasing option: %s. See help('st.phase').",
+                     normalized);
+    if (supplied[index])
+      st_phase_error("Duplicate phasing option after name normalization");
+    supplied[index] = 1;
+    SET_VECTOR_ELT(out, index, VECTOR_ELT(input, i));
+  }
+
+  int automatic = stp_automatic(VECTOR_ELT(out, STP_WINDOW));
+  if (automatic && !supplied[STP_OVERLAP])
+    SET_VECTOR_ELT(out, STP_OVERLAP, R_NilValue);
+  if (!automatic)
+    stp_number(out, STP_WINDOW, DBL_MIN, R_PosInf, 0, 1, 1);
+  if (!automatic || VECTOR_ELT(out, STP_OVERLAP) != R_NilValue)
+    stp_number(out, STP_OVERLAP, 0, R_PosInf, 0, 1, 0);
+  if (!automatic)
+  {
+    SEXP window = VECTOR_ELT(out, STP_WINDOW),
+         overlap = VECTOR_ELT(out, STP_OVERLAP);
+    R_xlen_t nw = XLENGTH(window), no = XLENGTH(overlap);
+    if (nw > 1 && no > 1 && nw != no)
+      st_phase_error("Window/overlap lengths do not match");
+    for (R_xlen_t i = 0; i < (nw > no ? nw : no); i++)
+    {
+      double w = stp_number_at(window, i % nw),
+             o = stp_number_at(overlap, i % no);
+      if (R_FINITE(w) && w < 1.1 * o)
+        st_phase_error("window must be at least 1.1 times overlap");
+    }
+  }
+  stp_number(out, STP_BURNIN, 1, INT_MAX, 1, 0, 0);
+  stp_number(out, STP_ITERATIONS, 1, INT_MAX, 1, 0, 0);
+  stp_number(out, STP_STATES, 2, 1000000, 1, 0, 0);
+  stp_number(out, STP_MARKERS, 4, INT_MAX, 1, 0, 0);
+  stp_number(out, STP_NE, DBL_MIN, 3.4e38, 0, 0, 0);
+  stp_number(out, STP_SCALE, DBL_MIN, 3.4e38, 0, 0, 0);
+  stp_number(out, STP_BUFFER, DBL_MIN, 3.4e38, 0, 0, 0);
+  stp_number(out, STP_LR, 1, 3.4e38, 0, 0, 0);
+  stp_number(out, STP_RARE, DBL_MIN, .5, 0, 0, 0);
+  if (VECTOR_ELT(out, STP_ERR) != R_NilValue)
+    stp_number(out, STP_ERR, 0, 1, 0, 0, 0);
+  stp_logical(VECTOR_ELT(out, STP_EM), "em");
+  if (VECTOR_ELT(out, STP_SEED) != R_NilValue)
+    stp_number(out, STP_SEED, -INT_MAX, INT_MAX, 1, 0, 0);
+  UNPROTECT(1);
+  return out;
+}
+
+static void stp_names(SEXP x, const char *role, const char *field)
+{
+  if (TYPEOF(x) != STRSXP || Rf_any_duplicated(x, FALSE))
+    st_phase_error("Invalid or duplicated %s %s", role, field);
+  for (R_xlen_t i = 0; i < XLENGTH(x); i++)
+    if (STRING_ELT(x, i) == NA_STRING || !CHAR(STRING_ELT(x, i))[0])
+      st_phase_error("Invalid or duplicated %s %s", role, field);
+}
+
+static SEXP stp_allele_labels(SEXP ref, SEXP alt, const char *role)
+{
+  const char *r = CHAR(ref), *a = CHAR(alt);
+  if (!r[0] || !a[0] || !strcmp(r, "."))
+    st_phase_error("Invalid %s allele label", role);
+  for (const char *p = r; *p; p++)
+    if (*p == ',' || isspace((unsigned char)*p))
+      st_phase_error("Invalid %s allele label", role);
+  int n = !strcmp(a, ".") ? 1 : 2;
+  for (const char *p = a; *p; p++)
+  {
+    if (isspace((unsigned char)*p))
+      st_phase_error("Invalid %s allele label", role);
+    if (*p == ',')
+      n++;
+  }
+  if (n > 100)
+    st_phase_error("Too many %s alleles", role);
+  SEXP labels = PROTECT(Rf_allocVector(STRSXP, n));
+  SET_STRING_ELT(labels, 0, ref);
+  const char *start = a;
+  for (int j = 1; j < n; j++)
+  {
+    const char *end = strchr(start, ',');
+    size_t length = end ? (size_t)(end - start) : strlen(start);
+    if (!length || length > INT_MAX || (length == 1 && *start == '.'))
+      st_phase_error("Invalid %s allele label", role);
+    SET_STRING_ELT(labels, j,
+                   Rf_mkCharLenCE(start, (int)length, Rf_getCharCE(alt)));
+    start += length + (end != NULL);
+  }
+  if (Rf_any_duplicated(labels, FALSE))
+    st_phase_error("Invalid or duplicated %s alleles", role);
+  UNPROTECT(1);
+  return labels;
+}
+
+static SEXP stp_validate(SEXP x, const char *role)
+{
+  if (!Rf_inherits(x, "STvcf"))
+    st_phase_error("%s must be an STvcf or a loaded dataset name", role);
+  SEXP id = stp_field(x, "ID"), ind = stp_field(x, "individual");
+  SEXP chr = stp_field(x, "CHROM"), pos = stp_field(x, "POS");
+  SEXP levels = stp_field(x, "CHROM.levels");
+  SEXP a = stp_field(x, "allele1"), b = stp_field(x, "allele2");
+  SEXP da = Rf_getAttrib(a, R_DimSymbol), db = Rf_getAttrib(b, R_DimSymbol);
+  int m = Rf_length(id), n = Rf_length(ind);
+  if (m < 1 || n < 1 || TYPEOF(chr) != INTSXP ||
+      (TYPEOF(pos) != INTSXP && TYPEOF(pos) != REALSXP) || XLENGTH(chr) != m ||
+      XLENGTH(pos) != m || TYPEOF(a) != RAWSXP || TYPEOF(b) != RAWSXP ||
+      TYPEOF(da) != INTSXP || TYPEOF(db) != INTSXP || XLENGTH(da) != 2 ||
+      XLENGTH(db) != 2 || INTEGER(da)[0] != m || INTEGER(da)[1] != n ||
+      INTEGER(db)[0] != m || INTEGER(db)[1] != n ||
+      XLENGTH(a) != (R_xlen_t)m * n || XLENGTH(b) != XLENGTH(a))
+    st_phase_error("Invalid %s dimensions, map or allele matrices", role);
+  stp_names(id, role, "ID");
+  stp_names(ind, role, "individual");
+  stp_names(levels, role, "CHROM.levels");
+  for (int j = 0; j < m; j++)
+    if (INTEGER(chr)[j] < 1 || INTEGER(chr)[j] > XLENGTH(levels) ||
+        !R_FINITE(stp_number_at(pos, j)) || stp_number_at(pos, j) < 0)
+      st_phase_error("Invalid %s dimensions, map or allele matrices", role);
+  SEXP ref = stp_field(x, "REF"), alt = stp_field(x, "ALT");
+  if (TYPEOF(ref) != STRSXP || TYPEOF(alt) != STRSXP || XLENGTH(ref) != m ||
+      XLENGTH(alt) != m)
+    st_phase_error("Invalid %s allele definitions", role);
+  SEXP definitions = PROTECT(Rf_allocVector(VECSXP, m));
+  for (int j = 0; j < m; j++)
+  {
+    if (STRING_ELT(ref, j) == NA_STRING || STRING_ELT(alt, j) == NA_STRING)
+      st_phase_error("Invalid %s allele definitions", role);
+    SET_VECTOR_ELT(
+        definitions, j,
+        stp_allele_labels(STRING_ELT(ref, j), STRING_ELT(alt, j), role));
+    int count = Rf_length(VECTOR_ELT(definitions, j));
+    for (int i = 0; i < n; i++)
+    {
+      R_xlen_t q = j + (R_xlen_t)m * i;
+      if ((RAW(a)[q] != 255 && RAW(a)[q] >= count) ||
+          (RAW(b)[q] != 255 && RAW(b)[q] >= count))
+        st_phase_error("%s allele index outside REF/ALT at %s", role,
+                       CHAR(STRING_ELT(id, j)));
+    }
+    if (!(j % 1024))
+      R_CheckUserInterrupt();
+  }
+  UNPROTECT(1);
+  return definitions;
+}
+
+static SEXP stp_align(SEXP target, SEXP definitions, SEXP reference,
+                      int *ignored)
+{
+  SEXP ref = reference;
+  int nprotect = 0;
+  if (TYPEOF(reference) == STRSXP && XLENGTH(reference) == 1 &&
+      STRING_ELT(reference, 0) != NA_STRING)
+  {
+    if (!st_phase_step1_find_dataset(CHAR(STRING_ELT(reference, 0))))
+      st_phase_error("Unknown reference data set: %s",
+                     CHAR(STRING_ELT(reference, 0)));
+    ref = PROTECT(st_markerdata_to_STvcf(reference));
+    nprotect++;
+  }
+  SEXP refdefs = PROTECT(stp_validate(ref, "reference"));
+  SEXP ix = PROTECT(Rf_match(stp_field(ref, "ID"), stp_field(target, "ID"), 0));
+  SEXP a = stp_field(target, "allele1"), b = stp_field(target, "allele2");
+  SEXP ra = stp_field(ref, "allele1"), rb = stp_field(ref, "allele2");
+  int m = Rf_length(stp_field(target, "ID")),
+      rm = Rf_length(stp_field(ref, "ID"));
+  int n = Rf_length(stp_field(target, "individual")),
+      rn = Rf_length(stp_field(ref, "individual"));
+  if (n > 5000 || rn > 5000 - n)
+    st_phase_error("Phasing supports at most 5000 target and reference "
+                   "samples combined");
+  *ignored = rm - m;
+  SEXP input = PROTECT(Rf_duplicate(target));
+  SEXP ca = PROTECT(Rf_allocMatrix(RAWSXP, m, n + rn));
+  SEXP cb = PROTECT(Rf_allocMatrix(RAWSXP, m, n + rn));
+  memcpy(RAW(ca), RAW(a), (size_t)m * n);
+  memcpy(RAW(cb), RAW(b), (size_t)m * n);
+  SEXP rphase = Rf_getAttrib(ref, Rf_install("phased"));
+  int phased = TYPEOF(rphase) == LGLSXP && XLENGTH(rphase) == 1 &&
+               LOGICAL(rphase)[0] == TRUE;
+  SEXP chr = stp_field(target, "CHROM"), rchr = stp_field(ref, "CHROM");
+  SEXP levels = stp_field(target, "CHROM.levels"),
+       rlevels = stp_field(ref, "CHROM.levels");
+  SEXP pos = stp_field(target, "POS"), rpos = stp_field(ref, "POS");
+  SEXP alt = stp_field(target, "ALT");
+  for (int j = 0; j < m; j++)
+  {
+    int r = INTEGER(ix)[j] - 1;
+    const char *id = CHAR(STRING_ELT(stp_field(target, "ID"), j));
+    if (r < 0)
+      st_phase_error("Reference panel lacks target marker: %s", id);
+    if (strcmp(CHAR(STRING_ELT(levels, INTEGER(chr)[j] - 1)),
+               CHAR(STRING_ELT(rlevels, INTEGER(rchr)[r] - 1))))
+      st_phase_error("Reference chromosome labels disagree with target markers");
+    if (fabs(stp_number_at(pos, j) - stp_number_at(rpos, r)) > 1e-6)
+      st_phase_error("Reference genetic positions disagree with target markers");
+    SEXP td = VECTOR_ELT(definitions, j), rd = VECTOR_ELT(refdefs, r);
+    SEXP labels[100];
+    int codes[100], count = Rf_length(td), shared = 0;
+    for (int k = 0; k < count; k++)
+      labels[k] = STRING_ELT(td, k);
+    for (int k = 0; k < Rf_length(rd); k++)
+    {
+      int code = -1;
+      for (int l = 0; l < count; l++)
+        if (!strcmp(CHAR(labels[l]), CHAR(STRING_ELT(rd, k))))
+          code = l;
+      if (code >= 0)
+        shared = 1;
+      else
+      {
+        if (count == 100)
+          st_phase_error("Too many combined alleles at %s", id);
+        code = count++;
+        labels[code] = STRING_ELT(rd, k);
+      }
+      codes[k] = code;
+    }
+    if (!shared)
+      st_phase_error("No shared allele definition at reference marker: %s", id);
+    size_t length = 1;
+    for (int k = 1; k < count; k++)
+    {
+      size_t add = strlen(CHAR(labels[k])) + 1;
+      if (add > SIZE_MAX - length)
+        st_phase_error("Reference allele label size overflow");
+      length += add;
+    }
+    char *joined = (char *)R_alloc(length + 1, 1);
+    char *end = joined;
+    for (int k = 1; k < count; k++)
+    {
+      if (k > 1)
+        *end++ = ',';
+      size_t size = strlen(CHAR(labels[k]));
+      memcpy(end, CHAR(labels[k]), size);
+      end += size;
+    }
+    *end = '\0';
+    SET_STRING_ELT(alt, j, Rf_mkChar(count == 1 ? "." : joined));
+    for (int i = 0; i < rn; i++)
+    {
+      R_xlen_t from = r + (R_xlen_t)rm * i, to = j + (R_xlen_t)m * (n + i);
+      int x = RAW(ra)[from], y = RAW(rb)[from];
+      if (x == 255 || y == 255)
+        st_phase_error("Reference calls must be complete at every target marker");
+      if (x != y && !phased)
+        st_phase_error("Heterozygous reference genotypes must be declared phased");
+      RAW(ca)[to] = (Rbyte)codes[x];
+      RAW(cb)[to] = (Rbyte)codes[y];
+    }
+    if (!(j % 1024))
+      R_CheckUserInterrupt();
+  }
+  SET_VECTOR_ELT(input, stp_field_index(input, "ALT"), alt);
+  SET_VECTOR_ELT(input, stp_field_index(input, "allele1"), ca);
+  SET_VECTOR_ELT(input, stp_field_index(input, "allele2"), cb);
+  SEXP individuals = PROTECT(Rf_allocVector(STRSXP, n + rn));
+  for (int i = 0; i < n; i++)
+    SET_STRING_ELT(individuals, i,
+                   STRING_ELT(stp_field(target, "individual"), i));
+  for (int i = 0; i < rn; i++)
+  {
+    char name[32];
+    snprintf(name, sizeof(name), "Reference%d", i + 1);
+    SET_STRING_ELT(individuals, n + i, Rf_mkChar(name));
+  }
+  SET_VECTOR_ELT(input, stp_field_index(input, "individual"), individuals);
+  UNPROTECT(nprotect + 6);
+  return input;
+}
+
+static int stp_double_compare(const void *left, const void *right)
+{
+  double x = *(const double *)left, y = *(const double *)right;
+  return (x > y) - (x < y);
+}
+
+static double stp_expanded(SEXP value, int index, int chromosomes)
+{
+  if (XLENGTH(value) != 1 && XLENGTH(value) != chromosomes)
+    st_phase_error("Window/overlap must be scalar or have one value per chromosome");
+  return stp_number_at(value, XLENGTH(value) == 1 ? 0 : index);
+}
+
+static SEXP stp_windows(SEXP input, SEXP options, int chromosomes)
+{
+  const char *auto_names[] = {"chromosome",
+                              "markers",
+                              "common.markers",
+                              "span.cm",
+                              "median.common.gap.cm",
+                              "minimum.common",
+                              "window",
+                              "overlap",
+                              "reason"};
+  const char *explicit_names[] = {"chromosome", "window", "overlap", "reason"};
+  int automatic = stp_automatic(VECTOR_ELT(options, STP_WINDOW));
+  int fields = automatic ? 9 : 4, wi = automatic ? 6 : 1, oi = wi + 1,
+      ri = wi + 2;
+  SEXP out = PROTECT(stp_list(fields, automatic ? auto_names : explicit_names));
+  for (int k = 0; k < fields; k++)
+  {
+    SEXPTYPE type = (k == 0 || (automatic && (k == 1 || k == 2 || k == 5)))
+                        ? INTSXP
+                        : REALSXP;
+    if (k == ri)
+      type = STRSXP;
+    SET_VECTOR_ELT(out, k, Rf_allocVector(type, chromosomes));
+  }
+  SEXP rownames = PROTECT(Rf_allocVector(INTSXP, 2));
+  INTEGER(rownames)[0] = NA_INTEGER;
+  INTEGER(rownames)[1] = -chromosomes;
+  Rf_setAttrib(out, R_RowNamesSymbol, rownames);
+  SEXP cls = PROTECT(Rf_mkString("data.frame"));
+  Rf_setAttrib(out, R_ClassSymbol, cls);
+  SEXP chr = stp_field(input, "CHROM"), pos = stp_field(input, "POS");
+  SEXP a = stp_field(input, "allele1"), b = stp_field(input, "allele2");
+  int m = Rf_length(chr), n = INTEGER(Rf_getAttrib(a, R_DimSymbol))[1];
+  double *common = automatic ? (double *)R_alloc(m, sizeof(double)) : NULL;
+  double *gaps = automatic ? (double *)R_alloc(m, sizeof(double)) : NULL;
+  float carrier_product =
+      (float)n * (float)stp_number_at(VECTOR_ELT(options, STP_RARE), 0);
+  int limit = (int)floor(carrier_product);
+  if (limit < 3)
+    limit = 3;
+  int start = 0;
+  for (int c = 0; c < chromosomes; c++)
+  {
+    int end = start + 1;
+    while (end < m && INTEGER(chr)[end] == INTEGER(chr)[start])
+      end++;
+    INTEGER(VECTOR_ELT(out, 0))[c] = INTEGER(chr)[start];
+    double window, overlap;
+    const char *reason = "explicit";
+    char reason_buffer[128];
+    if (automatic)
+    {
+      int count = 0;
+      double span = stp_number_at(pos, end - 1) - stp_number_at(pos, start);
+      if (end - start < 2 || span <= 0)
+        st_phase_error("Window selection requires an ordered, nonzero genetic map on "
+                       "chromosome %d",
+                       INTEGER(chr)[start]);
+      for (int j = start; j < end; j++)
+      {
+        if (j > start && stp_number_at(pos, j) < stp_number_at(pos, j - 1))
+          st_phase_error("Window selection requires an ordered genetic map");
+        int carriers[100] = {0}, common_alleles = 0;
+        for (int i = 0; i < n; i++)
+        {
+          R_xlen_t q = j + (R_xlen_t)m * i;
+          int x = RAW(a)[q], y = RAW(b)[q];
+          if (x != 255)
+            carriers[x]++;
+          if (y != 255 && y != x)
+            carriers[y]++;
+        }
+        for (int k = 0; k < 100; k++)
+          common_alleles += carriers[k] > limit;
+        if (common_alleles >= 2)
+          common[count++] = stp_number_at(pos, j);
+        if (!(j % 1024))
+          R_CheckUserInterrupt();
+      }
+      window = R_PosInf;
+      overlap = 2;
+      reason = "fewer_than_two_common_marker_blocks";
+      if (count >= 800)
+      {
+        double full_span = 0, overlap_span = 0;
+        for (int j = 400; j < count; j++)
+          full_span = fmax(full_span, common[j] - common[j - 400]);
+        for (int j = 40; j < count; j++)
+          overlap_span = fmax(overlap_span, common[j] - common[j - 40]);
+        window = fmax(40, full_span * (1 + 1e-6));
+        overlap = fmax(2, overlap_span * (1 + 1e-6));
+        window = fmax(window, 2 * overlap);
+        reason = "common_marker_spacing";
+        if (window >= span)
+        {
+          window = R_PosInf;
+          reason = "required_context_spans_chromosome";
+        }
+      }
+      if (!R_FINITE(window))
+        overlap = 2;
+      double median = NA_REAL;
+      if (count > 1)
+      {
+        for (int j = 1; j < count; j++)
+          gaps[j - 1] = common[j] - common[j - 1];
+        qsort(gaps, count - 1, sizeof(double), stp_double_compare);
+        int ngaps = count - 1;
+        median = ngaps % 2 ? gaps[ngaps / 2]
+                           : (gaps[ngaps / 2 - 1] + gaps[ngaps / 2]) / 2;
+      }
+      INTEGER(VECTOR_ELT(out, 1))[c] = end - start;
+      INTEGER(VECTOR_ELT(out, 2))[c] = count;
+      REAL(VECTOR_ELT(out, 3))[c] = span;
+      REAL(VECTOR_ELT(out, 4))[c] = median;
+      INTEGER(VECTOR_ELT(out, 5))[c] = 400;
+      if (VECTOR_ELT(options, STP_OVERLAP) != R_NilValue)
+      {
+        overlap =
+            stp_expanded(VECTOR_ELT(options, STP_OVERLAP), c, chromosomes);
+        window = fmax(window, 1.1 * overlap);
+        snprintf(reason_buffer, sizeof(reason_buffer), "%s;explicit_overlap",
+                 reason);
+        reason = reason_buffer;
+      }
+      if (!R_FINITE(window) &&
+          end - start > stp_number_at(VECTOR_ELT(options, STP_MARKERS), 0))
+        st_phase_error("Automatic whole-chromosome choice exceeds window.markers; "
+                       "supply explicit windows");
+    }
+    else
+    {
+      window = stp_expanded(VECTOR_ELT(options, STP_WINDOW), c, chromosomes);
+      overlap = stp_expanded(VECTOR_ELT(options, STP_OVERLAP), c, chromosomes);
+    }
+    REAL(VECTOR_ELT(out, wi))[c] = window;
+    REAL(VECTOR_ELT(out, oi))[c] = overlap;
+    SET_STRING_ELT(VECTOR_ELT(out, ri), c, Rf_mkChar(reason));
+    start = end;
+  }
+  UNPROTECT(3);
+  return out;
+}
+
+typedef struct
+{
+  SEXP dataset, reference, requested, impute, commit;
+} st_phase_call;
+
+static SEXP st_phase_body(void *data)
+{
+  st_phase_call *c = data;
+  SEXP dataset = c->dataset, reference = c->reference, requested = c->requested;
+  SEXP impute_s = c->impute, commit_s = c->commit;
+  const char *name = NULL;
+  st_busy = 1;
+  if (st_phase_step1_dataset_name(dataset, &name))
+    st_phase_dataset = name;
+  int impute = stp_logical(impute_s, "impute");
+  int commit = stp_logical(commit_s, "commit");
+  if (!st_phase_step1_dataset_name(dataset, &name) ||
+      !st_phase_step1_find_dataset(name))
+    st_phase_error("Unknown source data set");
+  SEXP original = PROTECT(st_markerdata_to_STvcf(dataset));
+  SEXP definitions = PROTECT(stp_validate(original, "target"));
+  SEXP options = PROTECT(stp_options(requested));
+  int with_reference = reference != R_NilValue;
+  if (commit && TYPEOF(reference) == STRSXP && XLENGTH(reference) == 1 &&
+      STRING_ELT(reference, 0) != NA_STRING &&
+      !strcmp(name, CHAR(STRING_ELT(reference, 0))))
+    st_phase_error(
+        "Reference and target must be different data sets when commit=TRUE");
+
+  SEXP output = PROTECT(Rf_duplicate(original));
+  int ignored = 0;
+  SEXP input = PROTECT(with_reference
+                           ? stp_align(output, definitions, reference, &ignored)
+                           : output);
+  SEXP chr = stp_field(input, "CHROM"), a = stp_field(input, "allele1"),
+       b = stp_field(input, "allele2");
+  int m = Rf_length(chr), n = INTEGER(Rf_getAttrib(a, R_DimSymbol))[1];
+  int targets = Rf_length(stp_field(original, "individual"));
+  if (m < 2 || n < 2 || n > 5000)
+    st_phase_error("Phasing requires at least 2 markers and 2 to 5000 target "
+                   "and reference samples combined");
+  int chromosomes = 0;
+  for (int j = 0; j < m; j++)
+  {
+    if (j && INTEGER(chr)[j] < INTEGER(chr)[j - 1])
+      st_phase_error("Phasing requires markers ordered by chromosome");
+    if (!j || INTEGER(chr)[j] != INTEGER(chr)[j - 1])
+      chromosomes++;
+  }
+  int threads = 1;
+#ifdef MT
+  threads = omp_get_max_threads();
+#endif
+  if (threads < 1)
+    st_phase_error("Invalid SelectionTools thread setting; use st.set.num.threads()");
+  SEXP windows = PROTECT(stp_windows(input, options, chromosomes));
+  SEXP seed = VECTOR_ELT(options, STP_SEED);
+  if (seed == R_NilValue)
+  {
+    GetRNGstate();
+    int drawn = 1 + (int)R_unif_index((double)INT_MAX);
+    PutRNGstate();
+    seed = PROTECT(Rf_ScalarInteger(drawn));
+  }
+  else
+    PROTECT(seed);
+  SEXP seed_int = PROTECT(Rf_coerceVector(seed, INTSXP));
+  SEXP pos = PROTECT(Rf_coerceVector(stp_field(input, "POS"), REALSXP));
+  SEXP bp = PROTECT(Rf_allocVector(INTSXP, m));
+  SEXP na = PROTECT(Rf_allocVector(INTSXP, m));
+  for (int j = 0; j < m; j++)
+  {
+    double coordinate = floor(REAL(pos)[j] * 1000000 + .5) + 1;
+    if (j && INTEGER(chr)[j] == INTEGER(chr)[j - 1])
+      coordinate = fmax(coordinate, (double)INTEGER(bp)[j - 1] + 1);
+    if (!R_FINITE(coordinate) || coordinate < 1 || coordinate > INT_MAX)
+      st_phase_error("Map cannot be represented by integer positions");
+    INTEGER(bp)[j] = (int)coordinate;
+    const char *alt = CHAR(STRING_ELT(stp_field(input, "ALT"), j));
+    int count = strcmp(alt, ".") ? 2 : 1;
+    for (const char *p = alt; *p; p++)
+      count += *p == ',';
+    INTEGER(na)[j] = count;
+  }
+  SEXP numeric = PROTECT(Rf_allocVector(REALSXP, (R_xlen_t)14 * chromosomes));
+  int automatic = stp_automatic(VECTOR_ELT(options, STP_WINDOW));
+  const int indices[] = {STP_BURNIN, STP_ITERATIONS, STP_STATES, STP_RARE,
+                         STP_SCALE,  STP_NE,         STP_BUFFER, STP_LR};
+  for (int c = 0; c < chromosomes; c++)
+  {
+    double *o = REAL(numeric) + (R_xlen_t)14 * c;
+    o[0] = REAL(VECTOR_ELT(windows, automatic ? 6 : 1))[c];
+    o[1] = REAL(VECTOR_ELT(windows, automatic ? 7 : 2))[c];
+    for (int j = 0; j < 8; j++)
+      o[j + 2] = stp_number_at(VECTOR_ELT(options, indices[j]), 0);
+    o[10] = LOGICAL(VECTOR_ELT(options, STP_EM))[0];
+    o[11] = VECTOR_ELT(options, STP_ERR) == R_NilValue
+                ? R_NaN
+                : stp_number_at(VECTOR_ELT(options, STP_ERR), 0);
+    o[12] = stp_number_at(VECTOR_ELT(options, STP_MARKERS), 0);
+    o[13] = threads;
+  }
+  SEXP phase = PROTECT(
+      st_hd_phase_impl(chr, pos, bp, a, b, na, numeric, seed_int, targets));
+  SEXP pa = VECTOR_ELT(phase, 0), pb = VECTOR_ELT(phase, 1);
+  if (with_reference)
+  {
+    size_t offset = (size_t)m * targets, size = (size_t)m * (n - targets);
+    if (memcmp(RAW(pa) + offset, RAW(a) + offset, size) ||
+        memcmp(RAW(pb) + offset, RAW(b) + offset, size))
+      st_phase_error("Phasing changed a reference haplotype");
+  }
+  SEXP oa = PROTECT(Rf_allocMatrix(RAWSXP, m, targets));
+  SEXP ob = PROTECT(Rf_allocMatrix(RAWSXP, m, targets));
+  R_xlen_t length = (R_xlen_t)m * targets, filled = 0;
+  for (R_xlen_t q = 0; q < length; q++)
+  {
+    int x = RAW(a)[q], y = RAW(b)[q], p = RAW(pa)[q], r = RAW(pb)[q];
+    int missing = x == 255 || y == 255;
+    if (!missing && !((p == x && r == y) || (p == y && r == x)))
+      st_phase_error("Phasing attempted to change an observed genotype");
+    if (missing && !impute)
+    {
+      p = x;
+      r = y;
+    }
+    filled += missing && p != 255 && r != 255;
+    RAW(oa)[q] = (Rbyte)p;
+    RAW(ob)[q] = (Rbyte)r;
+  }
+  Rf_setAttrib(oa, R_DimNamesSymbol,
+               Rf_getAttrib(stp_field(output, "allele1"), R_DimNamesSymbol));
+  Rf_setAttrib(ob, R_DimNamesSymbol,
+               Rf_getAttrib(stp_field(output, "allele2"), R_DimNamesSymbol));
+  SET_VECTOR_ELT(output, stp_field_index(output, "allele1"), oa);
+  SET_VECTOR_ELT(output, stp_field_index(output, "allele2"), ob);
+  SEXP phased = PROTECT(Rf_ScalarLogical(TRUE));
+  Rf_setAttrib(output, Rf_install("phased"), phased);
+  const char *setting_names[] = {
+      "method",      "impute",          "phasing.options", "nthreads",
+      "actual.seed", "window.settings", "automatic.window", "ref"};
+  SEXP settings = PROTECT(stp_list(8, setting_names));
+  SET_VECTOR_ELT(settings, 0,
+                 Rf_mkString(with_reference ? "reference" : "cohort"));
+  SET_VECTOR_ELT(settings, 1, impute_s);
+  SET_VECTOR_ELT(settings, 2, options);
+  SET_VECTOR_ELT(settings, 3, Rf_ScalarInteger(threads));
+  SET_VECTOR_ELT(settings, 4, seed);
+  SET_VECTOR_ELT(settings, 5, windows);
+  SET_VECTOR_ELT(settings, 6, Rf_ScalarLogical(automatic));
+  SET_VECTOR_ELT(settings, 7, reference);
+  const char *diag_names[] = {
+      "windows",          "maximum.worker.team", "chromosome.windows",
+      "filled.genotypes", "reference",           "committed"};
+  const char *cohort_names[] = {"windows", "maximum.worker.team",
+                                "chromosome.windows", "filled.genotypes",
+                                "committed"};
+  SEXP diagnostics = PROTECT(stp_list(
+      with_reference ? 6 : 5, with_reference ? diag_names : cohort_names));
+  SET_VECTOR_ELT(diagnostics, 0, VECTOR_ELT(phase, 2));
+  SET_VECTOR_ELT(diagnostics, 1, VECTOR_ELT(phase, 3));
+  SET_VECTOR_ELT(diagnostics, 2, VECTOR_ELT(phase, 4));
+  SEXP chromosome_names =
+      PROTECT(Rf_coerceVector(VECTOR_ELT(windows, 0), STRSXP));
+  Rf_setAttrib(VECTOR_ELT(diagnostics, 2), R_NamesSymbol, chromosome_names);
+  SET_VECTOR_ELT(diagnostics, 3,
+                 filled <= INT_MAX ? Rf_ScalarInteger((int)filled)
+                                   : Rf_ScalarReal((double)filled));
+  if (with_reference)
+  {
+    const char *ref_names[] = {"samples", "haplotypes", "unchanged",
+                               "ignored.markers"};
+    SEXP refdiag = PROTECT(stp_list(4, ref_names));
+    SET_VECTOR_ELT(refdiag, 0, Rf_ScalarInteger(n - targets));
+    SET_VECTOR_ELT(refdiag, 1, Rf_ScalarInteger(2 * (n - targets)));
+    SET_VECTOR_ELT(refdiag, 2, Rf_ScalarLogical(TRUE));
+    SET_VECTOR_ELT(refdiag, 3, Rf_ScalarInteger(ignored));
+    SET_VECTOR_ELT(diagnostics, 4, refdiag);
+    UNPROTECT(1);
+  }
+  SET_VECTOR_ELT(diagnostics, with_reference ? 5 : 4, commit_s);
+  const char *result_names[] = {"data", "settings", "diagnostics"};
+  SEXP result = PROTECT(stp_list(3, result_names));
+  SET_VECTOR_ELT(result, 0, output);
+  SET_VECTOR_ELT(result, 1, settings);
+  SET_VECTOR_ELT(result, 2, diagnostics);
+  if (commit)
+    st_phase_apply(original, output, dataset);
+  UNPROTECT(20);
+  return result;
+}
+
+SEXP st_phase(SEXP dataset, SEXP reference, SEXP requested,
+              SEXP impute, SEXP commit)
+{
+  if (st_busy)
+    Rf_error("st.phase is already running");
+  st_phase_call c = {dataset, reference, requested, impute, commit};
+  return R_ExecWithCleanup(st_phase_body, &c, st_cleanup, NULL);
 }

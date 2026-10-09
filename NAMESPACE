@@ -18,3 +18,6 @@ importFrom("stats",
 importFrom("utils",
            "capture.output", "head", "read.table", "write.table")
 
+
+S3method(print, st.data.set.list)
+S3method(print, st.switch.error)

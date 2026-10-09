@@ -42,57 +42,80 @@ the second VCF allele index.}
 chromosome codes.}
 }
 
-Name validation is repeated in C. A manually assembled STvcf therefore cannot
-bypass the rule that marker and individual names contain only letters and
-digits. Dots, underscores, hyphens, whitespace, punctuation, non-ASCII
-characters, empty names, duplicate names, and names of 256 bytes or more are
-rejected.
+Individual names must be unique, contain only letters and digits (no dots, hyphens, etc.),
+and have between 1 and 255 characters.
 
-STvcf allele index 0 denotes REF and indices 1, 2, ... denote ALT alleles. On
-loading these become SelectionTools biological allele codes 1, 2, 3, ... .
-At most 253 ALT alleles may be defined at one marker, so the largest resulting
-SelectionTools biological allele code is 254. The two allele matrices must use
-the same storage type. Raw STvcf matrices use 255 for missing; integer matrices
-use \code{NA_integer_} for missing data. Missingness is converted to the
-SelectionTools internal missing representation.
+Alleles use VCF-style indexing: \code{0} denotes the reference allele
+(\code{REF}), and \code{1}, \code{2}, and subsequent indices refer to
+the alleles listed in \code{ALT}. When loaded into SelectionTools,
+these are represented by allele codes \code{1}, \code{2}, \code{3},
+and so on.
 
-REF and ALT definitions are validated independently of the R converter. A
-REF value repeated in ALT, a duplicated ALT value, an empty ALT token, or a
-dot embedded inside an ALT list is rejected. Thus malformed manually created
-STvcf objects cannot create distinct internal integer alleles for identical
-textual allele labels.
+Prepare the input object using \code{\link{st.dataframe.to.STvcf}}.
+This function converts a data frame of marker information and
+genotypes into the STvcf format required here.
 
-The SelectionTools marker representation allows at most 254 biological
-allele codes per marker, plus the internal missing state. Multiallelic markers
-are valid input as long as they fit this representation. The ordinary statistical genomic
-selection functions that construct one design-matrix column per marker are
-biallelic; multiallelic data must be restricted to an appropriate biallelic
-marker set before those functions are called. Monomorphic markers are also
-unsuitable for that ordinary biallelic design-matrix construction.
+Each marker must have one reference allele. Alternative alleles must
+be unique and differ from the reference allele. Use \code{"."} for
+\code{ALT} when no alternative allele is defined; empty entries and
+dots within a list of alternative alleles are not allowed.
 
-Only diploid data are supported. If either stored allele is missing, the
-complete internal diploid genotype is set to missing. The order of two non-missing alleles is
-retained, and those two arrays become the two homologues when marker data are
-transferred to simulation. This does not imply statistical phase inference.
+Markers may have up to 254 alleles, excluding missing values.
+Multiallelic markers can be loaded, but genomic prediction methods
+requiring biallelic markers must be used with a suitable subset.
+Monomorphic markers must also be excluded before using these methods.
 
-All STvcf markers require map positions. Markers are loaded in chromosome and
-cM order. Exact position ties retain STvcf row order and are separated by
-small deterministic internal offsets because the existing linkage-map and
-simulation structures require distinct ordered positions. The STvcf object
-itself is not changed; \code{st.get.map()} reports the internally used map
-positions.
+Only diploid genotypes are supported. If either allele is missing,
+the entire genotype is treated as missing. The order of non-missing
+alleles is preserved. The logical \code{phased} attribute indicates
+whether the supplied genotypes are phased. If this attribute is absent,
+the data are treated as unphased. The attribute must be logical and
+must not contain missing values. Loading does not infer phase.
 
-Normal SelectionTools marker statistics are constructed after conversion.
-They are calculated from exactly the markers present in the STvcf object.
-Compact raw or integer R storage is expanded into the existing C genotype and
-marker-statistics structures during loading.
+All markers must have genetic map positions in centimorgans.
+Markers are ordered by chromosome and position. Markers sharing the
+same position retain their relative input order, but their positions
+are adjusted slightly to make them distinct. The supplied STvcf object
+is not modified. Use \code{\link{st.get.map}} to inspect the map
+positions used by SelectionTools.
 
-The operation replaces \code{data.set} transactionally. The replacement is
-committed only after names, alleles, genotype matrices, linkage-map data, and
-marker statistics have been validated and constructed successfully. On
-failure, the previous contents of the named marker data set remain intact.
-Performance data are not installed by this function.
+Marker statistics are calculated from the supplied data. An existing
+data set named \code{data.set} is replaced only if loading succeeds.
+Otherwise, it remains unchanged. Performance data are not loaded by
+this function.
 }
 \value{
 \code{NULL}, returned invisibly. The function is called for its side effect of loading the supplied STvcf marker and map information into \code{data.set}.
+}
+
+\examples{
+# Three markers and three individuals.
+# POS contains genetic positions in cM.
+# 0 denotes REF and 1 denotes ALT.
+markers <- data.frame(
+   CHROM = c(1, 1, 2),
+   POS = c(5, 15, 10),
+   ID = c("M1", "M2", "M3"),
+   REF = c("A", "C", "G"),
+   ALT = c("G", "T", "A"),
+   Plant1 = c("0/0", "0/1", "1/1"),
+   Plant2 = c("0/1", "1/1", "0/0"),
+   Plant3 = c("1/1", "0/0", "0/1")
+)
+
+# Convert the data frame to the compact STvcf format
+marker.data <- st.dataframe.to.STvcf(markers)
+
+# Load marker genotypes and their map into SelectionTools
+st.load.vcf.data(marker.data, data.set = "example")
+
+# Inspect the loaded linkage map
+mp <- st.get.map(data.set = "example")
+mp
+}
+
+\seealso{
+\code{\link{st.dataframe.to.STvcf}},
+\code{\link{st.markerdata.to.STvcf}},
+\code{\link{st.STvcf.to.dataframe}}.
 }

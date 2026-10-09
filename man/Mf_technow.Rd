@@ -11,11 +11,13 @@ genomic relationship matrices and for genomic-prediction examples.
 data(Mf_technow)
 }
 \format{
-A marker-data matrix or data frame with flint parental lines in rows and
+A marker matrix with flint parental lines in rows and
 markers in columns.  Row names identify the parental lines and the entries
 contain marker genotypes.
 }
 \source{
-Data supplied with SelectionTools for genomic-prediction examples.
+Data supplied with SelectionTools for genomic prediction examples.
+Original data published in Technow et al. (2014):
+\doi{10.1534/genetics.114.165860}.
 }
 \keyword{datasets}

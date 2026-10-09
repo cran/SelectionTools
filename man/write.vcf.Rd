@@ -23,11 +23,12 @@ write.vcf(vcffile, data.set = "default")
 }
 
 \details{
-The output is deliberately small and Beagle-oriented.  It contains VCF 4.3
-header information and one FORMAT field, \code{GT}.  All observed genotypes
-are written with the unphased separator \code{/}; this is intentional because
-the principal use is to give an unphased SelectionTools data set to Beagle for
-phasing.  Missing diploid genotypes are written as \code{./.}.
+The output is deliberately small and Beagle-oriented. It contains VCF 4.3
+header information and one FORMAT field, \code{GT}. A marker data set whose
+stored phase state is known is written with the phased separator \code{|}; an
+unphased data set is written with \code{/}. Missing diploid genotypes are
+written consistently as \code{.|.} or \code{./.}, respectively. Thus VCF
+round trips retain the SelectionTools data-set phase state.
 
 SelectionTools allele codes are normalized independently at each marker to VCF
 allele indices 0, 1, and so on.  REF and ALT are valid synthetic DNA allele

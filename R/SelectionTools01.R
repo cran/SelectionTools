@@ -999,6 +999,53 @@ st.info <-  function( lev, msg )
     c <- .C("gs_reset");
   }
 
+"st.data.set.list" <- function(digits=getOption("digits"))
+{
+  digits <- as.integer(digits)
+  if (length(digits) != 1L || is.na(digits) || digits < 1L || digits > 22L)
+    stop("digits must be one integer between 1 and 22")
+  x <- .Call("st_data_set_list")
+  attr(x,"digits") <- digits
+  class(x) <- c("st.data.set.list","data.frame")
+  x
+}
+
+"print.st.data.set.list" <- function(x,digits=attr(x,"digits"),complete=FALSE,...)
+{
+  if (is.null(digits)) digits <- getOption("digits")
+  digits <- as.integer(digits)
+  if (length(digits) != 1L || is.na(digits) || digits < 1L || digits > 22L)
+    stop("digits must be one integer between 1 and 22")
+  if (length(complete) != 1L || is.na(complete))
+    stop("complete must be TRUE or FALSE")
+  y <- if (isTRUE(complete)) x else
+       x[,c("data.set","no.markers","no.individuals","map","ram.core","ram.work"),drop=FALSE]
+  class(y) <- "data.frame"
+  print(y,digits=digits,...)
+  invisible(x)
+}
+
+"st.compact.data.set" <- function(data.set="default")
+{
+  invisible(.Call("st_compact_data_set",as.character(data.set)))
+}
+
+"st.data.set.remove" <- function(data.set)
+{
+  invisible(.Call("st_data_set_remove",as.character(data.set)))
+}
+
+"st.data.set.remove.all" <- function()
+{
+  invisible(.Call("st_data_set_remove_all"))
+}
+
+"st.keep.intersection.markers" <- function(data.set1,data.set2)
+{
+  invisible(.Call("st_keep_intersection_markers",
+                  as.character(data.set1),as.character(data.set2)))
+}
+
 "st.info" <-  function( lev, msg ){
     c <- .C(  "st_r_info",
               as.integer(lev),
@@ -1445,6 +1492,8 @@ st.info <-  function( lev, msg )
    ns <- length(sample.idx)
    allele1 <- matrix(as.raw(255L), nrow=nr, ncol=ns)
    allele2 <- matrix(as.raw(255L), nrow=nr, ncol=ns)
+   saw.phased <- FALSE
+   saw.unphased <- FALSE
 
    for (i in seq_len(nr))
    {
@@ -1483,6 +1532,11 @@ st.info <-  function( lev, msg )
       for (j in seq_len(ns))
       {
          x <- gt[j]
+         if (!is.na(x))
+         {
+            if (grepl("|", x, fixed=TRUE)) saw.phased <- TRUE
+            if (grepl("/", x, fixed=TRUE)) saw.unphased <- TRUE
+         }
          if (is.na(x) || !nzchar(x) || "." == x || "-1" == x ||
              "./." == x || ".|." == x || "-1/-1" == x ||
              "-1|-1" == x || "NA" == x)
@@ -1545,7 +1599,8 @@ st.info <-  function( lev, msg )
          allele2=allele2,
          CHROM.levels=chrom.levels
       ),
-      class="STvcf"
+      class="STvcf",
+      phased=(saw.phased && !saw.unphased)
    )
 }
 
@@ -1559,6 +1614,13 @@ st.info <-  function( lev, msg )
        is.null(nms) || anyNA(nms) || anyDuplicated(nms) ||
        !setequal(nms, required))
       stop("STvcf must contain exactly the nine required components")
+
+   phased <- attr(STvcf,"phased",exact=TRUE)
+   if (is.null(phased))
+      phased <- FALSE
+   else if (!is.logical(phased) || length(phased) != 1L || is.na(phased))
+      stop("invalid STvcf phased attribute")
+   sep <- if (isTRUE(phased)) "|" else "/"
 
    nr <- length(STvcf$ID)
    ns <- length(STvcf$individual)
@@ -1638,7 +1700,7 @@ st.info <-  function( lev, msg )
    if (any(n.alt > .GS_STVCF_MAX_ALT))
       stop("STvcf supports at most 253 ALT alleles per marker")
 
-   gt <- matrix("./.", nrow=nr, ncol=ns)
+   gt <- matrix(if (isTRUE(phased)) ".|." else "./.", nrow=nr, ncol=ns)
    for (i in seq_len(nr))
    {
       if (is.raw(STvcf$allele1))
@@ -1674,7 +1736,7 @@ st.info <-  function( lev, msg )
                     STvcf$ID[i]))
 
       ok <- !miss
-      gt[i, ok] <- paste0(a1[ok], "/", a2[ok])
+      gt[i, ok] <- paste0(a1[ok], sep, a2[ok])
    }
 
    out <- data.frame(
@@ -5704,3 +5766,22 @@ st_mixed <- function(y,
 # END: Genomic prediction                                                 2026
 ##############################################################################
 
+
+##############################################################################
+# Haplotype enrichment of separately phased marker data sets
+##############################################################################
+st.calculate.enrichment <- function(base.pool, enrichment.pool,
+                                    haplotype.options=NULL, blocks=NULL,
+                                    exclude.compatible=TRUE) {
+    .Call("st_enrichment", base.pool, enrichment.pool, haplotype.options,
+          blocks, exclude.compatible, NULL, "best.subset", PACKAGE="SelectionTools")
+}
+
+st.select.enrichment <- function(base.pool, enrichment.pool, n,
+                                 haplotype.options=NULL, blocks=NULL,
+                                 exclude.compatible=TRUE,
+                                 method="best.subset") {
+    if (is.null(n)) stop("n must be a positive integer", call.=FALSE)
+    .Call("st_enrichment", base.pool, enrichment.pool, haplotype.options,
+          blocks, exclude.compatible, n, method, PACKAGE="SelectionTools")
+}

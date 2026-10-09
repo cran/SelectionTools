@@ -75,6 +75,13 @@ void effmap_remove_all( void );
 /* ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ */
 
 int rng_initialized = 0;
+static int rng_seeded_mode = 0;
+#ifdef MT
+static int rng_previous_dynamic = 0;
+#endif
+
+int st_rng_is_seeded(void) { return rng_seeded_mode; }
+
 
 #ifdef use_gsl
 
@@ -413,6 +420,15 @@ unsigned long int gsl_rng_uniform_int (gsl_rng* rng, unsigned long int n)
 #endif
 
 void rng_init (void) {
+  /* No-argument initialization restores ordinary execution after seeded use.
+     The original path is untouched when no explicit seed was supplied. */
+  if (rng_seeded_mode) {
+    st_rng_cleanup();
+    rng_seeded_mode = 0;
+#ifdef MT
+    omp_set_dynamic(rng_previous_dynamic);
+#endif
+  }
  
   int i, j;
   unsigned long int seed;
@@ -467,6 +483,42 @@ fail:
   info(-2, "Memory allocation failed in rng_init\n" );
   return;
 
+}
+
+
+/* seeds[0]: MathLib12 base seed; seeds[1..MAXTHREADS]: Park-Miller seeds.
+   Prepare new generators before replacing any existing generator state. */
+void rng_init_seed(int *seeds, int *nseeds, int *retval) {
+  gsl_rng *tmp_rng[MAXTHREADS] = { NULL };
+  int i, j;
+  *retval = -2;
+  if (*nseeds != MAXTHREADS + 1) return;
+  if (seeds[0] < 0 || seeds[0] > 1073741823) return;
+  for (i = 1; i <= MAXTHREADS; i++)
+    if (seeds[i] < 1 || seeds[i] > 1073741824) return;
+#ifdef use_gsl
+  const gsl_rng_type *p_rng_default = *rng_default;
+#endif
+  for (i = 0; i < MAXTHREADS; i++) {
+    tmp_rng[i] = gsl_rng_alloc(p_rng_default);
+    if (NULL == tmp_rng[i]) {
+      for (j = 0; j < i; j++) gsl_rng_free(tmp_rng[j]);
+      return;
+    }
+    gsl_rng_set(tmp_rng[i], (unsigned long)seeds[i + 1]);
+  }
+  st_rng_set_seed((uint32_t)seeds[0]);
+  for (i = 0; i < MAXTHREADS; i++) {
+    if (rng_initialized) gsl_rng_free(rng[i]);
+    rng[i] = tmp_rng[i];
+  }
+#ifdef MT
+  if (!rng_seeded_mode) rng_previous_dynamic = omp_get_dynamic();
+  omp_set_dynamic(0);
+#endif
+  rng_seeded_mode = 1;
+  rng_initialized = 1;
+  *retval = 0;
 }
 
 
@@ -2157,7 +2209,8 @@ void cross (
     int i = omp_get_thread_num();
 
 #ifdef MT
-  #pragma omp for 
+    omp_set_schedule(omp_sched_static, 0);
+  #pragma omp for schedule(runtime) 
 #endif
  
   for ( ind = 0; ind < PgPop->NoInds; ind++ )

@@ -34,6 +34,10 @@ the marker-data/STvcf convention that individual identifiers contain only
 letters and digits. Population names containing dots, punctuation,
 whitespace, or other non-alphanumeric characters are rejected by this
 transfer rather than being silently sanitized.
+
+The two homologues returned by the simulation backend are chromosome-homologue
+ordered. Consequently the resulting SelectionTools marker data set is marked
+as phased.
 }
 \value{
 An invisible \code{list} returned by the underlying \code{.C} routine. The list is an implementation-level result containing the arguments returned by the compiled routine; the function is primarily called for its side effect of copying a simulation population into the named SelectionTools marker data set.

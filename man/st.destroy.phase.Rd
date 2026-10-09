@@ -27,7 +27,9 @@ randomized.
 
 The function uses R's random-number generator.  Call \code{set.seed()} before
 \code{st.destroy.phase()} when a reproducible randomized phase is required.
-The marker data set is modified in place.
+The marker data set is modified in place and its native phase state is set to
+\code{FALSE}, including the degenerate case in which no heterozygous genotype
+was present.
 }
 
 \value{

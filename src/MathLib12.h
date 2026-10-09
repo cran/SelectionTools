@@ -16,5 +16,8 @@ double st_rand_uniform_stream(int stream);
 double st_rand_uniform_pos(void);
 double st_rand_uniform_pos_stream(int stream);
 void st_rng_cleanup(void);
+/* Called only from the serial initialization path. */
+void st_rng_set_seed(uint32_t seed);
+int st_rng_is_seeded(void);
 
 #endif

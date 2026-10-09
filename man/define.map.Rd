@@ -11,15 +11,23 @@ define.map(description)
 }
 
 \arguments{
-   \item{description}{A string containing a description of the linkage map}
+   \item{description}{A character string or character vector containing
+   locus specifications. Multiple specifications can be separated by
+   commas or whitespace within a string, or supplied as separate
+   elements of a character vector.}
 }
+
 \value{
-An invisible \code{list} returned by \code{generate.map.file()} or \code{linkage.map.load()}. Its \code{retval} component is the status code of the map-generation/loading step; the main effect is defining the simulation map.
+Invisibly returns a list whose \code{retval} component indicates
+success or failure. The function is primarily called for its side
+effect of defining the simulation linkage map.
 }
 
 \details{
-The compact description consists of comma-separated locus specifications with
-the grammar
+Genome parameters must be defined before calling this function, for
+example using \code{\link{set.genome.par}}. Each call replaces the
+currently defined linkage map.
+
 \preformatted{[*Number] Locusname Classname Position}
 where \code{*Number} is optional. \code{Locusname} is the locus-name prefix,
 \code{Classname} is the locus class, and \code{Position} controls placement.
@@ -53,6 +61,26 @@ The description is first converted to a temporary map file by
 linkage-map loader. The generated map is validated for chromosome bounds,
 position bounds, unique locus names, and complete specifications, and is
 ordered by chromosome and position before loading. The operation replaces the
-currently active simulation linkage-map definition only after the description
+currently active simulation linkage map definition only after the description
 has been accepted by the map-generation/loading steps.
+}
+
+\examples{
+set.genome.par(no.chrom = 1,
+               no.hom = 2,
+               chrom.len = 0.05)
+
+# Define a single locus
+# Format: Name Class Chromosome/Position
+define.map("form trait1 1/0")
+
+# Replace the map with two loci supplied in one string
+define.map("form trait1 1/0, color trait2 1/0.02")
+
+# Define the same map using a character vector
+define.map(c("form trait1 1/0",
+             "color trait2 1/0.02"))
+
+# Inspect the resulting map
+linkage.map.get()
 }

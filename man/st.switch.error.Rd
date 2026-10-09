@@ -1,5 +1,6 @@
 \name{st.switch.error}
 \alias{st.switch.error}
+\alias{print.st.switch.error}
 \title{Calculate Switch Error against Known Phase}
 
 \description{
@@ -10,6 +11,8 @@ chromosome.
 
 \usage{
 st.switch.error(true.data.set, data.set = "default")
+
+\method{print}{st.switch.error}(x, complete = FALSE, digits = 3, ...)
 }
 
 \arguments{
@@ -19,6 +22,21 @@ st.switch.error(true.data.set, data.set = "default")
   }
   \item{data.set}{
     Character string naming the phased data set to evaluate.
+  }
+  \item{x}{
+    An object returned by \code{st.switch.error()}.
+  }
+  \item{complete}{
+    Logical.  If \code{FALSE} (the default), print only \code{switch.error},
+    \code{coverage}, and \code{genotype.mismatches}.  If \code{TRUE}, print
+    the complete result.
+  }
+  \item{digits}{
+    Number of significant digits used for printing.  The default is 3.
+    This affects display only; stored values retain their full precision.
+  }
+  \item{...}{
+    Additional arguments passed to \code{print.data.frame}.
   }
 }
 
@@ -48,15 +66,18 @@ and Browning (2022).
 }
 
 \value{
-A data frame with one column, \code{result}.  The row names are
+An object of class \code{"st.switch.error"} inheriting from \code{"data.frame"},
+with one column, \code{result}.  The row names are
 \code{errors}, \code{links}, \code{switch.error},
 \code{switch.error.percent}, \code{heterozygotes},
 \code{scored.heterozygotes}, \code{coverage},
 \code{missing.heterozygotes}, and \code{genotype.mismatches}.
 \code{switch.error} and \code{coverage} are proportions; the former is
 \code{NA} when no switch link is available and the latter is \code{NA} when
-the true data contain no observed heterozygotes.  The one-column layout is
-intended to make the result directly readable when printed.
+the true data contain no observed heterozygotes.  The full result is always
+returned.  Its print method displays only \code{switch.error}, \code{coverage},
+and \code{genotype.mismatches} by default; use \code{complete=TRUE} to print
+all rows.
 }
 
 \references{

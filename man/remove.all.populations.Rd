@@ -10,10 +10,13 @@ Removes all currently registered simulation populations.
 remove.all.populations()
 }
 \value{
-Returns the same invisible implementation-level \code{list} as \code{population.remove.all()}; the main effect is removal of all populations.
+Returns invisible NULL. The main effect is removal of all populations.
 }
 
 \details{
 The current population list is collected and all listed populations are removed. Genome parameters, linkage-map definitions, effect definitions, and marker-data sets are separate objects and are not removed with the simulation populations.
 }
 
+\seealso{
+For vector based input of loci, see \code{\link{evaluate.allele.freq2}}.
+}

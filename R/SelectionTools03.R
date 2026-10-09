@@ -3,7 +3,15 @@
 # Chromosome-wide statistical phasing
 ###########################################################################
 
-"st.phase" <- function(
+"st.phase" <- function(data.set="default", ref=NULL, phasing.options=list(),
+                         impute=FALSE, commit=TRUE)
+{
+    invisible(.Call("st_phase", data.set, ref, phasing.options, impute, commit,
+                    PACKAGE="SelectionTools"))
+}
+
+
+"st.phase.v1" <- function(
     reference.data.set = NULL,
     reference.individuals = NULL,
     initial.pair.weights = NULL,
@@ -85,8 +93,25 @@
 "st.switch.error" <- function(true.data.set, data.set="default")
 {
     result <- .Call("st_switch_error", true.data.set, data.set)
-    data.frame(result=unname(unlist(result,use.names=FALSE)),
-               row.names=names(result))
+    result <- data.frame(result=unname(unlist(result,use.names=FALSE)),
+                         row.names=names(result))
+    class(result) <- c("st.switch.error","data.frame")
+    result
+}
+
+
+"print.st.switch.error" <- function(x, complete=FALSE, digits=3, ...)
+{
+    digits <- as.integer(digits)
+    if (length(digits) != 1L || is.na(digits) || digits < 1L || digits > 22L)
+        stop("digits must be one integer between 1 and 22")
+    if (length(complete) != 1L || is.na(complete))
+        stop("complete must be TRUE or FALSE")
+    out <- if (isTRUE(complete)) x else
+           x[c("switch.error","coverage","genotype.mismatches"),,drop=FALSE]
+    class(out) <- "data.frame"
+    print(out,digits=digits,...)
+    invisible(x)
 }
 
 

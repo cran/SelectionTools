@@ -17,6 +17,8 @@ lines, \code{hy} identifies the hybrid, and \code{GY} contains grain-yield
 phenotypes.
 }
 \source{
-Data supplied with SelectionTools for genomic-prediction examples.
+Data supplied with SelectionTools for genomic prediction examples.
+Original data published in Technow et al. (2014):
+\doi{10.1534/genetics.114.165860}.
 }
 \keyword{datasets}

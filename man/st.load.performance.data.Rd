@@ -41,3 +41,22 @@ performance vector. The operation is transactional.
 \value{
 \code{NULL}, returned invisibly. The function is called for its side effect of loading performance data into the named SelectionTools data set.
 }
+
+\examples{
+# Load marker data first
+data("v-tropmaize-vcf")
+st.load.vcf.data(v.tropmaize.vcf, data.set = "maize")
+
+# Performance values for three individuals in the marker data
+performance <- data.frame(
+   individual = v.tropmaize.vcf$individual[1:3],
+   performance = c(8.2, 7.5, 9.1)
+)
+
+st.load.performance.data(performance, data.set = "maize")
+}
+
+\seealso{
+\code{\link{st.read.performance.data}} for reading performance
+data from a local file.
+}

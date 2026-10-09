@@ -66,9 +66,11 @@ of a marker-data genotype is missing, the exported STvcf genotype is
 completely missing, consistent with the STvcf partial-missing convention.
 
 The two current marker-data allele arrays are retained in order as
-\code{allele1} and \code{allele2}. For data obtained through
-\code{st.get.simpop()}, they correspond to the two simulation homologues. No
-new phasing calculation is performed.
+\code{allele1} and \code{allele2}. The returned STvcf object receives a
+logical \code{phased} attribute from the native marker data set. For data
+obtained through \code{st.get.simpop()}, the two arrays correspond to the two
+simulation homologues and the attribute is \code{TRUE}. No new phasing
+calculation is performed.
 
 The current SelectionTools marker representation permits at most 254
 biological allele states per marker. After normalization their VCF indices are

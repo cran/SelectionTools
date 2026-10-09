@@ -42,10 +42,11 @@ CHROM is written using \code{CHROM.levels}. POS is written as the current
 STvcf double-precision genetic position in cM without intentional rounding.
 
 Genotypes use VCF allele indices, with 0 for REF and 1, 2, ... for ALT
-alleles. Allele order is retained. Every non-missing genotype is written with
-\code{"/"}; \code{"|"} is never written because STvcf does not retain the
-original separator and must not imply that phasing was inferred. If either
-stored allele is missing, the genotype is written as \code{"./."}.
+alleles. Allele order is retained. If the STvcf object has logical attribute
+\code{phased=TRUE}, non-missing genotypes are written with \code{"|"} and
+missing genotypes as \code{".|."}. Otherwise \code{"/"} and \code{"./."}
+are used. STvcf objects created before this attribute was introduced, or
+manually created objects without it, are treated as unphased.
 
 The two allele matrices must use the same storage type. Raw matrices use raw
 value 255 for missing data; integer matrices use \code{NA_integer_} for
@@ -58,8 +59,8 @@ STvcf does not retain QUAL, FILTER, INFO, non-GT FORMAT fields, phase-set
 metadata, or a physical POS field that was superseded by CM. These fields
 cannot be reconstructed. For an STvcf object produced by
 \code{st.dataframe.to.STvcf()}, conversion to a data frame and back preserves
-the STvcf information under the documented normalizations: GT separators are
-written as slash and missing genotypes as \code{"./."}.
+the data-set level phased/unphased state through the logical \code{phased}
+attribute.
 }
 \value{
 A VCF-like \code{data.frame} with fixed columns \code{CHROM}, \code{POS}, \code{ID}, \code{REF}, \code{ALT}, and \code{FORMAT}, followed by one genotype column for each individual.

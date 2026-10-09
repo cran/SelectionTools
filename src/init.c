@@ -5,6 +5,9 @@
 #include <R_ext/Visibility.h>
 #include <stdlib.h>
 
+
+extern SEXP st_phase(SEXP, SEXP, SEXP, SEXP, SEXP);
+
 /* .C entry points */
 extern void allele_freq(void *, void *, void *, void *, void *, void *, void *, void *);
 extern void append_population(void *, void *);
@@ -153,6 +156,7 @@ extern void resize_population(void *, void *);
 extern void rng_choose(void *);
 extern void rng_info(void);
 extern void rng_init(void);
+extern void rng_init_seed(int *, int *, int *);
 extern void rng_list(void);
 extern void sample_population(void *, void *, void *, void *);
 extern void select_all_n_best(void *, void *, void *, void *, void *, void *, void *, void *);
@@ -185,13 +189,15 @@ extern SEXP define_effects_df(SEXP, SEXP);
 extern SEXP define_map_df(SEXP);
 extern SEXP evaluate_haplotype(SEXP, SEXP, SEXP, SEXP);
 extern SEXP genotype_evaluate(SEXP, SEXP, SEXP);
-extern SEXP gs_read_marker_data_01_DF(SEXP, SEXP);
+extern SEXP gs_read_marker_data_DF_list(SEXP, SEXP);
+extern SEXP gs_read_marker_data_DF_matrix(SEXP, SEXP);
 extern SEXP haplotype_return_genotype(void);
 extern SEXP haplotype_return_table(void);
 extern SEXP return_population(SEXP, SEXP);
 extern SEXP splitdot(SEXP);
 extern SEXP splitdt(SEXP);
 extern SEXP st_destroy_phase(SEXP);
+extern SEXP st_read_map_df(SEXP, SEXP, SEXP);
 extern SEXP st_get_V(SEXP);
 extern SEXP st_get_Z(SEXP);
 extern SEXP st_get_im(SEXP, SEXP, SEXP);
@@ -442,6 +448,7 @@ static const R_CMethodDef CEntries[] = {
     {"rng_choose", (DL_FUNC) &rng_choose, 1},
     {"rng_info", (DL_FUNC) &rng_info, 0},
     {"rng_init", (DL_FUNC) &rng_init, 0},
+    {"rng_init_seed", (DL_FUNC) &rng_init_seed, 3},
     {"rng_list", (DL_FUNC) &rng_list, 0},
     {"sample_population", (DL_FUNC) &sample_population, 4},
     {"select_all_n_best", (DL_FUNC) &select_all_n_best, 8},
@@ -472,19 +479,35 @@ static const R_CMethodDef CEntries[] = {
     {NULL, NULL, 0}
 };
 
+extern SEXP st_data_set_list(void);
+extern SEXP st_compact_data_set(SEXP);
+extern SEXP st_data_set_remove(SEXP);
+extern SEXP st_data_set_remove_all(void);
+extern SEXP st_keep_intersection_markers(SEXP, SEXP);
+extern SEXP st_enrichment(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+
 static const R_CallMethodDef CallEntries[] = {
+    {"st_phase", (DL_FUNC) &st_phase, 5},
+    {"st_data_set_list", (DL_FUNC) &st_data_set_list, 0},
+    {"st_compact_data_set", (DL_FUNC) &st_compact_data_set, 1},
+    {"st_data_set_remove", (DL_FUNC) &st_data_set_remove, 1},
+    {"st_data_set_remove_all", (DL_FUNC) &st_data_set_remove_all, 0},
+    {"st_keep_intersection_markers", (DL_FUNC) &st_keep_intersection_markers, 2},
+    {"st_enrichment", (DL_FUNC) &st_enrichment, 7},
     {"allele_evaluate", (DL_FUNC) &allele_evaluate, 4},
     {"define_effects_df", (DL_FUNC) &define_effects_df, 2},
     {"define_map_df", (DL_FUNC) &define_map_df, 1},
     {"evaluate_haplotype", (DL_FUNC) &evaluate_haplotype, 4},
     {"genotype_evaluate", (DL_FUNC) &genotype_evaluate, 3},
-    {"gs_read_marker_data_01_DF", (DL_FUNC) &gs_read_marker_data_01_DF, 2},
+    {"gs_read_marker_data_DF_list", (DL_FUNC) &gs_read_marker_data_DF_list, 2},
+    {"gs_read_marker_data_DF_matrix", (DL_FUNC) &gs_read_marker_data_DF_matrix, 2},
     {"haplotype_return_genotype", (DL_FUNC) &haplotype_return_genotype, 0},
     {"haplotype_return_table", (DL_FUNC) &haplotype_return_table, 0},
     {"return_population", (DL_FUNC) &return_population, 2},
     {"splitdot", (DL_FUNC) &splitdot, 1},
     {"splitdt", (DL_FUNC) &splitdt, 1},
     {"st_destroy_phase", (DL_FUNC) &st_destroy_phase, 1},
+    {"st_read_map_df", (DL_FUNC) &st_read_map_df, 3},
     {"st_get_V", (DL_FUNC) &st_get_V, 1},
     {"st_get_Z", (DL_FUNC) &st_get_Z, 1},
     {"st_get_im", (DL_FUNC) &st_get_im, 3},

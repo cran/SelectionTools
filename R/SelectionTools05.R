@@ -167,10 +167,10 @@ mab.simulate <- function (
       names(p2.raw) <- c("name","allele3","allele4")
       a1 <- merge(map,p1.raw,sort=FALSE)
       a2 <- merge(map,p2.raw,sort=FALSE)
-      index <- ( (!(a1$allele1==missing.allele)) &&
+      index <- ( (!(a1$allele1==missing.allele)) &
                         (!(a1$allele2==missing.allele)) )
       a1 <- a1[index,]
-      index <- ( (!(a2$allele3==missing.allele)) &&
+      index <- ( (!(a2$allele3==missing.allele)) &
                         (!(a2$allele4==missing.allele)) )
       a2 <- a2[index,]
       c.m <- data.frame(name=merge(a1,a2,sort=FALSE)$name)
