@@ -21,7 +21,7 @@ An invisible implementation-level \code{list} returned by either the population-
 \details{
 The function interprets the row and column descriptors of \code{dta} to determine marker names, allele codes, population names, and individual membership. Allele coding must be numeric integer coding compatible with the simulation routines.
 
-The R layer derives the population and marker dimensions and passes the matrix together with allele and missing-value information to the C population generator. The resulting objects are simulation populations represented by chromosome data, not SelectionTools marker-data sets.
+The compiled interface derives the population and marker dimensions and supplies the matrix together with allele and missing-value information to the population generator. The resulting objects are simulation populations represented by chromosome data, not SelectionTools marker-data sets.
 
 The \code{backcross} flag selects the corresponding population-generation mode in the simulation backend. Existing genome and linkage-map definitions determine how generated marker information is represented in simulated chromosomes.
 }

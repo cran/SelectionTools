@@ -33,15 +33,17 @@ The other locus columns contain zero placeholders.
 }
 
 \examples{
-map <- data.frame(
-   chrom = 1:2,
-   pos = c(0.01, 0.02),
-   name = c("form", "color")
-)
-define.genome(map)
-init.population("P1", homozygote(1, NoInd = 2))
-
-evaluate.allele("P1", "form color")
+data("v-tropmaize-vcf", package = "SelectionTools")
+marker.frame <- st.STvcf.to.dataframe(v.tropmaize.vcf)[1:12, c(1:6, 7:14)]
+vcf <- st.dataframe.to.STvcf(marker.frame)
+st.load.vcf.data(vcf, data.set = "maize.example")
+reset.all()
+st.set.sim.gp(data.set = "maize.example")
+st.set.sim.mp(data.set = "maize.example")
+st.set.sim.pp("Maize", data.set = "maize.example")
+loci <- vcf$ID
+evaluate.allele("Maize", loci[1])
+evaluate.allele("Maize", paste(loci[1:2], collapse = " "))
 }
 
 \seealso{

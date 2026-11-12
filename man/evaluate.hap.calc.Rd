@@ -1,9 +1,9 @@
 \name{evaluate.hap.calc}
 \alias{evaluate.hap.calc}
-\title{Calculate haplotype information for a pair of loci}
+\title{Calculates haplotype information for a pair of loci}
 
 \description{
-Calculate haplotype information for a pair of loci.
+Calculates haplotype information for a pair of loci.
 }
 
 \usage{

@@ -1,9 +1,9 @@
 \name{st.plot.corr}
 \alias{st.plot.corr}
-\title{Plot correlation information from SelectionTools results}
+\title{Plots correlation information from SelectionTools results}
 
 \description{
-Plot correlation information from SelectionTools results.
+Plots correlation information from SelectionTools results.
 }
 
 \usage{

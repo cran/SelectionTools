@@ -1,9 +1,9 @@
 \name{evaluate.haplotype}
 \alias{evaluate.haplotype}
-\title{Evaluate haplotypes for selected loci in a population}
+\title{Evaluates haplotypes for selected loci in a population}
 
 \description{
-Evaluate haplotypes for selected loci in a population.
+Evaluates haplotypes for selected loci in a population.
 }
 
 \usage{

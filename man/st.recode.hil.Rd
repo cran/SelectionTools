@@ -11,8 +11,8 @@ the resulting haplotype variants as alleles of new haplotype-block loci.
 st.recode.hil(out.filename = "blocks", auxfiles = TRUE, data.set = "default")
 }
 \arguments{
-   \item{out.filename}{Character string retained for compatibility and used as part of the name of an internal file in the R session temporary directory. The temporary file is removed before the function returns.}
-   \item{auxfiles}{Logical. If \code{TRUE}, the compiled result is written to the R session temporary directory, read back by the R wrapper, and removed before the function returns.}
+   \item{out.filename}{Character string retained for compatibility. The result is returned directly from memory; this argument does not name an output file.}
+   \item{auxfiles}{Logical. If \code{TRUE}, the result is returned directly from memory.}
    \item{data.set}{Name of data set that is used for recoding.}
 }
 
@@ -32,8 +32,8 @@ rather than merging or truncating haplotypes.
 The operation modifies \code{data.set}. After successful recoding, the
 original marker-level representation is replaced by a new marker data set in
 which the defined haplotype blocks are the loci and the observed haplotype
-variants are their alleles. Make a copy of a marker data set before
-haplotyping if the original marker-level representation is also required.
+variants are their alleles. A copy made before haplotyping preserves the
+original marker-level representation when both representations are required.
 
 The returned haplotype description identifies each block and haplotype allele
 and gives the sequence of original marker allele codes defining that

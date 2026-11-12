@@ -1,9 +1,9 @@
 \name{gs.get.V}
 \alias{gs.get.V}
-\title{Return the genomic-selection variance or covariance matrix for a data set}
+\title{Returns the genomic-selection variance or covariance matrix for a data set}
 
 \description{
-Return the genomic-selection variance or covariance matrix for a data set.
+Returns the genomic-selection variance or covariance matrix for a data set.
 }
 
 \usage{

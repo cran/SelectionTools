@@ -1,9 +1,9 @@
 \name{ph.linkage.map.create}
 \alias{ph.linkage.map.create}
-\title{Create a linkage map for phenotype or simulation use}
+\title{Creates a linkage map for phenotype or simulation use}
 
 \description{
-Create a linkage map for phenotype or simulation use.
+Creates a linkage map for phenotype or simulation use.
 }
 
 \usage{

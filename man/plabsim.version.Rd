@@ -1,9 +1,9 @@
 \name{plabsim.version}
 \alias{plabsim.version}
-\title{Perform the SelectionTools operation "plabsim version"}
+\title{Performs the SelectionTools operation "plabsim version"}
 
 \description{
-Perform the SelectionTools operation "plabsim version".
+Performs the SelectionTools operation "plabsim version".
 }
 
 \usage{

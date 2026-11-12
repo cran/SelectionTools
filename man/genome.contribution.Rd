@@ -26,4 +26,4 @@ Analysis is done on the level of the chromosomes, independently of the
 loaded marker map. Summarizes the results of \code{evaluate.genome}.
 }
 
-\note{See the \code{lib00.example1} for an application of the command.}
+\note{Further details appear in the \code{lib00.example1} for an application of the command.}

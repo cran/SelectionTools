@@ -1,9 +1,9 @@
 \name{il.eval.library}
 \alias{il.eval.library}
-\title{Construct or evaluate introgression-line libraries}
+\title{Constructs or evaluates introgression-line libraries}
 
 \description{
-Construct or evaluate introgression-line libraries.
+Constructs or evaluates introgression-line libraries.
 }
 
 \usage{

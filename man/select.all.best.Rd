@@ -1,6 +1,6 @@
 \name{select.all.best}
 \alias{select.all.best}
-\title{Select all individuals in the best value classes}
+\title{Selects all individuals in the best value classes}
 
 \description{
 Selects individuals belonging to the best distinct genetic or phenotypic

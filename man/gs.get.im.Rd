@@ -1,9 +1,9 @@
 \name{gs.get.im}
 \alias{gs.get.im}
-\title{Return the genomic-selection information matrix for a data set}
+\title{Returns the genomic-selection information matrix for a data set}
 
 \description{
-Return the genomic-selection information matrix for a data set.
+Returns the genomic-selection information matrix for a data set.
 }
 
 \usage{

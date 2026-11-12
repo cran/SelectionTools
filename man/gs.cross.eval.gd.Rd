@@ -1,6 +1,6 @@
 \name{gs.cross.eval.gd}
 \alias{gs.cross.eval.gd}
-\title{Evaluate Crosses by Genetic Distance}
+\title{Evaluates Crosses by Genetic Distance}
 
 \description{
 Calculates a genetic distance for every possible pair of individuals in a

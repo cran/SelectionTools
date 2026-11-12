@@ -1,9 +1,9 @@
 \name{gs.neg.effall}
 \alias{gs.neg.effall}
-\title{Set or process all marker effects using the negative-effect convention}
+\title{Sets or process all marker effects using the negative-effect convention}
 
 \description{
-Set or process all marker effects using the negative-effect convention.
+Sets or process all marker effects using the negative-effect convention.
 }
 
 \usage{

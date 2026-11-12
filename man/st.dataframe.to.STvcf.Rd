@@ -1,6 +1,6 @@
 \name{st.dataframe.to.STvcf}
 \alias{st.dataframe.to.STvcf}
-\title{Convert a VCF-Like Data Frame to Compact STvcf Format}
+\title{Converts a VCF-Like Data Frame to Compact STvcf Format}
 \description{
 Converts a wide diploid VCF-like R data frame to the compact STvcf list
 representation used by \code{st.load.vcf.data()}.
@@ -14,6 +14,10 @@ genotypes. The required layout and conversion conventions are described
 below.}
 }
 \details{
+The optional \code{allele.codes} attribute is a list of integer coding vectors, named and ordered by marker ID. It records the internal allele codes corresponding to REF and successive ALT entries. STvcf exchange retains this attribute so fixed or subsetted loci keep the same coding as their fitted marker reference. The loader validates it before replacing a destination. Conversions preserve it; a manually edited marker list must keep it aligned. It is not part of plain-text VCF exchange.
+
+The optional versioned \code{pedigree} attribute is a data frame with \code{name} and \code{pedigree} columns and integer attribute \code{version=1L}. Its names must match the individual identifiers in order. Without it, individuals are founders. Full strings are owned independently of ancestor populations. The optional \code{prediction.state} attribute preserves a compatible active symbolic-A fitted state during STvcf/RDS exchange. Conversion in either direction retains both attributes; loading validates them before replacing the destination.
+
 The converter is deliberately strict. It is intended to create only STvcf
 objects that can subsequently be accepted by the SelectionTools marker-data
 and simulation-transfer path. Invalid marker or individual names, malformed
@@ -32,18 +36,17 @@ Data-frame column names must be non-missing and non-empty. Duplicate names are
 permitted only when they arise because a sample has the same name as a fixed
 or metadata field. Sample names themselves must be unique.
 
-Marker IDs are mandatory and unique. Marker and individual identifiers may
-contain only ASCII letters \code{A-Z} and \code{a-z} and digits
-\code{0-9}. Dots, underscores, hyphens, whitespace, punctuation, and
-non-ASCII characters are rejected. Names must contain fewer than 256 bytes.
-The same restrictions are checked again by \code{st.load.vcf.data()} and by
-the reverse marker-data conversion. Names are never silently modified.
+Marker IDs are mandatory and unique. Marker identifiers must be non-empty and contain fewer than 256 bytes. Individual identifiers must be non-empty; they use dynamically allocated strings subject to the R string-size limit. Whitespace and control
+characters are rejected; ordinary punctuation such as dots, underscores, and
+hyphens is permitted. The same restrictions are checked again by
+\code{st.load.vcf.data()} and by the reverse marker-data conversion. Names
+are never silently modified.
 
 Input chromosome labels may be numeric or character. They are converted to
 consecutive running integer codes 1, 2, ..., in order of first appearance.
 The original input labels are retained in \code{CHROM.levels}. One
 information message at level 0 reports the mapping. Chromosome labels are not
-marker or individual names and are not subject to the alphanumeric name
+marker or individual names and are not subject to the identifier
 restriction.
 
 STvcf positions are genetic positions in centimorgan. If a valid metadata

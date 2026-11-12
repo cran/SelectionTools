@@ -1,9 +1,9 @@
 \name{plant}
 \alias{plant}
-\title{Create or process a plant object in the simulation framework}
+\title{Creates or process a plant object in the simulation framework}
 
 \description{
-Create or process a plant object in the simulation framework.
+Creates or process a plant object in the simulation framework.
 }
 
 \usage{

@@ -1,6 +1,6 @@
 \name{gs.cross.eval.es}
 \alias{gs.cross.eval.es}
-\title{Evaluate Crosses by Expected Superior Progeny Value}
+\title{Evaluates Crosses by Expected Superior Progeny Value}
 
 \description{
 Calculates the expected superior progeny value for every evaluated cross by
@@ -14,14 +14,14 @@ gs.cross.eval.es(data.set = "default", alpha = 0.1, N = 0, G = 0)
 \arguments{
   \item{data.set}{Character string naming the SelectionTools data set. Cross
   means and segregation variances must already have been evaluated.}
-  \item{alpha}{Selected fraction used to calculate the standardized selection
-  differential when \code{N = 0} or \code{G = 0}.}
+  \item{alpha}{Finite selected fraction in \eqn{(0,1]}{(0,1]}, used when
+  \code{N = G = 0}. A value of 1 represents selection of all progeny.}
   \item{N}{Number of selected progeny for the finite-population correction.
-  When both \code{N} and \code{G} are nonzero, \code{alpha} is replaced by
+  The counts are either both zero or finite positive whole numbers with
+  \code{N <= G}. When both are positive, \code{alpha} is replaced by
   \code{N/G}.}
   \item{G}{Number of evaluated progeny for the finite-population correction.
-  When both \code{N} and \code{G} are nonzero, \code{alpha} is replaced by
-  \code{N/G}.}
+  The same count restrictions apply as for \code{N}.}
 }
 
 \details{
@@ -69,24 +69,30 @@ i(N,G) = i(\alpha) -
 i(N,G) = i(alpha) - (G-N) / [2 N (G+1) i(alpha)]
 }
 
+For selection of all progeny, \code{alpha = 1} or \code{N = G > 0}, the
+selection differential is zero and \code{es} equals the cross mean.
+An evaluated zero segregation variance is valid and also gives the cross mean.
+Both cross means and segregation variances must have been evaluated for the
+current data and marker effects. Invalid fractions, counts or unavailable
+prerequisites produce an error before the cross scores change.
+
 The calculated value is stored as the cross criterion \code{es}. Results for
 all evaluated crosses can subsequently be obtained with \code{gs.cross.info}.
 }
 
 \references{
+Burrows RM (1972) Expected selection differentials for directional selection.
+Biometrics 28:1091--1100.
+
 Zhong S, Jannink JL (2007) Using quantitative trait loci results to
 discriminate among crosses on the basis of their progeny mean and variance.
 Genetics 177:567--576.
-
-Burrows RM (1972) Expected selection differentials for directional selection.
-Biometrics 28:1091--1100.
 }
 
 \value{
 On a successful run, an invisible implementation-level \code{list} returned
 by the final timing/information helper; the meaningful result is the side
 effect of evaluating all crosses by expected superior progeny value.
-Validation failures may return \code{NULL}.
 }
 
 \seealso{

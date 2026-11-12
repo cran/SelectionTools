@@ -1,9 +1,9 @@
 \name{gs.pos.effall}
 \alias{gs.pos.effall}
-\title{Set or process all marker effects using the positive-effect convention}
+\title{Sets or process all marker effects using the positive-effect convention}
 
 \description{
-Set or process all marker effects using the positive-effect convention.
+Sets or process all marker effects using the positive-effect convention.
 }
 
 \usage{

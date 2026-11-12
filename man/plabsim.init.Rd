@@ -1,9 +1,9 @@
 \name{plabsim.init}
 \alias{plabsim.init}
-\title{Initialize the PLABSIM simulation state}
+\title{Initializes the PLABSIM simulation state}
 
 \description{
-Initialize the PLABSIM simulation state.
+Initializes the PLABSIM simulation state.
 }
 
 \usage{

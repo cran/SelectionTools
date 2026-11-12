@@ -1,6 +1,6 @@
 \name{st.markerdata.to.STvcf}
 \alias{st.markerdata.to.STvcf}
-\title{Convert a SelectionTools Marker Data Set to STvcf}
+\title{Converts a SelectionTools Marker Data Set to STvcf}
 \description{
 Converts marker genotypes and the linkage map of an existing SelectionTools
 marker data set to the compact diploid STvcf representation.
@@ -13,14 +13,23 @@ st.markerdata.to.STvcf(data.set="default")
 be converted.}
 }
 \details{
+A stored physical map is retained in the exported \code{physical.map}
+attribute. A dataset with a physical map but no genetic map is exported
+with missing \code{CHROM}/\code{POS} and empty \code{CHROM.levels};
+base-pair positions are never substituted for genetic positions in cM.
+
+The optional \code{allele.codes} attribute is a list of integer coding vectors, named and ordered by marker ID. It records the internal allele codes corresponding to REF and successive ALT entries. STvcf exchange retains this attribute so fixed or subsetted loci keep the same coding as their fitted marker reference. The loader validates it before replacing a destination. Conversions preserve it; a manually edited marker list must keep it aligned. It is not part of plain-text VCF exchange.
+
 This function supplies the marker-data to STvcf step of the reverse data
 chain. With the existing \code{st.get.simpop()} function, a simulation
 population can first be returned to the ordinary SelectionTools marker-data
 structure and can then be converted to STvcf without introducing a separate
 simulation-to-STvcf bridge.
 
-The marker data set must contain genotype data and a usable linkage map.
-Every marker-matrix column must have exactly one active map location. Map-only
+The marker data set must contain genotype data and either a usable
+genetic linkage map or a stored physical map. When a genetic map is
+present, every marker-matrix column must have exactly one active genetic
+map location. Map-only
 locations are ignored. Missing or duplicate marker locations, inconsistent
 marker and map names, invalid chromosome numbers, non-finite positions, and
 negative positions cause conversion to fail.
@@ -32,19 +41,11 @@ numeric chromosome numbers are converted to consecutive STvcf running codes
 the corresponding numeric chromosome labels as character strings.
 
 Current marker and individual names become STvcf identifiers. They must be
-unique, contain fewer than 256 bytes, and contain only ASCII letters and
-digits. Dots and all other punctuation are rejected. Names are never silently
-modified during this conversion.
+unique and non-empty. Marker names must contain fewer than 256 bytes; individual names use owned dynamic strings subject to the R string-size limit. Whitespace and control
+characters are rejected; ordinary punctuation such as dots, underscores, and
+hyphens is permitted. Names are never silently modified during this conversion.
 
-When the marker data came from a simulation population through
-\code{st.get.simpop()}, that existing transfer deliberately creates new
-individual identifiers. In the revised convention a population named P1
-produces names P1I1, P1I2, and so on. The population name used by
-\code{st.get.simpop()} must itself contain only letters and digits so that
-the generated individual identifiers satisfy the marker-data/STvcf name
-rules. Original individual names that existed before simulation are not
-reconstructed; this name change is an intended feature of the current
-simulation-to-marker-data transfer.
+Simulation exports retain each individual's stable name and complete stored pedigree. Imported founders keep their imported names. New breeding individuals use their creation population and serial number followed by the stored pedigree expression. Copying or renaming a population does not regenerate these identifiers.
 
 The SelectionTools marker structure stores integer allele states but not the
 original textual VCF REF/ALT labels. The converter therefore normalizes the
@@ -67,7 +68,7 @@ completely missing, consistent with the STvcf partial-missing convention.
 
 The two current marker-data allele arrays are retained in order as
 \code{allele1} and \code{allele2}. The returned STvcf object receives a
-logical \code{phased} attribute from the native marker data set. For data
+logical \code{phased} attribute from the compiled marker data set. For data
 obtained through \code{st.get.simpop()}, the two arrays correspond to the two
 simulation homologues and the attribute is \code{TRUE}. No new phasing
 calculation is performed.
@@ -83,9 +84,7 @@ already been dispersed by the SelectionTools linkage-map or simulation
 machinery; this function returns the current stored positions and cannot
 reconstruct an earlier duplicate position that is no longer represented.
 
-Only marker genotype and genetic-map information are returned. Performance
-data, estimated effects, genomic relationship matrices, selection values,
-simulation GValue/PValue arrays, and other derived objects are outside STvcf.
+The optional \code{pedigree} attribute contains the versioned \code{name}/\code{pedigree} data frame. When an active symbolic-A fit is stored, \code{prediction.state} retains its versioned fitted snapshot and source role for STvcf/RDS persistence. These attributes leave the nine-component STvcf layout unchanged. Standalone observed responses, legacy effects and selection values, and simulation GValue/PValue arrays are not exported as dataset fields. The fitted snapshot contains the response and effect information needed for prediction; refitting after import requires loading the desired response into the marker dataset.
 }
 \value{
 A \code{list} of class \code{"STvcf"} containing the current marker data, individual identifiers, marker metadata and chromosome-label mapping. If conversion fails, \code{NULL} is returned.

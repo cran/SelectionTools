@@ -1,9 +1,9 @@
 \name{st.od}
 \alias{st.od}
-\title{Construct a path in the SelectionTools output directory}
+\title{Constructs a path in the SelectionTools output directory}
 
 \description{
-Construct a path in the SelectionTools output directory.
+Constructs a path in the SelectionTools output directory.
 }
 
 \usage{

@@ -1,6 +1,6 @@
 \name{population.plabsim.load}
 \alias{population.plabsim.load}
-\title{Load a population from PLABSIM-style data}
+\title{Loads a population from PLABSIM-style data}
 
 \description{
 Loads a simulation population from the PLABSIM-style file representation and restores stored individual information.

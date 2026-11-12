@@ -1,9 +1,9 @@
 \name{get.population.info}
 \alias{get.population.info}
-\title{Return stored information for individuals in a population}
+\title{Returns stored information for individuals in a population}
 
 \description{
-Return stored information for individuals in a population.
+Returns stored information for individuals in a population.
 }
 
 \usage{

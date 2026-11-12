@@ -1,9 +1,9 @@
 \name{save.linkage.map}
 \alias{save.linkage.map}
-\title{Save a linkage map}
+\title{Saves a linkage map}
 
 \description{
-Save a linkage map.
+Saves a linkage map.
 }
 
 \usage{

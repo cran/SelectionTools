@@ -1,9 +1,9 @@
 \name{sdev}
 \alias{sdev}
-\title{Calculate a standard-deviation quantity used by the simulation code}
+\title{Calculates a standard-deviation quantity used by the simulation code}
 
 \description{
-Calculate a standard-deviation quantity used by the simulation code.
+Calculates a standard-deviation quantity used by the simulation code.
 }
 
 \usage{

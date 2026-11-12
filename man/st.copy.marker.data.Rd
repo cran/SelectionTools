@@ -14,7 +14,7 @@ st.copy.marker.data(target.data.set, source.data.set)
    \item{source.data.set}{Character string naming the marker data set to copy.}
 }
 \value{
-An invisible \code{list} returned by the underlying \code{.C} routine. The list is an implementation-level result containing the arguments returned by the compiled routine; the function is primarily called for its side effect of copying marker data from the source data set to the target data set.
+An invisible \code{list} returned by the compiled routine. The list is an implementation-level result containing the arguments returned by the compiled routine; the function is primarily called for its side effect of copying marker data from the source data set to the target data set.
 }
 
 \details{

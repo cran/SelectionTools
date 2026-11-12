@@ -1,6 +1,6 @@
 \name{st.read.marker.data.df}
 \alias{st.read.marker.data.df}
-\title{Load marker data from an R data frame or matrix}
+\title{Loads marker data from an R data frame or matrix}
 \description{
 Loads diploid marker genotypes into a named SelectionTools data set.
 }
@@ -36,7 +36,7 @@ minor-allele genotype. These correspond to allele pairs \code{1/1},
 
 Alternatively, genotypes may be supplied as character allele pairs:
 \code{"1/1"}, \code{"1/2"}, \code{"2/1"}, or \code{"2/2"}.
-Use a pipe to indicate known phase, for example \code{"1|2"}.
+A pipe indicates known phase, for example \code{"1|2"}.
 The supplied allele order is preserved for both separators.
 
 The data set is marked as phased only when all non-missing genotypes
@@ -54,4 +54,27 @@ Invalid matrix input leaves an existing data set unchanged.
 \value{
 Returns \code{NULL} invisibly. The function loads marker data into
 \code{data.set}.
+}
+\examples{
+data("v-tropmaize-vcf", package = "SelectionTools")
+marker.frame <- st.STvcf.to.dataframe(v.tropmaize.vcf)[1:12, c(1:6, 7:14)]
+vcf <- st.dataframe.to.STvcf(marker.frame)
+st.load.vcf.data(vcf, data.set = "maize.example")
+dosage <- t(matrix(as.integer(vcf$allele1) + as.integer(vcf$allele2),
+                   nrow = length(vcf$ID)))
+dosage[dosage > 2] <- NA_integer_
+dimnames(dosage) <- list(vcf$individual, vcf$ID)
+st.read.marker.data.df(dosage, format = "matrix", data.set = "matrix.example")
+index <- which(!is.na(dosage), arr.ind = TRUE)
+marker.list <- data.frame(individual = rownames(dosage)[index[, 1]],
+                          marker = colnames(dosage)[index[, 2]],
+                          allele = c("1/1", "1/2", "2/2")[dosage[index] + 1L])
+st.read.marker.data.df(marker.list, format = "list", data.set = "list.example")
+st.marker.data.statistics(data.set = "list.example")$genotypes
+}
+
+\seealso{
+\code{\link{st.read.marker.data}},
+\code{\link{st.load.vcf.data}},
+\code{\link{st.marker.data.statistics}}.
 }

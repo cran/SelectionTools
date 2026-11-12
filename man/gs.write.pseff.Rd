@@ -1,6 +1,6 @@
 \name{gs.write.pseff}
 \alias{gs.write.pseff}
-\title{Write Marker Effects for the Simulation Backend}
+\title{Writes Marker Effects for the Simulation Backend}
 
 \description{
 Writes estimated marker effects in the effect-file format used by the
@@ -81,7 +81,7 @@ arbitrary custom coding is not in general represented by the fixed
 
 \references{
 Stranden I, Christensen OF (2011) Allele coding in genomic
-evaluation. Genetics Selection Evolution 43:25. See Equation (2).
+evaluation. Genetics Selection Evolution 43:25. Further details appear in Equation (2).
 }
 
 \seealso{

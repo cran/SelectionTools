@@ -1,9 +1,9 @@
 \name{gs.cross.eval.gd.fct}
 \alias{gs.cross.eval.gd.fct}
-\title{Evaluate crosses using genetic-distance function}
+\title{Evaluates crosses using genetic-distance function}
 
 \description{
-Evaluate crosses using genetic-distance function.
+Evaluates crosses using the genetic-distance function.
 }
 
 \usage{

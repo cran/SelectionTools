@@ -1,6 +1,6 @@
 \name{phenotype.population}
 \alias{phenotype.population}
-\title{Generate phenotypic values for a simulation population}
+\title{Generates phenotypic values for a simulation population}
 
 \description{
 Generates phenotypic values for all loaded effects and all active individuals
@@ -24,8 +24,8 @@ Partial phenotypic evaluation is not supported. The length of \code{hsq}
 must therefore equal the number of loaded effects.
 
 The function first genotypes and evaluates the population. For effect
-\eqn{i}, let \eqn{V_{G,i}} be the sample variance of the effect-specific
-genetic values and let \eqn{h_i^2} be the supplied heritability. The residual
+\eqn{i}, \eqn{V_{G,i}} denotes the sample variance of the effect-specific
+genetic values and \eqn{h_i^2} denotes the supplied heritability. The residual
 variance is
 \deqn{V_{E,i} = V_{G,i}/h_i^2 - V_{G,i}.}
 For every individual an independent normal residual with variance

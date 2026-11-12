@@ -21,5 +21,5 @@ A \code{data.frame} with columns \code{ind}, \code{chrom}, \code{hom}, \code{pos
 }
 
 \note{
-  See \code{init.population} for an example
+  Further details appear in \code{init.population} for an example
 }

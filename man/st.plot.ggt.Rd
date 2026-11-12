@@ -2,7 +2,7 @@
 %
 \name{st.plot.ggt}
 \alias{st.plot.ggt}
-\title{Plot Graphical Genotypes}
+\title{Plots Graphical Genotypes}
 \description{
 Plots graphical genotypes for all individuals or for a selected subset.  The
 individuals can optionally be ordered by performance, and stored performance

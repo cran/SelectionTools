@@ -13,7 +13,7 @@ init.population(name, data, delete=TRUE)
 \arguments{
 \item{name}{Character string naming the simulation population to initialize.}
    \item{data}{Data frame with five columns representing individual, chromosome, homologue, segment position, and allele.}
-   \item{delete}{Logical. If true, remove an existing population with the same name before initialization.}
+   \item{delete}{Logical. TRUE removes an existing population with the same name before initialization.}
 }
 \value{
 The function initialises the named simulation population from the supplied data in the backend. 
@@ -33,34 +33,16 @@ Uses the currently defined genome and linkage map. Both must be defined before c
 }
 
 \examples{
-# Define a population explicitly
-set.genome.par(no.chrom = 1, no.hom = 2, chrom.len = 1)
-define.map("form trait1 1/0.5")
-
-# Individual 1: genotype 1/1
-# Individual 2: genotype 1/2
-pop <- data.frame(
-   ind   = c(1, 1, 2, 2),
-   chrom = c(1, 1, 1, 1),
-   hom   = c(1, 2, 1, 2),
-   pos   = c(0, 0, 0, 0),
-   all   = c(1, 1, 1, 2)
-)
-
-init.population("P1", pop)
-evaluate.genotype("P1", "form")
-
-# Define a genome from a data frame and create homozygous individuals
+data("v-tropmaize-vcf", package = "SelectionTools")
+marker.frame <- st.STvcf.to.dataframe(v.tropmaize.vcf)[1:12, c(1:6, 7:14)]
+vcf <- st.dataframe.to.STvcf(marker.frame)
+st.load.vcf.data(vcf, data.set = "maize.example")
 reset.all()
-
-map <- data.frame(
-   chrom = 1,
-   pos = 0.5,
-   name = "form"
-)
-define.genome(map)
-
-# Two individuals, both homozygous for allele 1
-init.population("P2", homozygote(1, NoInd = 2))
-evaluate.genotype("P2", "form")
+st.set.sim.gp(data.set = "maize.example")
+st.set.sim.mp(data.set = "maize.example")
+st.set.sim.pp("Maize", data.set = "maize.example")
+loci <- vcf$ID
+observed.population <- get.population("Maize")
+init.population("Imported", observed.population)
+evaluate.genotype("Imported", loci[1])
 }

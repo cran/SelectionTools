@@ -1,9 +1,9 @@
 \name{sel.target.define}
 \alias{sel.target.define}
-\title{Define a selection target}
+\title{Defines a selection target}
 
 \description{
-Define a selection target.
+Defines a selection target.
 }
 
 \usage{

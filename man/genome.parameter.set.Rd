@@ -1,6 +1,6 @@
 \name{genome.parameter.set}
 \alias{genome.parameter.set}
-\title{Set genome parameters used by the simulation code}
+\title{Sets genome parameters used by the simulation code}
 
 \description{
 Defines the chromosome structure used by the simulation backend.

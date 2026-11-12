@@ -1,9 +1,9 @@
 \name{set.population.info}
 \alias{set.population.info}
-\title{Set population information used by the simulation routines}
+\title{Sets population information used by the simulation routines}
 
 \description{
-Set population information used by the simulation routines.
+Sets population information used by the simulation routines.
 }
 
 \usage{

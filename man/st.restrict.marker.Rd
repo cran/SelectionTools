@@ -12,10 +12,10 @@ st.restrict.marker.data(ind.list = NULL, ind.file = NULL, mar.list = NULL,
                         ExHet.MIN = 0, InMis.MAX = 1, data.set = "default")
 }
 \arguments{
-\item{ind.list}{Optional character vector of individual names to retain. Unknown names are ignored. Do not supply together with \code{ind.file}.}
-   \item{ind.file}{Optional file containing individual names to retain. Relative names are read from the input directory. Do not supply together with \code{ind.list}.}
-   \item{mar.list}{Optional character vector of marker names to retain. Unknown names are ignored. Do not supply together with \code{mar.file}.}
-   \item{mar.file}{Optional file containing marker names to retain. Do not supply together with \code{mar.list}.}
+\item{ind.list}{Optional character vector of individual names to retain. Unknown names are ignored. This is mutually exclusive with \code{ind.file}.}
+   \item{ind.file}{Optional file containing individual names to retain. Relative names are read from the input directory. This is mutually exclusive with \code{ind.list}.}
+   \item{mar.list}{Optional character vector of marker names to retain. Unknown names are ignored. This is mutually exclusive with \code{mar.file}.}
+   \item{mar.file}{Optional file containing marker names to retain. This is mutually exclusive with \code{mar.list}.}
    \item{NoAll.MAX}{Maximum number of alleles allowed per marker.}
    \item{MaMis.MAX}{Maximum proportion of missing genotypes per marker.}
    \item{ExHet.MIN}{Minimum expected heterozygosity.}
@@ -29,8 +29,8 @@ On a successful run, an invisible implementation-level \code{list} returned by t
 \details{
 The function modifies \code{data.set} in place, retaining only
 individuals and markers that satisfy all applicable criteria.
-Use \code{\link{st.copy.marker.data}} beforehand if the original
-data set should be preserved.
+A prior copy with \code{\link{st.copy.marker.data}} preserves the original
+data set.
 
 Markers are retained when their number of non-missing alleles does
 not exceed \code{NoAll.MAX}, their missing-data proportion does not
@@ -42,9 +42,9 @@ for 10 percent.
 
 All criteria are evaluated using the statistics available at the
 start of the call. Statistics are not recalculated between criteria
-within the same call. To filter in stages, use separate calls.
-For example, remove individuals with high missingness first and
-then filter markers using the updated statistics.
+within the same call. Separate calls provide staged filtering.
+For example, one call removes individuals with high missingness and
+a later call filters markers using the updated statistics.
 
 The linkage map and associated performance data are restricted
 along with the marker data. Removing markers invalidates

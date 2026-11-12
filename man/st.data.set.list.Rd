@@ -5,7 +5,7 @@
 \alias{print.st.data.set.list}
 \title{List SelectionTools Marker Data Sets}
 \description{
-Returns a compact summary of the marker data sets currently registered in
+Returns a compact summary of the marker data sets currently supported in
 SelectionTools.
 }
 \usage{
@@ -18,7 +18,7 @@ st.data.set.list(digits=getOption("digits"))
 used when the returned summary is printed. The stored numeric values are not
 rounded.}
 \item{x}{An object returned by \code{st.data.set.list()}.}
-\item{complete}{Logical. If \code{FALSE} (the default), print only the compact overview columns \code{data.set}, \code{no.markers}, \code{no.individuals}, \code{map}, \code{ram.core}, and \code{ram.work}. If \code{TRUE}, print all columns.}
+\item{complete}{Logical. \code{FALSE} (the default) prints only the compact overview columns \code{data.set}, \code{no.markers}, \code{no.individuals}, \code{map}, \code{BitsPerMarker}, \code{A_matrix}, \code{Z_matrix}, \code{ram.core.MB}, and \code{ram.work.MB}. \code{TRUE} prints all columns.}
 \item{...}{Additional arguments passed to \code{print.data.frame()}.}
 }
 \details{
@@ -32,7 +32,7 @@ are heterozygous. \code{missing.markers} is the fraction of
 marker-by-individual genotype calls with at least one missing allele. Both are
 between zero and one and are \code{NA} when they cannot be calculated.
 
-\code{phased} is \code{TRUE} when the stored \code{All1}/\code{All2} order is
+\code{phased} is \code{TRUE} when the stored homologue order is
 known to be phased. VCF input is marked phased only when genotype separators
 are consistently \code{|}; STvcf import/export retains the same data-set phase
 state. Simulation populations returned by \code{st.get.simpop()} or
@@ -49,20 +49,27 @@ marker data, or replace markers by derived haplotype blocks retain the state.
 the presence of estimated effects, phenotypic values, and genotypic values,
 respectively.
 
-\code{ram.core} and \code{ram.work} are estimates in MiB (1024^2 bytes).
-\code{ram.core} is deliberately restricted to the marker data required to
-retain the data set: individual and marker names, the two allele arrays, and
-the linkage-map storage. \code{ram.work} contains all other dynamically owned
-state, including marker statistics, phenotypic and genotypic values, effects
-and model results, haplotype/cross objects, chromosome-specific recombination
-and LD matrices, and reusable calculation buffers. Allocator overhead is not
+\code{A_matrix} indicates whether a valid genomic relationship matrix is
+cached; its validity is checked before reporting the flag. \code{Z_matrix}
+indicates whether the marker design matrix Z is currently stored. Reporting
+these flags does not construct either matrix. Both matrices belong to the
+work portion of the data set.
+
+\code{BitsPerMarker} is the allele-payload width per diploid marker call
+(per marker and individual): 4, 8, or 16 bits. It replaces the former
+\code{bits.per.genotype} column. Dictionary storage is additional.
+
+\code{ram.core.MB} and \code{ram.work.MB} are estimates in MiB (1024^2 bytes),
+with the unit shown as \code{MB} in the column names.
+\code{ram.core.MB} includes individual identifiers and full pedigrees, marker names, allele payload and dictionaries, linkage-map storage, observed responses and the active symbolic-A fitted prediction state. Shared fitted state is counted in each owning dataset's estimate. \code{ram.work.MB} contains reconstructible calculation state, including marker statistics, legacy genotypic values and effects, haplotype/cross objects, chromosome-specific recombination and LD matrices, and reusable calculation buffers. Allocator overhead is not
 included. \code{st.compact.data.set()} releases the work portion while
 retaining the core.
 
 The returned object always contains all columns. Its print method shows a compact
 overview by default: \code{data.set}, \code{no.markers},
-\code{no.individuals}, \code{map}, \code{ram.core}, and \code{ram.work}.
-Use \code{print(x,complete=TRUE)} to display the complete summary.
+\code{no.individuals}, \code{map}, \code{BitsPerMarker}, \code{A_matrix}, \code{Z_matrix},
+\code{ram.core.MB}, and \code{ram.work.MB}.
+\code{print(x,complete=TRUE)} displays the complete summary.
 
 The \code{digits} argument affects printing only. Thus, for example,
 \code{x <- st.data.set.list(digits=3)} stores full-precision values but prints
@@ -71,7 +78,7 @@ overridden later with \code{print(x,digits=5)}.
 }
 \value{
 An object inheriting from \code{data.frame}, with one row per non-empty
-registered data set and the following columns. If all registered data sets are
+supported data set and the following columns. If all supported data sets are
 empty, a zero-row data frame with these columns is returned:
 \itemize{
   \item \code{data.set}: data-set name.
@@ -85,8 +92,11 @@ empty, a zero-row data frame with these columns is returned:
   \item \code{effects}: whether estimated effects are present.
   \item \code{phenotypic.value}: whether phenotypic values are present.
   \item \code{genotypic.value}: whether genotypic values are present.
-  \item \code{ram.core}: estimated marker-data and linkage-map RAM in MiB.
-  \item \code{ram.work}: estimated calculated/result/workspace RAM in MiB.
+  \item \code{A_matrix}: whether a valid genomic relationship matrix is cached. Cache validity is checked before reporting this flag; cached numeric storage belongs to \code{ram.work.MB}.
+  \item \code{BitsPerMarker}: current allele-payload width, 4, 8, or 16 bits per diploid marker call (per marker and individual); dictionary storage is additional.
+  \item \code{Z_matrix}: whether the marker design matrix Z is currently stored.
+  \item \code{ram.core.MB}: estimated marker-data and linkage-map RAM in MiB.
+  \item \code{ram.work.MB}: estimated calculated/result/workspace RAM in MiB.
 }
 The \code{digits} setting is stored as an attribute and changes printing only.
 }

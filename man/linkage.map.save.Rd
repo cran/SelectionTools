@@ -1,6 +1,6 @@
 \name{linkage.map.save}
 \alias{linkage.map.save}
-\title{Save a linkage map used by the simulation routines}
+\title{Saves a linkage map used by the simulation routines}
 
 \description{
 Writes a simulation linkage map to a text file.

@@ -3,7 +3,7 @@
 \title{list.populations}
 
 \description{
-Returns the names and active sizes of the currently registered simulation populations.
+Returns the names and active sizes of the currently supported simulation populations.
 }
 
 \usage{

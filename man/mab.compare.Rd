@@ -1,7 +1,7 @@
 \name{mab.compare}
 \alias{mab.compare}
 
-\title{Run and Compare a Series of Marker-Assisted Backcrossing Simulations}
+\title{Runs and Compares a Series of Marker-Assisted Backcrossing Simulations}
 
 \description{
 Runs up to nine marker-assisted backcrossing simulation scenarios by calling
@@ -198,7 +198,7 @@ mab.compare(
   \item{a.recipient.loci, b.recipient.loci, c.recipient.loci, d.recipient.loci, e.recipient.loci, f.recipient.loci, g.recipient.loci, h.recipient.loci, i.recipient.loci}{Character vector of loci used for preselection of recurrent-parent alleles, or \code{NULL}. For active scenarios B through I, \code{NULL} inherits the scenario-A setting.}
   \item{a.gen.type, b.gen.type, c.gen.type, d.gen.type, e.gen.type, f.gen.type, g.gen.type, h.gen.type, i.gen.type}{Character vector describing the generation types passed to \code{mab.simulate()} (for example \code{"f1"}, \code{"bc"}, \code{"s"}, and \code{"dh"}), or \code{NULL}. For active scenarios B through I, \code{NULL} inherits the scenario-A setting.}
   \item{a.population.size, b.population.size, c.population.size, d.population.size, e.population.size, f.population.size, g.population.size, h.population.size, i.population.size}{Numeric vector of population sizes for the generations of the backcrossing program, or \code{NULL}. For active scenarios B through I, \code{NULL} inherits the scenario-A setting.}
-  \item{a.sel.strategy, b.sel.strategy, c.sel.strategy, d.sel.strategy, e.sel.strategy, f.sel.strategy, g.sel.strategy, h.sel.strategy, i.sel.strategy}{Character vector of selection-strategy codes passed to \code{mab.simulate()}, or \code{NULL}. See \code{mab.simulate()} for the implemented strategies. For active scenarios B through I, \code{NULL} inherits the scenario-A setting.}
+  \item{a.sel.strategy, b.sel.strategy, c.sel.strategy, d.sel.strategy, e.sel.strategy, f.sel.strategy, g.sel.strategy, h.sel.strategy, i.sel.strategy}{Character vector of selection-strategy codes passed to \code{mab.simulate()}, or \code{NULL}. Further details appear in \code{mab.simulate()} for the implemented strategies. For active scenarios B through I, \code{NULL} inherits the scenario-A setting.}
   \item{a.no.selected, b.no.selected, c.no.selected, d.no.selected, e.no.selected, f.no.selected, g.no.selected, h.no.selected, i.no.selected}{Numeric vector giving the number of selected individuals by generation, or \code{NULL}. For active scenarios B through I, \code{NULL} inherits the scenario-A setting.}
   \item{a.no.preselected, b.no.preselected, c.no.preselected, d.no.preselected, e.no.preselected, f.no.preselected, g.no.preselected, h.no.preselected, i.no.preselected}{Numeric vector giving the minimum number of individuals retained by the flanking-marker preselection step, or \code{NULL}. For active scenarios B through I, \code{NULL} inherits the scenario-A setting.}
   \item{a.reg.chr, b.reg.chr, c.reg.chr, d.reg.chr, e.reg.chr, f.reg.chr, g.reg.chr, h.reg.chr, i.reg.chr}{Chromosome numbers for regions evaluated separately for recurrent-parent genome content, or \code{NULL}. For active scenarios B through I, \code{NULL} inherits the scenario-A setting.}
@@ -219,7 +219,7 @@ For every setting other than \code{simulation.name}, an active scenario B
 through I inherits the corresponding scenario-A value when its own argument is
 \code{NULL}; a non-\code{NULL} scenario-specific value overrides the
 scenario-A value. The resulting settings are passed directly to
-\code{mab.simulate()}. See \code{mab.simulate()} for the detailed meaning of
+\code{mab.simulate()}. Further details appear in \code{mab.simulate()} for the detailed meaning of
 the generation and selection settings and for the structure of the simulation
 results. The file name for every active scenario is taken from
 \code{result.files}; no result-file name is generated automatically.

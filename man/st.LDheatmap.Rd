@@ -1,6 +1,6 @@
 \name{st.LDheatmap}
 \alias{st.LDheatmap}
-\title{Plot a Linkage Disequilibrium Heat Map}
+\title{Plots a Linkage Disequilibrium Heat Map}
 \description{
 Plots a triangular heat map of pairwise linkage disequilibrium (LD)
 values using only the standard R graphics system. Marker cells are equally
@@ -78,12 +78,12 @@ st.LDheatmap(LD, map = NULL,
     limits, which are clipped to the limits.
   }
   \item{add.map}{
-    Logical. If \code{TRUE}, draw a line representing the supplied marker
-    positions and connect each marker in the equally spaced LD matrix to its
+    Logical. \code{TRUE} draws a line representing the supplied marker
+    positions and connects each marker in the equally spaced LD matrix to its
     position on that line.
   }
   \item{add.key}{
-    Logical. If \code{TRUE}, draw the color key.
+    Logical. \code{TRUE} draws the color key.
   }
   \item{depth}{
     A non-negative integer or \code{Inf}. Only marker pairs separated by at
@@ -108,7 +108,7 @@ st.LDheatmap(LD, map = NULL,
     over \code{text} and \code{digits}.
   }
   \item{write.snp.id}{
-    Logical. If \code{TRUE}, print marker identifiers. Row names of
+    Logical. \code{TRUE} prints marker identifiers. Row names of
     \code{LD} are used if available, otherwise column names, otherwise the
     marker numbers \code{1, ..., n}. For densely spaced markers, labels can
     overlap; \code{cex.snp} can be supplied to control their size.
@@ -214,29 +214,15 @@ An invisible named \code{list} with components:
 
 }
 \examples{
-LD <- matrix(c(
-    1.00, 0.85, 0.35, 0.10, 0.05,
-    0.85, 1.00, 0.70, 0.25, 0.10,
-    0.35, 0.70, 1.00, 0.80, 0.30,
-    0.10, 0.25, 0.80, 1.00, 0.90,
-    0.05, 0.10, 0.30, 0.90, 1.00
-), nrow = 5, byrow = TRUE)
-rownames(LD) <- colnames(LD) <- paste0("m", 1:5)
-map <- c(0, 5, 17, 18, 35)
-
-st.LDheatmap(LD, map,
-             title = "Pairwise LD",
+data("v-tropmaize-vcf", package = "SelectionTools")
+marker.frame <- st.STvcf.to.dataframe(v.tropmaize.vcf)[1:12, ]
+st.load.vcf.data(st.dataframe.to.STvcf(marker.frame), data.set = "maize.ld")
+Z <- gs.get.Z("maize.ld", names = TRUE)
+LD <- cor(Z, use = "pairwise.complete.obs")^2
+map <- st.get.map(data.set = "maize.ld")
+st.LDheatmap(LD, map$Pos, title = "Tropical maize LD",
              col = grDevices::heat.colors(20))
-
-st.LDheatmap(LD, map,
-             depth = 2,
-             write.ld = function(x)
-                 if (x >= 0.7) sprintf("\%.2f", x) else "",
-             write.snp.id = TRUE)
-
-st.LDheatmap(LD, map,
-             max.dist = 10,
-             add.key = FALSE)
+st.LDheatmap(LD, map$Pos, depth = 2, write.snp.id = TRUE)
 }
 \seealso{
 \code{st.calc.ld}, \code{st.LDplot.ld}, \code{st.LDplot.map}

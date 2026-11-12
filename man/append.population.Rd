@@ -31,28 +31,18 @@ The source and destination population names must differ.
 }
 
 \examples{
-# Define the genome and linkage map
-map <- data.frame(
-   chrom = 1,
-   pos = 0.5,
-   name = "form",
-   class = "trait1"
-)
-define.genome(map)
-
-# Create two populations with different alleles
-init.population("P1", homozygote(1, NoInd = 3))
-init.population("P2", homozygote(2, NoInd = 2))
-
-# Combine copies of both populations in a new population
-append.population("Combined", "P1")
-append.population("Combined", "P2")
-
-# Combined contains three individuals with genotype 1/1
-# and two individuals with genotype 2/2.
-# The original populations P1 and P2 are retained.
-evaluate.genotype("Combined", "form")
-population.list()
+data("v-tropmaize-vcf", package = "SelectionTools")
+marker.frame <- st.STvcf.to.dataframe(v.tropmaize.vcf)[1:12, c(1:6, 7:14)]
+vcf <- st.dataframe.to.STvcf(marker.frame)
+st.load.vcf.data(vcf, data.set = "maize.example")
+reset.all()
+st.set.sim.gp(data.set = "maize.example")
+st.set.sim.mp(data.set = "maize.example")
+st.set.sim.pp("Maize", data.set = "maize.example")
+loci <- vcf$ID
+append.population("Combined", "Maize")
+append.population("Combined", "Maize")
+population.size.get("Combined")
 }
 
 \seealso{

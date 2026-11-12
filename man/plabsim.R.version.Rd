@@ -1,9 +1,9 @@
 \name{plabsim.R.version}
 \alias{plabsim.R.version}
-\title{Perform the SelectionTools operation "plabsim R version"}
+\title{Performs the SelectionTools operation "plabsim R version"}
 
 \description{
-Perform the SelectionTools operation "plabsim R version".
+Performs the SelectionTools operation "plabsim R version".
 }
 
 \format{A character string containing the PLABSIM R-code version.}

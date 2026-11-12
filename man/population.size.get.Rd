@@ -1,6 +1,6 @@
 \name{population.size.get}
 \alias{population.size.get}
-\title{Return the size and allocated capacity of a simulation population}
+\title{Returns the size and allocated capacity of a simulation population}
 
 \description{
 Returns the active number of individuals and the number of individual slots allocated for a simulation population.

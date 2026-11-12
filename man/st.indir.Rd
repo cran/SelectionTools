@@ -1,9 +1,9 @@
 \name{st.indir}
 \alias{st.indir}
-\title{Construct a path in the SelectionTools input directory}
+\title{Constructs a path in the SelectionTools input directory}
 
 \description{
-Construct a path in the SelectionTools input directory.
+Constructs a path in the SelectionTools input directory.
 }
 
 \usage{

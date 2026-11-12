@@ -1,5 +1,6 @@
 \name{cross}
 \alias{cross}
+\alias{population.cross}
 \title{cross()}
 
 \description{
@@ -9,6 +10,8 @@ Generates a diploid progeny population by crossing individuals drawn from two pa
 \usage{
 cross(NamePg, NameP1, NameP2, NoPg = -1, self = 0, mode = 1,
       crossing.scheme = 0)
+
+population.cross(name, pool1, pool2, n)
 }
 
 \arguments{
@@ -29,6 +32,12 @@ cross(NamePg, NameP1, NameP2, NoPg = -1, self = 0, mode = 1,
   more than one individual. With \code{mode=1}, this restriction is
   not applied.}
    \item{crossing.scheme}{Integer 0 to 3 selecting random or deterministic parent choice in the two parental populations.}
+
+
+\item{name}{Name of the offspring simulation population.}
+\item{pool1,pool2}{Names of two distinct, nonempty parental simulation populations. Neither may be named \code{"name"}.}
+\item{n}{Positive integer number of crosses.}
+
 }
 \value{
 Invisibly returns a list containing the arguments passed to the
@@ -37,7 +46,7 @@ its side effect of creating the progeny population.
 }
 
 \details{ The simulation genome must be diploid. The progeny population
-must have a name different from both parental populations. 
+must have a name different from both parental populations.
 Both parental population names may refer to the same population.
 Using the same population for both parents does not, by itself,
 ensure selfing. Existing contents under the progeny name are replaced when a new progeny
@@ -74,21 +83,23 @@ the first parent randomly and the second deterministically; scheme 2
 does the reverse; scheme 3 selects both deterministically.  }
 
 \examples{
-map <- data.frame(chrom = 1,
-                  pos = 0.01,
-                  name = "form")
-define.genome(map)
+data("v-tropmaize-vcf", package = "SelectionTools")
+marker.frame <- st.STvcf.to.dataframe(v.tropmaize.vcf)[1:12, c(1:6, 7:14)]
+vcf <- st.dataframe.to.STvcf(marker.frame)
+st.load.vcf.data(vcf, data.set = "maize.example")
+reset.all()
+st.set.sim.gp(data.set = "maize.example")
+st.set.sim.mp(data.set = "maize.example")
+st.set.sim.pp("Maize", data.set = "maize.example")
+loci <- vcf$ID
+cross("Offspring", "Maize", "Maize", 4)
+population.size.get("Offspring")
+}
+\section{Crosses with a returned crossing design}{
+Creates random crosses between two simulation populations and returns the selected parental identifiers at creation time.
 
-init.population("P1", homozygote(1))
-init.population("P2", homozygote(2))
+Uses the existing diploid random-cross routine and its simulation random-number generator. Each offspring owns its full simulated pedigree independently of the returned design. The design records the immediate crossing keys; it is not reconstructed by parsing pedigree text. No genetic or phenotypic values are transferred. An existing offspring population is replaced, as by \code{cross}.
 
-# Example: Generate 100 F1 hybrids
-cross("F1","P1", "P2", 100)
-evaluate.genotype("P1","form")
+A data frame with \code{name} and two columns named after the parental populations. Rows follow offspring order and contain its stable identifier and the two selected parental identifiers.
 
-# Example: Repeated selfing
-cross("F2", "F1", "F1", 1000, self = 1)
-cross("F3", "F2", "F2", 1000, self = 1)
-cross("F4", "F3", "F3", 1000, self = 1)
-evaluate.genotype("F4", "form")
 }

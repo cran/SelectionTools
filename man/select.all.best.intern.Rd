@@ -3,7 +3,7 @@
 %
 \name{select.all.best.intern}
 \alias{select.all.best.intern}
-\title{Determine the best value classes in a sorted population}
+\title{Determines the best value classes in a sorted population}
 
 \description{
 Determines how many individuals belong to the requested number of best

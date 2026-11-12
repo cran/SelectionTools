@@ -1,9 +1,9 @@
 \name{gs.get.info.level}
 \alias{gs.get.info.level}
-\title{Return the genomic-selection information level for a data set}
+\title{Returns the genomic-selection information level for a data set}
 
 \description{
-Return the genomic-selection information level for a data set.
+Returns the genomic-selection information level for a data set.
 }
 
 \usage{

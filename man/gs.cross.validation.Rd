@@ -24,9 +24,9 @@ gs.cross.validation(estimation.method, n.ts, n.runs, hsq = 0.8, alpha = 1,
                   the difference of the values of lambda in two subsequent iterations
                   is less than the given precision, convergence is reached and the iteration will stop.
                   Used if scheme "rmlc" or "rmlv"}
-   \item{out.filename.r}{Character string retained for compatibility and used as part of the name of the internal session-temporary file used for cross-validation correlations.}
-   \item{out.filename.u}{Character string retained for compatibility and used as part of the name of the internal session-temporary file used for estimated marker effects.}
-   \item{auxfiles}{Logical. If \code{TRUE}, both cross-validation result files are created in the R session temporary directory, read back by the R wrapper, and removed before the function returns.}
+   \item{out.filename.r}{Character string retained for compatibility. Cross-validation correlations are returned directly from memory.}
+   \item{out.filename.u}{Character string retained for compatibility. Estimated marker effects are returned directly from memory.}
+   \item{auxfiles}{Logical. If \code{TRUE}, both cross-validation result tables are returned directly from memory.}
    \item{data.set}{character. Name of the data set that is used by the function.}
 }
 

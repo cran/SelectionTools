@@ -1,6 +1,6 @@
 \name{linkage.map.load}
 \alias{linkage.map.load}
-\title{Load a linkage map used by the simulation routines}
+\title{Loads a linkage map used by the simulation routines}
 
 \description{
 Loads and prepares the linkage map used by the simulation backend.

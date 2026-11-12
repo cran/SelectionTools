@@ -1,0 +1,55 @@
+gd.dummy.populations
+gd.maize.aflp
+gd.maize.lines
+gd.maize.populations
+gd.salad.aflp
+lib00.map1
+lib00.map1a
+lib00.map2
+masbc.input
+v-dentmaize-vcf: v.dentmaize.vcf
+v-dentmaize2-vcf: v.dentmaize2.vcf
+v-flintmaize-vcf: v.flintmaize.vcf
+v-flintmaize2-vcf: v.flintmaize2.vcf
+v-rapeseed: v.rapeseed.map v.rapeseed.phe v.rapeseed.vcf
+v-hybmaize-phe: v.hybmaize.phe
+v-hybmaize2-phe: v.hybmaize2.phe
+v-lmm-alfalfa: alfalfa
+v-lmm-barley-lattice: barley.lattice
+v-lmm-barley-met: barley.met
+v-lmm-barley-seven-traits: barley.seven.traits
+v-lmm-chickens: chickens
+v-lmm-climate: climate
+v-lmm-corn: corn
+v-lmm-cotton: cotton
+v-lmm-fertilizer-regression: fertilizer.regression
+v-lmm-fertilizer-replicated: fertilizer.replicated
+v-lmm-fertilizer: fertilizer
+v-lmm-halfdiallel: halfdiallel
+v-lmm-iris-two: iris.two
+v-lmm-iris: iris.manova
+v-lmm-machines: machines
+v-lmm-maize-counties: maize.counties
+v-lmm-maize-met: maize.met
+v-lmm-material-groups: material.groups
+v-lmm-met-missing: met.missing
+v-lmm-met-seven-traits: met.seven.traits
+v-lmm-met-unbalanced: met.unbalanced
+v-lmm-mtcars: mtcars
+v-lmm-oats: oats
+v-lmm-peas: peas
+v-lmm-rapeseed-blocks: rapeseed.blocks
+v-lmm-rapeseed: rapeseed
+v-lmm-rats: rats
+v-lmm-soils: soils
+v-lmm-soybean-blocks: soybean.blocks
+v-lmm-soybean-met: soybean.met
+v-lmm-soybean: soybean
+v-lmm-sugar: sugar
+v-lmm-tomato: tomato
+v-lmm-tropmaize-lattice: tropmaize.lattice
+v-lmm-tropmaize: tropmaize
+v-tropmaize-map: v.tropmaize.map
+v-tropmaize-phe: v.tropmaize.phe
+v-tropmaize-pop: v.tropmaize.pop
+v-tropmaize-vcf: v.tropmaize.vcf

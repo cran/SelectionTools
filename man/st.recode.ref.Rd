@@ -13,7 +13,7 @@ st.recode.ref(reference = 0, descending = FALSE, data.set = "default")
 individual identifier, whereas a positive whole-number numeric value is
 interpreted as a one-based individual position in \code{data.set}.}
 \item{descending}{Logical.  Selects the allele-sharing rule used for recoding;
-see Details.}
+the rule is described in Details.}
 \item{data.set}{Character string giving the SelectionTools marker data set to
 recode.}
 }

@@ -1,6 +1,6 @@
 \name{remove.evaluate.population}
 \alias{remove.evaluate.population}
-\title{Remove genetic and phenotypic evaluation values}
+\title{Removes genetic and phenotypic evaluation values}
 
 \description{
 Clears stored genetic and phenotypic values for one or more simulation
@@ -15,7 +15,7 @@ remove.evaluate.population(PopNames)
 \item{PopNames}{Population name or population specification.}
 }
 \value{
-An invisible \code{list} returned by the underlying \code{.C} routine. The list is an implementation-level result containing the arguments returned by the compiled routine; the function is primarily called for its side effect of removing stored evaluation values.
+An invisible \code{list} returned by the compiled routine. The list is an implementation-level result containing the arguments returned by the compiled routine; the function is primarily called for its side effect of removing stored evaluation values.
 }
 
 \details{

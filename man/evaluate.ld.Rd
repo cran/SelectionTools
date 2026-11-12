@@ -1,9 +1,9 @@
 \name{evaluate.ld}
 \alias{evaluate.ld}
-\title{Evaluate linkage disequilibrium for a population and genomic position}
+\title{Evaluates linkage disequilibrium for a population and genomic position}
 
 \description{
-Evaluate linkage disequilibrium for a population and genomic position.
+Evaluates linkage disequilibrium for a population and genomic position.
 }
 
 \usage{

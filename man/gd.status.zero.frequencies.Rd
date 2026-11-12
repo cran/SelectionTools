@@ -1,9 +1,9 @@
 \name{gd.status.zero.frequencies}
 \alias{gd.status.zero.frequencies}
-\title{Return status information concerning zero allele frequencies}
+\title{Returns status information concerning zero allele frequencies}
 
 \description{
-Return status information concerning zero allele frequencies.
+Returns status information concerning zero allele frequencies.
 }
 
 \usage{

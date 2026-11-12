@@ -1,6 +1,6 @@
 \name{evaluate.population}
 \alias{evaluate.population}
-\title{Evaluate genetic values for simulation populations}
+\title{Evaluates genetic values for simulation populations}
 
 \description{
 Evaluates genetic values for all active individuals in one or more simulation
@@ -18,7 +18,7 @@ simulation routines.}
 selection index.}
 }
 \value{
-An invisible \code{list} returned by the underlying \code{.C} routine. The list is an implementation-level result containing the arguments returned by the compiled routine; the function is primarily called for its side effect of calculating/storing evaluation values for the requested populations.
+An invisible \code{list} returned by the compiled routine. The list is an implementation-level result containing the arguments returned by the compiled routine; the function is primarily called for its side effect of calculating/storing evaluation values for the requested populations.
 }
 
 \details{

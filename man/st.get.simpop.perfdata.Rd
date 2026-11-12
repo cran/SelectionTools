@@ -1,6 +1,6 @@
 \name{st.get.simpop.perfdata}
 \alias{st.get.simpop.perfdata}
-\title{Return simulation-population data in SelectionTools format}
+\title{Returns simulation-population data in SelectionTools format}
 
 \description{
 Imports a simulation population as marker data and uses an evaluated simulation effect as the phenotype vector of the SelectionTools data set.

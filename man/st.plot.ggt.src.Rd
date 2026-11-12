@@ -1,6 +1,6 @@
 \name{st.plot.ggt.src}
 \alias{st.plot.ggt.src}
-\title{Plot Graphical Genotypes from Map and Genotype Objects}
+\title{Plots Graphical Genotypes from Map and Genotype Objects}
 \description{
 Low-level plotting routine used by \code{st.plot.ggt}.  It draws a graphical
 genotype representation from an already prepared linkage map and genotype

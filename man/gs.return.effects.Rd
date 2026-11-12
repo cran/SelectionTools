@@ -12,7 +12,7 @@ reads that file into R and deletes it before returning.
 gs.return.effects(out.filename ="effects", data.set ="default")
 }
 \arguments{
-   \item{out.filename}{Character string retained for compatibility and used as part of the name of an internal file in the R session temporary directory. The temporary file is removed before the function returns.}
+   \item{out.filename}{Character string retained for compatibility. The result is returned directly from memory; this argument does not name an output file.}
    \item{data.set}{character. Name of the data set that is used by the function.}
 }
 

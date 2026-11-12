@@ -1,6 +1,6 @@
 \name{gs.esteff.rr}
 \alias{gs.esteff.rr}
-\title{Estimate Marker Effects by Ridge Regression}
+\title{Estimates Marker Effects by Ridge Regression}
 
 \description{
 Estimates genome-wide marker effects by ridge-regression methods, including
@@ -27,8 +27,8 @@ gs.esteff.rr(method = "BLUP", maxiter = 1000, precision = 0.0001, hsq = 0.80,
    variance-component iteration. With \code{maxiter=0}, they are used without
    further variance-component estimation.}
    \item{alpha}{Method-specific tuning or significance parameter.}
-   \item{out.filename}{Character string retained for compatibility and used as part of the name of an internal file in the R session temporary directory. The temporary file is removed before the function returns.}
-   \item{auxfiles}{Logical. If \code{TRUE}, the compiled result is written to the R session temporary directory, read back by the R wrapper, and removed before the function returns.}
+   \item{out.filename}{Character string retained for compatibility. The result is returned directly from memory; this argument does not name an output file.}
+   \item{auxfiles}{Logical. If \code{TRUE}, the result is returned directly from memory.}
    \item{data.set}{Name of the SelectionTools data set containing marker and
    performance data.}
 }

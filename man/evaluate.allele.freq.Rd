@@ -1,9 +1,9 @@
 \name{evaluate.allele.freq}
 \alias{evaluate.allele.freq}
-\title{Calculate or return allele frequencies for selected loci}
+\title{Calculates or return allele frequencies for selected loci}
 
 \description{
-Calculate or return allele frequencies for selected loci.
+Calculates or return allele frequencies for selected loci.
 }
 
 \usage{
@@ -25,25 +25,17 @@ A \code{data.frame} containing the allele counts and relative frequencies.
 }
 
 \examples{
-map <- data.frame(chrom = 1,
-                  pos = 0.01,
-                  name = "form")
-define.genome(map)
-
-init.population("P1", homozygote(1))
-init.population("P2", homozygote(2))
-
-# Example: Generate 100 F1 hybrids
-cross("F1","P1", "P2", 100)
-evaluate.genotype("P1","form")
-
-# Example: Repeated selfing
-cross("F2", "F1", "F1", 1000, self = 1)
-cross("F3", "F2", "F2", 1000, self = 1)
-cross("F4", "F3", "F3", 1000, self = 1)
-
-evaluate.genotype("F4", "form")
-evaluate.allele.freq("F4","form")
+data("v-tropmaize-vcf", package = "SelectionTools")
+marker.frame <- st.STvcf.to.dataframe(v.tropmaize.vcf)[1:12, c(1:6, 7:14)]
+vcf <- st.dataframe.to.STvcf(marker.frame)
+st.load.vcf.data(vcf, data.set = "maize.example")
+reset.all()
+st.set.sim.gp(data.set = "maize.example")
+st.set.sim.mp(data.set = "maize.example")
+st.set.sim.pp("Maize", data.set = "maize.example")
+loci <- vcf$ID
+evaluate.allele.freq("Maize", loci[1])
+evaluate.allele.freq("Maize", paste(loci[1:2], collapse = " "))
 }
 
 \seealso{

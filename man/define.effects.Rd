@@ -15,7 +15,7 @@ define.effects(name, description)
    \item{description}{Description of the effect}
 }
 \value{
-An integer status returned by the final \code{unlink()} call that removes the temporary effect-definition file. The meaningful result is the side effect of defining/loading the requested effects.
+An integer compatibility status of zero. The main effect is defining and loading the requested effects directly in memory.
 }
 
 \details{

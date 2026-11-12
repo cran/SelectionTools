@@ -1,6 +1,6 @@
 \name{gs.cross.eval.ma}
 \alias{gs.cross.eval.ma}
-\title{Evaluate Crosses by Maximum Marker-Effect Value}
+\title{Evaluates Crosses by Maximum Marker-Effect Value}
 
 \description{
 Calculates the maximum marker-effect based performance that can be assembled

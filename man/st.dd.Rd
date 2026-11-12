@@ -1,9 +1,9 @@
 \name{st.dd}
 \alias{st.dd}
-\title{Construct a path in the SelectionTools data directory}
+\title{Constructs a path in the SelectionTools data directory}
 
 \description{
-Construct a path in the SelectionTools data directory.
+Constructs a path in the SelectionTools data directory.
 }
 
 \usage{

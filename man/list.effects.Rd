@@ -13,4 +13,4 @@ list.effects()
 A \code{data.frame} with columns \code{effect} and \code{weight}, listing the currently defined effects and their weights.
 }
 
-\note{See \code{define.effects} for for an example }
+\note{Further details appear in \code{define.effects} for an example }

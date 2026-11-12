@@ -26,19 +26,17 @@ Sampling does not modify the source population. The requested sample is copied i
 
 
 \examples{
-map <- data.frame(chrom = 1,
-                  pos = 0.01,
-                  name = "form")
-define.genome(map)
-
-init.population("P1", homozygote(1))
-init.population("P2", homozygote(2))
-
-# Example: Generate 100 F1 hybrids
-cross("F1","P1", "P2", 100)
-
-# take a sample of 20 out of the 100 F1 plants
-sample.population ("SampleFromF1","F1",252)
+data("v-tropmaize-vcf", package = "SelectionTools")
+marker.frame <- st.STvcf.to.dataframe(v.tropmaize.vcf)[1:12, c(1:6, 7:14)]
+vcf <- st.dataframe.to.STvcf(marker.frame)
+st.load.vcf.data(vcf, data.set = "maize.example")
+reset.all()
+st.set.sim.gp(data.set = "maize.example")
+st.set.sim.mp(data.set = "maize.example")
+st.set.sim.pp("Maize", data.set = "maize.example")
+loci <- vcf$ID
+sample.population("Sample", "Maize", NoI = 4, rep = 0)
+population.size.get("Sample")
 }
 
 \seealso{

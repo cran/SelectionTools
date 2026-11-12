@@ -13,7 +13,7 @@ load.effmap(name, file = NA)
    \item{file}{File that contains the effect description}
 }
 \value{
-An invisible \code{list} returned by the underlying \code{.C} routine. The list is an implementation-level result containing the arguments returned by the compiled routine; the function is primarily called for its side effect of loading the requested effect map.
+An invisible \code{list} returned by the compiled routine. The list is an implementation-level result containing the arguments returned by the compiled routine; the function is primarily called for its side effect of loading the requested effect map.
 }
 
 \details{ Effect files are text files can be generated either by hand with
@@ -38,4 +38,4 @@ Structure of an effect file: \cr
     } 
   }
 
-\note{See \code{define.effects} for for an example }
+\note{Further details appear in \code{define.effects} for an example }

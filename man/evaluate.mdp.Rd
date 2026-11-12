@@ -1,9 +1,9 @@
 \name{evaluate.mdp}
 \alias{evaluate.mdp}
-\title{Evaluate marker-assisted donor-parent information for populations}
+\title{Evaluates marker-assisted donor-parent information for populations}
 
 \description{
-Evaluate marker-assisted donor-parent information for populations.
+Evaluates marker-assisted donor-parent information for populations.
 }
 
 \usage{

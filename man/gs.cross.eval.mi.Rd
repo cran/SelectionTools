@@ -1,6 +1,6 @@
 \name{gs.cross.eval.mi}
 \alias{gs.cross.eval.mi}
-\title{Evaluate Crosses by Minimum Marker-Effect Value}
+\title{Evaluates Crosses by Minimum Marker-Effect Value}
 
 \description{
 Calculates the minimum marker-effect based performance that can be assembled

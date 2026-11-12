@@ -1,9 +1,9 @@
 \name{st.set.matrix.ops}
 \alias{st.set.matrix.ops}
-\title{Set matrix ops used by SelectionTools}
+\title{Sets matrix ops used by SelectionTools}
 
 \description{
-Set matrix ops used by SelectionTools.
+Sets matrix ops used by SelectionTools.
 }
 
 \usage{

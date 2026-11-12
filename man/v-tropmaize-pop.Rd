@@ -4,7 +4,7 @@
 \docType{data}
 \title{Genotype Data for Tropical Maize}
 \description{
-Compact, lossless representation of genotype data for 1135 markers and
+Compacts, lossless representation of genotype data for 1135 markers and
 264 tropical maize individuals.
 }
 \usage{

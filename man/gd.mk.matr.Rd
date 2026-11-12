@@ -1,9 +1,9 @@
 \name{gd.mk.matr}
 \alias{gd.mk.matr}
-\title{Construct a matrix from genetic-distance results}
+\title{Constructs a matrix from genetic-distance results}
 
 \description{
-Construct a matrix from genetic-distance results.
+Constructs a matrix from genetic-distance results.
 }
 
 \usage{

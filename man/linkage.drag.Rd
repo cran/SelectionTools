@@ -1,9 +1,9 @@
 \name{linkage.drag}
 \alias{linkage.drag}
-\title{Calculate or summarize linkage drag}
+\title{Calculates or summarize linkage drag}
 
 \description{
-Calculate or summarize linkage drag.
+Calculates or summarize linkage drag.
 }
 
 \usage{

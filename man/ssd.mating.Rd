@@ -17,7 +17,7 @@ ssd.mating(NamePg, NameP, NoPg=1, maxcycles=1)
    \item{maxcycles}{Positive maximum number of successive selfing generations for each descendant.}
 }
 \value{
-An invisible \code{list} returned by the underlying \code{.C} routine. The list is an implementation-level result containing the arguments returned by the compiled routine; the function is primarily called for its side effect of creating progeny using the SSD mating routine.
+An invisible \code{list} returned by the compiled routine. The list is an implementation-level result containing the arguments returned by the compiled routine; the function is primarily called for its side effect of creating progeny using the SSD mating routine.
 }
 
 \details{

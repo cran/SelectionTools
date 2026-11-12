@@ -1,6 +1,6 @@
 \name{population.exist}
 \alias{population.exist}
-\title{Check whether a simulation population exists}
+\title{Checks whether a simulation population exists}
 
 \description{
 Checks whether the requested population name occurs in the current simulation population list.

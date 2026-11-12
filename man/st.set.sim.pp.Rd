@@ -30,6 +30,8 @@ ignored during population transfer. Consequently, populations from several
 compatible SelectionTools data sets can be added to one initialized simulation
 without reloading genome parameters or the linkage map.
 
+Imported individual identifiers and full stored pedigrees are copied into owned simulation strings. If no pedigree is attached, the imported name is the founder pedigree. Removing or changing the source marker dataset does not change those strings. No fitted symbolic-A prediction state is transferred.
+
 For each imported individual, allele values are placed at the corresponding
 simulation loci. SelectionTools biological allele codes 1 through 254 are
 transferred unchanged, while the internal SelectionTools missing representation
@@ -44,7 +46,7 @@ assumed to identify the same loci and allele coding. The requested
 }
 
 \value{
-An invisible \code{list} returned by the underlying \code{.C} routine. Component \code{r} is the status value used by the simulation bridge; the function is primarily called for its side effect of transferring the requested data to the simulation backend.
+An invisible \code{list} returned by the compiled routine. Component \code{r} is the status value used by the simulation bridge; the function is primarily called for its side effect of transferring the requested data to the simulation backend.
 }
 
 \seealso{

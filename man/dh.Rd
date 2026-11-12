@@ -14,7 +14,7 @@ dh(NamePg, NameP1, NoPg=-1)
    \item{NoPg}{Number of progeny. A positive value creates that many lines; \code{-1} uses the allocation of an existing destination population.}
 }
 \value{
-An invisible \code{list} returned by the underlying \code{.C} routine. The list is an implementation-level result containing the arguments returned by the compiled routine; the function is primarily called for its side effect of creating doubled-haploid progeny.
+An invisible \code{list} returned by the compiled routine. The list is an implementation-level result containing the arguments returned by the compiled routine; the function is primarily called for its side effect of creating doubled-haploid progeny.
 }
 
 \details{

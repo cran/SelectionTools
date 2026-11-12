@@ -36,54 +36,15 @@ included individuals. Names must only consist of letters and numbers (no spaces,
 }
 
 \examples{
-# Simple functionalty:
-map <- data.frame(chrom = 1,
-                  pos = 0.0,
-                  name = "form",
-                  class = "trait1")
-define.genome(map)
-
-init.population("P1", homozygote(1))
-init.population("P2", homozygote(2))
-
-cross("F1","P1", "P2", 100)
-cross("BC1","F1", "P2", 100)
-
-evaluate.genotype("BC1","form")
-
-# Complex functionality: Two linked loci
+data("v-tropmaize-vcf", package = "SelectionTools")
+marker.frame <- st.STvcf.to.dataframe(v.tropmaize.vcf)[1:12, c(1:6, 7:14)]
+vcf <- st.dataframe.to.STvcf(marker.frame)
+st.load.vcf.data(vcf, data.set = "maize.example")
 reset.all()
-
-map <- data.frame(
-  chrom = c(1, 1),
-  pos = c(0.2, 0.8),
-  name = c("A", "B")
-)
-define.genome(map, length.vec = 1)
-
-# Individual 1 carries haplotypes 1-1 and 2-2.
-# Individual 2 carries haplotypes 1-2 and 2-1.
-pop <- data.frame(
-  ind   = c(1, 1, 1, 1, 2, 2, 2, 2),
-  chrom = c(1, 1, 1, 1, 1, 1, 1, 1),
-  hom   = c(1, 1, 2, 2, 1, 1, 2, 2),
-  pos = c(0.2, 0.8, 0.2, 0.8, 0.2, 0.8, 0.2, 0.8),  
-  all   = c(1, 2, 1, 2, 1, 2, 2, 1)
-)
-init.population("PhaseExample", pop)
-
-# Preserve phase: the two individuals form separate categories,
-# each with count 1 and frequency 0.5.
-evaluate.genotype("PhaseExample", c("A", "B"), mode = 0)
-
-# Ignore phase: both individuals are heterozygous at both loci,
-# giving one category with count 2 and frequency 1.
-evaluate.genotype("PhaseExample", c("A", "B"), mode = 2)
-
-# Loci can also be supplied as a space-separated string.
-evaluate.genotype("PhaseExample", "A B", mode = 2)
-
-# Retrieve one observed phased combination.
-evaluate.genotype("PhaseExample", c("A", "B"),
-                  alleles = c(1, 2, 1, 2), mode = 0)
+st.set.sim.gp(data.set = "maize.example")
+st.set.sim.mp(data.set = "maize.example")
+st.set.sim.pp("Maize", data.set = "maize.example")
+loci <- vcf$ID
+evaluate.genotype("Maize", loci[1])
+evaluate.genotype("Maize", paste(loci[1:2], collapse = " "), bg = 1)
 }

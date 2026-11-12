@@ -13,7 +13,7 @@ population.transfer(NameP1, NameP2, population.NameP2.delete=TRUE)
 \arguments{
 \item{NameP1}{Character string naming the recipient population.}
    \item{NameP2}{Character string naming the source population.}
-   \item{population.NameP2.delete}{Logical. If true, remove the source after transfer by concatenation; if false, retain the source and append a copy.}
+   \item{population.NameP2.delete}{Logical. TRUE removes the source after transfer by concatenation; FALSE retains the source and appends a copy.}
 }
 \value{
 The invisible implementation-level \code{list} returned by \code{population.concat()} or \code{population.append()}, depending on \code{population.NameP2.delete}. The main effect is transfer of population data.

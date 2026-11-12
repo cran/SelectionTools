@@ -1,9 +1,9 @@
 \name{st.get.info.level}
 \alias{st.get.info.level}
-\title{Return the current SelectionTools information level}
+\title{Returns the current SelectionTools information level}
 
 \description{
-Return the current SelectionTools information level.
+Returns the current SelectionTools information level.
 }
 
 \usage{

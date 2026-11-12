@@ -1,6 +1,6 @@
 \name{population.plabsim.save}
 \alias{population.plabsim.save}
-\title{Save a population in PLABSIM-style format}
+\title{Saves a population in PLABSIM-style format}
 
 \description{
 Writes a simulation population and its stored individual information in the PLABSIM-style file representation.

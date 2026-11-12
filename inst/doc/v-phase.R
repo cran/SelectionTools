@@ -155,7 +155,8 @@
 ##     phasing.options=ph,
 ##     commit=FALSE
 ## )
-## fit$diagnostics
+## fit[c("windows", "maximum.worker.team", "chromosome.windows",
+##       "filled.genotypes", "reference", "committed")]
 
 
 ###################################################

@@ -1,9 +1,9 @@
 \name{info.cat}
 \alias{info.cat}
-\title{Emit information-level-controlled status output}
+\title{Information-level-controlled status output}
 
 \description{
-Emit a status message when the requested information level is enabled.
+A status message is signaled when the requested information level is enabled.
 The message is signaled with \code{message()} and can therefore also be
 suppressed with \code{suppressMessages()}.
 }
@@ -17,5 +17,5 @@ info.cat(lev, msg)
    \item{msg}{Message text.}
 }
 \value{
-\code{NULL}. The function is called for its side effect of conditionally signaling a status message according to the current information level.
+The function returns \code{NULL} invisibly. Message text is evaluated only when the requested information level is enabled.
 }

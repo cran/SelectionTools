@@ -17,19 +17,20 @@ st.phase(data.set = "default", ref = NULL, phasing.options = list(),
   all chromosomes in this data set are phased.}
   \item{ref}{Reference panel, either the name of a loaded SelectionTools
   data set or an \code{STvcf} object. With \code{NULL}, the cohort supplies
-  donor haplotypes. Reference haplotypes remain fixed. See the reference
+  donor haplotypes. Reference haplotypes remain fixed. Further details appear in the reference
   requirements below. Default: \code{NULL}.}
   \item{phasing.options}{Uniquely named list of controls described below.
   Omitted entries use their defaults. Hyphens in option names are accepted as
   alternatives to dots, for example \code{"phase-states"}.
   Unknown or duplicate entries are errors.}
-  \item{impute}{Logical scalar. If \code{FALSE}, preserve missing target
-  genotypes. If \code{TRUE}, retain inferred hard calls at missing genotypes
+  \item{impute}{Logical scalar. \code{FALSE} preserves missing target
+  genotypes. \code{TRUE} retains inferred hard calls at missing genotypes
   of existing target markers. Observed unordered genotypes are preserved
   under both policies. Default: \code{FALSE}.}
-  \item{commit}{Logical scalar. If \code{TRUE}, write the completed result to
-  \code{data.set} and mark it phased. If \code{FALSE}, return the result
-  without changing the data set. Default: \code{TRUE}.}
+  \item{commit}{Logical scalar. \code{TRUE} writes the completed result to
+  \code{data.set} and marks it phased. \code{FALSE} performs and validates
+  phasing, discards the proposed genotypes, and returns only diagnostics without
+  changing the data set. Default: \code{TRUE}.}
 }
 \details{
 \strong{Cohort and reference modes.}
@@ -53,12 +54,12 @@ There must be 2--5000 total individuals, counting both targets and references;
 a reference-assisted call may contain just one target. Each chromosome must
 have at least two usable markers and a positive genetic span. Each sample
 must have at least one observed call on each chromosome. Marker IDs must be
-unique. The existing STvcf converter requires alphanumeric marker and
-individual names. The map must be ordered by chromosome and nondecreasing
+unique. The STvcf converter requires non-empty marker and individual names
+without whitespace or control characters; ordinary punctuation is permitted. The map must be ordered by chromosome and nondecreasing
 position. Common-stage markers must be monomorphic or biallelic; multiallelic
 markers can be handled by the rare-marker stage, up to 100 declared alleles.
 A selected multiallelic common marker is rejected. Small or sparse windows
-can fail these conditions; use automatic windows or a larger explicit window.
+can fail these conditions; automatic windows or a larger explicit window can satisfy the conditions.
 
 \strong{Options and defaults.}
 \describe{
@@ -94,7 +95,7 @@ can fail these conditions; use automatic windows or a larger explicit window.
   \item{\code{seed = NULL}}{Integer-valued seed in the range
   \eqn{[-2147483647,2147483647]}. \code{NULL} draws one seed from R's RNG,
   so \code{set.seed()} controls reproducibility. An explicit seed does not
-  consume R random draws. The actual seed is returned in \code{settings}.}
+  consume R random draws. The actual seed is reported with \code{commit = FALSE}.}
 }
 
 \strong{Automatic windows.}
@@ -130,27 +131,35 @@ retain original VCF nucleotide labels. Independently imported target and
 reference panels must already use compatible exported allele coding. In
 particular, independently normalizing a monomorphic panel can obscure which
 allele it shares with a polymorphic target. Supplying an STvcf reference does
-not recover discarded target labels. Check coding before phasing; this
+not recover discarded target labels. Coding compatibility is required before phasing; this
 interface does not infer strand orientation.
 
 \strong{Missing data and write-back.}
 The engine infers complete working haplotypes internally. With
-\code{impute = FALSE}, originally missing calls are restored before return and
+\code{impute = FALSE}, originally missing calls are retained in the validated proposal and
 write-back. With \code{impute = TRUE}, inferred calls at these typed markers
 are retained without a posterior-confidence cutoff.
 No untyped markers, dosages, genotype probabilities or allele
 probabilities are produced.
 
 All computations precede write-back. The complete output is validated and
-staged before the existing genotype arrays are changed. Original internal
-allele codes, map and other dataset fields are retained. A failed phasing or
+staged before the existing allele storage is changed. Original internal
+allele codes, map, phenotypes and fitted effects are retained. Marker statistics
+are refreshed with the committed genotypes; calculated design and relationship
+matrices are invalidated. A failed phasing or
 validation call does not partially write a chromosome into the source.
-The returned STvcf uses exported allele coding. References are never written.
+Loaded marker data are read directly in C into chromosome workspaces.
+No complete STvcf snapshot, R genotype matrix or phased genotype object is
+created as an internal interface or returned. References are never written.
 As with other genotype-changing operations, previously computed analyses
 should be recomputed when their inputs have changed through imputation.
+Storage is selected automatically from the largest observed allele count at
+any marker, using 4, 8 or 16 bits per diploid genotype plus dictionaries where
+required. Imputation can promote storage when it introduces additional alleles.
+The storage width is reported by \code{st.data.set.list()}.
 
 \strong{Threads and reproducibility.}
-Use \code{st.set.num.threads} and \code{st.get.num.threads}.
+\code{st.set.num.threads} and \code{st.get.num.threads} control and report the thread budget.
 There is no \code{nthreads} entry in \code{phasing.options}. OpenMP may grant
 fewer workers than requested; the maximum actual team is reported. Builds
 without OpenMP execute serially and report one phasing thread. OpenMP must
@@ -160,21 +169,20 @@ and compiler differences can affect exact agreement across platforms.
 
 }
 \value{
-Invisibly returns a list with:
+With \code{commit = TRUE}, invisibly returns \code{NULL} after updating the
+supported data set. With \code{commit = FALSE}, returns a small diagnostics
+list and discards the proposed genotypes. No genotype or full reference
+object is returned. The dry-run diagnostics contain:
 \describe{
-  \item{\code{data}}{Phased target-only STvcf, with \code{phased = TRUE}.
-  Missing calls follow \code{impute}. This is also returned with
-  \code{commit = FALSE}.}
-  \item{\code{settings}}{Mode (\code{"cohort"} or \code{"reference"}),
-  imputation policy, the supplied \code{ref}, effective
-  \code{phasing.options}, requested
-  \code{nthreads}, \code{actual.seed}, per-chromosome \code{window.settings}
-  and \code{automatic.window}. Effective \code{ne} and \code{err} entries
-  describe initialization controls, not final fitted EM estimates.}
-  \item{\code{diagnostics}}{Total \code{windows}, \code{chromosome.windows},
-  \code{maximum.worker.team}, \code{filled.genotypes} and
-  \code{committed}. Reference runs additionally report reference sample and
-  haplotype counts, invariant-check status, and ignored reference markers.}
+  \item{\code{actual.seed}}{The actual seed used, including a seed drawn from R.}
+  \item{\code{windows}, \code{chromosome.windows}}{Total and per-chromosome window counts.}
+  \item{\code{maximum.worker.team}}{Maximum actual worker-team size.}
+  \item{\code{requested.threads}}{Requested SelectionTools thread count.}
+  \item{\code{filled.genotypes}}{Proposed number of filled genotypes.}
+  \item{\code{committed}}{Always \code{FALSE} for returned dry-run diagnostics.}
+  \item{\code{window.settings}}{Effective per-chromosome window choices.}
+  \item{\code{reference}}{Reference sample and haplotype counts, invariant-check
+  status and ignored-marker count, or \code{NULL} in cohort mode.}
 }
 }
 \section{Subsetting}{

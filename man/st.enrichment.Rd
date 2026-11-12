@@ -1,7 +1,7 @@
 \name{st.calculate.enrichment}
 \alias{st.calculate.enrichment}
 \alias{st.select.enrichment}
-\title{Calculate Haplotype Enrichment and Select Donor Genotypes}
+\title{Calculates Haplotype Enrichment and Selects Donor Genotypes}
 \description{
 Counts additional block-specific haplotype alleles supplied by one phased
 marker data set to another, or selects donor genotypes by exact best-subset
@@ -28,8 +28,8 @@ candidate pool.}
 An additional \code{ld.measure} option selects the measure for
 \code{st.calc.ld} when LD-based blocks are requested (default \code{"r2"}).
 Omitted entries use the defaults of those routines. An empty list requests
-the default five-marker blocks. Supply exactly one of
-\code{haplotype.options} and \code{blocks}.}
+the default five-marker blocks. Exactly one of
+\code{haplotype.options} and \code{blocks} is required.}
 \item{blocks}{Block-definition data frame, typically returned by
 \code{st.def.hblocks}. The \code{Name}, \code{Chrom} and \code{Markers}
 columns define unique block names, chromosomes, and semicolon-separated
@@ -61,7 +61,7 @@ private working copy of the base population, including its LD if needed.
 The same base data and options therefore produce the same blocks when the
 full donor pool is replaced by selected donors. Supplying fixed blocks instead
 uses their marker membership directly. The input marker data sets, including
-their block definitions, are not modified. The temporary native working data
+their block definitions, are not modified. The temporary compiled working data
 set is released on return or error; no new simulation or phasing code is involved.
 
 Haplotype identity is the ordered sequence of marker allele states within a
@@ -71,7 +71,7 @@ is potentially hidden if it agrees with every observed marker of at least
 one incomplete base haplotype. An entirely missing base haplotype is compatible
 with every variant at that block. This is conditional on the supplied phase
 and calls; lack of a compatible incomplete sequence does not prove biological
-novelty. Native allele arrays are read directly. Missing values on one
+novelty. compiled allele arrays are read directly. Missing values on one
 homologue do not discard observed values on the other homologue.
 
 Selection maximizes the union of qualifying additional alleles, not the sum

@@ -14,7 +14,7 @@ genotype.population(PopNames)
 \item{PopNames}{One population name, a space-separated character string of population names, or a character vector of population names to genotype.}
 }
 \value{
-An invisible \code{list} returned by the underlying \code{.C} routine. The list is an implementation-level result containing the arguments returned by the compiled routine; the function is primarily called for its side effect of generating/storing genotype information for the requested populations.
+An invisible \code{list} returned by the compiled routine. The list is an implementation-level result containing the arguments returned by the compiled routine; the function is primarily called for its side effect of generating/storing genotype information for the requested populations.
 }
 
 \details{

@@ -1,9 +1,9 @@
 \name{load.internal.effmap}
 \alias{load.internal.effmap}
-\title{Load an internal effect map}
+\title{Loads an internal effect map}
 
 \description{
-Load an internal effect map.
+Loads an internal effect map.
 }
 
 \usage{
@@ -16,5 +16,5 @@ load.internal.effmap(name, spec, weight)
    \item{weight}{Weight value.}
 }
 \value{
-An invisible \code{list} returned by the underlying \code{.C} routine. The list is an implementation-level result containing the arguments returned by the compiled routine; the function is primarily called for its side effect of loading the requested internal effect map.
+An invisible \code{list} returned by the compiled routine. The list is an implementation-level result containing the arguments returned by the compiled routine; the function is primarily called for its side effect of loading the requested internal effect map.
 }

@@ -1,240 +1,135 @@
-/* MathLib11: Vector and matrix operations: dynamic linking  
- *            blas and lapack from R
- * 
- * st_daxpy    y = a*x + y                                    
- * st_dgemm    double general matrix matrix multiplication    
- * st_dcopy    matrix copy                                    
- * st_dscal    y = a*x                                        
- *
- * st_dgetrf      LU decomposition
- * st_dgetrs        backsolve 
- * st_dgetri        inverse
- *
- * st_dgetri_inv  LU decomposition and inverse
- * st_inv           interface
- *
- * st_dsyevr      Eigenvalues
- * st_eigen         interface
- *
- * st_dgesvd_ginv  Generalised inverse from SVD decomposition
- * st_ginv          interface
- *
-*/
+
 
 #include <stdlib.h>
 #include <string.h>
 
-#include <R_ext/Lapack.h>  
-#include <R_ext/BLAS.h>    
-#include <R_ext/RS.h>    
+#include <R_ext/Lapack.h>
+#include <R_ext/BLAS.h>
+#include <R_ext/RS.h>
 
+void st_daxpy(gs_UNSIGNED n, double a, double *x, double *y)
 
-void st_daxpy (gs_UNSIGNED n, double a, double *x, double *y)
-// y := a*x + y
 {
-    if (n == 0 || a == 0.0) return;
+    if (n == 0 || a == 0.0)
+        return;
 
     for (gs_UNSIGNED i = 0; i < n; ++i)
         y[i] += a * x[i];
 }
 
-
-// ---- layout conversion: row-major <-> column-major (rectangular m×n) ----
-// A_rm is m×n in row-major with row stride lda_rm (>= n)
-// A_cm is m×n in column-major with leading dimension ldA_cm (>= m)
-
-static void rm_to_cm(const double *A_rm,
-                     int m, int n, int lda_rm,
-                     double *A_cm, int ldA_cm)
+static void rm_to_cm(const double *A_rm, int m, int n, int lda_rm, double *A_cm,
+                     int ldA_cm)
 {
-    for (int i = 0; i < m; ++i) {
+    for (int i = 0; i < m; ++i)
+    {
         const double *row = A_rm + (size_t)i * (size_t)lda_rm;
-        for (int j = 0; j < n; ++j) {
+        for (int j = 0; j < n; ++j)
+        {
             A_cm[i + (size_t)j * (size_t)ldA_cm] = row[j];
         }
     }
 }
 
-static void cm_to_rm(const double *A_cm,
-                     int m, int n, int ldA_cm,
-                     double *A_rm, int lda_rm)
+static void cm_to_rm(const double *A_cm, int m, int n, int ldA_cm, double *A_rm,
+                     int lda_rm)
 {
-    for (int i = 0; i < m; ++i) {
+    for (int i = 0; i < m; ++i)
+    {
         double *row = A_rm + (size_t)i * (size_t)lda_rm;
-        for (int j = 0; j < n; ++j) {
+        for (int j = 0; j < n; ++j)
+        {
             row[j] = A_cm[i + (size_t)j * (size_t)ldA_cm];
         }
     }
 }
 
-void st_dgemm(char T1[], char T2[],
-              gs_UNSIGNED nra, gs_UNSIGNED nca,
-              gs_UNSIGNED nrb, gs_UNSIGNED ncb,
-              double *A, double *B, double *C)
+void st_dgemm(char T1[], char T2[], gs_UNSIGNED nra, gs_UNSIGNED nca,
+              gs_UNSIGNED nrb, gs_UNSIGNED ncb, double *A, double *B, double *C)
 {
-    /* Row-major input buffers:
-       A is nra x nca (row stride = nca)
-       B is nrb x ncb (row stride = ncb)
-       Compute C = op(A) %*% op(B) into row-major C (contiguous, row stride = N).
-       This implementation does NO explicit transposition:
-       it treats row-major buffers as transposed column-major "views" and uses the
-       swap+transpose trick:
-         C_rm^T = op(B_rm)^T * op(A_rm)^T
-       so we call Fortran DGEMM with A=B, B=A and suitable flags, writing directly to C.
-    */
 
     const int A_rows = (int)nra, A_cols = (int)nca;
     const int B_rows = (int)nrb, B_cols = (int)ncb;
 
-    /* Only "N" or "T" expected */
     const int transA = (!strcmp(T1, "N")) ? 0 : 1;
     const int transB = (!strcmp(T2, "N")) ? 0 : 1;
 
-    /* Original (row-major) GEMM dims: op(A): MxK, op(B): KxN, C: MxN */
-    const int M  = transA ? A_cols : A_rows;
-    const int K  = transA ? A_rows : A_cols;
-    const int N  = transB ? B_rows : B_cols;
+    const int M = transA ? A_cols : A_rows;
+    const int K = transA ? A_rows : A_cols;
+    const int N = transB ? B_rows : B_cols;
 
     const int Kb = transB ? B_cols : B_rows;
-    if (K != Kb) return; /* non-conformable */
+    if (K != Kb)
+        return;
 
-    /* Column-major "views" of row-major buffers:
-       A_view is (A_cols x A_rows) with leading dimension ldA = A_cols (= row stride of A_rm)
-       B_view is (B_cols x B_rows) with leading dimension ldB = B_cols (= row stride of B_rm)
-       C_view is (N x M) with leading dimension ldC = N (= row stride of C_rm)
-    */
-    const BLAS_INT ldA = (BLAS_INT)A_cols; /* A_view rows */
-    const BLAS_INT ldB = (BLAS_INT)B_cols; /* B_view rows */
-    const BLAS_INT ldC = (BLAS_INT)N;      /* C_view rows */
+    const BLAS_INT ldA = (BLAS_INT)A_cols;
+    const BLAS_INT ldB = (BLAS_INT)B_cols;
+    const BLAS_INT ldC = (BLAS_INT)N;
 
-    /* We compute C_view (N x M) = op(B_view) * op(A_view)
-       where:
-         op(B_view) = op(B_rm)^T
-         op(A_view) = op(A_rm)^T
-       Mapping:
-         if T2 == "N": op(B_rm)=B_rm      => op(B_rm)^T = B_rm^T = B_view      => ta='N'
-         if T2 == "T": op(B_rm)=B_rm^T    => op(B_rm)^T = B_rm   = B_view^T    => ta='T'
-       same for A with T1.
-    */
     char ta = (transB == 0) ? 'N' : 'T';
     char tb = (transA == 0) ? 'N' : 'T';
 
-    /* DGEMM computes: C = alpha*op(Af)*op(Bf) + beta*C
-       Here: Af = B (row-major buffer interpreted as B_view col-major),
-             Bf = A (row-major buffer interpreted as A_view col-major),
-             C  = C (row-major buffer interpreted as C_view col-major).
-       Dimensions for DGEMM are for C_view:
-         m = N, n = M, k = K
-    */
     const BLAS_INT m_f = (BLAS_INT)N;
     const BLAS_INT n_f = (BLAS_INT)M;
     const BLAS_INT k_f = (BLAS_INT)K;
 
     double alpha = 1.0;
-    double beta  = 0.0;
+    double beta = 0.0;
 
-    F77_CALL(dgemm)(&ta, &tb,
-                    &m_f, &n_f, &k_f,
-                    &alpha,
-                    B, &ldB,   /* Af = B_view */
-                    A, &ldA,   /* Bf = A_view */
-                    &beta,
-                    C, &ldC    /* C_view */
-                    FCONE FCONE);
+    F77_CALL(dgemm)(&ta, &tb, &m_f, &n_f, &k_f, &alpha, B, &ldB, A, &ldA, &beta,
+                    C, &ldC FCONE FCONE);
 }
 
-
-void st_dsymm_ZZt(gs_UNSIGNED n, gs_UNSIGNED m,
-                         const double *Z_rm, double *G_rm)
+void st_dsymm_ZZt(gs_UNSIGNED n, gs_UNSIGNED m, const double *Z_rm,
+                  double *G_rm)
 {
-    /* Build G = Z * Z' where:
-       - Z_rm is n x m row-major, tight (row stride = m)
-       - G_rm is n x n row-major, tight (row stride = n)
-       Uses DSYRK on the column-major "view" of Z.
-    */
 
     const int N = (int)n;
     const int K = (int)m;
 
-    /* Column-major view: Z_cm is (m x n) because Z_rm == t(Z_cm) in memory.
-       We want G_rm = Z_rm * Z_rm^T  (n x n).
-
-       In column-major view:
-         Z_cm is m x n
-         Z_rm * Z_rm^T  corresponds to  (Z_cm^T) * Z_cm
-       That is DSYRK with TRANS='T', producing an n x n symmetric matrix.
-    */
-
-    char uplo = 'U';   /* DSYRK fills upper triangle of output (column-major) */
-    char trans = 'T';  /* compute C := A^T A, where A is (K x N) */
+    char uplo = 'U';
+    char trans = 'T';
 
     const BLAS_INT n_f = (BLAS_INT)N;
     const BLAS_INT k_f = (BLAS_INT)K;
 
-    /* Leading dim for column-major A (which is Z_cm): rows = K = m */
     const BLAS_INT lda_f = (BLAS_INT)K;
 
-    /* Output C in column-major is n x n with ldc = n.
-       We write directly into G_rm buffer: in memory, G_rm is the transpose-view,
-       but since C is symmetric, the transpose is identical.
-    */
     const BLAS_INT ldc_f = (BLAS_INT)N;
 
     double alpha = 1.0;
-    double beta  = 0.0;
+    double beta = 0.0;
 
-    F77_CALL(dsyrk)(&uplo, &trans,
-                    &n_f, &k_f,
-                    &alpha,
-                    (double*)Z_rm, &lda_f,
-                    &beta,
-                    G_rm, &ldc_f
-                    FCONE FCONE);
+    F77_CALL(dsyrk)(&uplo, &trans, &n_f, &k_f, &alpha, (double *)Z_rm, &lda_f,
+                    &beta, G_rm, &ldc_f FCONE FCONE);
 
-    /* Now symmetrize in *row-major*.
-       With the transpose-view trick, the triangle DSYRK wrote as "upper" in column-major
-       ends up in the LOWER triangle of row-major buffer. So copy lower -> upper.
-    */
     for (int i = 0; i < N; ++i)
         for (int j = i + 1; j < N; ++j)
             G_rm[(size_t)i * (size_t)N + (size_t)j] =
                 G_rm[(size_t)j * (size_t)N + (size_t)i];
 }
 
-
-
-void st_dcopy ( gs_UNSIGNED n,
-                double *dest,
-                double *src)
+void st_dcopy(gs_UNSIGNED n, double *dest, double *src)
 {
     memcpy(dest, src, (size_t)n * sizeof(double));
 }
 
-
-void st_dscal ( gs_UNSIGNED n,
-                double a,
-                double *X)
+void st_dscal(gs_UNSIGNED n, double a, double *X)
 {
     for (gs_UNSIGNED i = 0; i < n; ++i)
         X[i] *= a;
 }
 
-////////////////////////////////////////////////////////////////////////////////
-/// Begin: LU decomposition
-////////////////////////////////////////////////////////////////////////////////
-
-
-static int dgetrf_rm(int n, double *A_rm, int lda_rm, int *ipiv /* length n */)
+static int dgetrf_rm(int n, double *A_rm, int lda_rm, int *ipiv)
 {
     int info = 0;
     int ldA = (n > 0) ? n : 1;
 
-    double *A_cm = (double*)malloc((size_t)ldA * (size_t)n * sizeof(double));
-    if (!A_cm) return -1010; // "work memory error" (by convention)
+    double *A_cm = (double *)malloc((size_t)ldA * (size_t)n * sizeof(double));
+    if (!A_cm)
+        return -1010;
 
     rm_to_cm(A_rm, n, n, lda_rm, A_cm, ldA);
 
-    // Fortran LAPACK: DGETRF(M,N,A,LDA,IPIV,INFO)
     F77_CALL(dgetrf)(&n, &n, A_cm, &ldA, ipiv, &info);
 
     cm_to_rm(A_cm, n, n, ldA, A_rm, lda_rm);
@@ -243,15 +138,15 @@ static int dgetrf_rm(int n, double *A_rm, int lda_rm, int *ipiv /* length n */)
     return info;
 }
 
-
 void st_dgetrf(double *a, gs_UNSIGNED nn, gs_UNSIGNED *indx, double *d)
-// ludcmp
+
 {
     int n = (int)nn;
-    int lda_rm = (int)nn; // matrices are tight row-major n×n
+    int lda_rm = (int)nn;
 
-    int *ipiv = (int*)malloc((size_t)n * sizeof(int));
-    if (!ipiv) {
+    int *ipiv = (int *)malloc((size_t)n * sizeof(int));
+    if (!ipiv)
+    {
         gs_info(gv, -1, "Out of memory in st_dgetrf");
         *d = (double)(-1010);
         return;
@@ -259,21 +154,20 @@ void st_dgetrf(double *a, gs_UNSIGNED nn, gs_UNSIGNED *indx, double *d)
 
     int info = dgetrf_rm(n, a, lda_rm, ipiv);
 
-    // Copy pivot indices back to gs_UNSIGNED array
-    for (gs_UNSIGNED i = 0; i < nn; ++i) indx[i] = (gs_UNSIGNED)ipiv[i];
+    for (gs_UNSIGNED i = 0; i < nn; ++i)
+        indx[i] = (gs_UNSIGNED)ipiv[i];
 
     *d = (double)info;
 
-    if (info > 0) {
+    if (info > 0)
+    {
         gs_info(gv, -1, "Singular coefficient matrix in dgetrf");
     }
 
     free(ipiv);
 }
 
-static int dgetrs_rm(int n,
-                     const double *A_rm, int lda_rm,
-                     const int *ipiv,
+static int dgetrs_rm(int n, const double *A_rm, int lda_rm, const int *ipiv,
                      double *b_rm)
 {
     int info = 0;
@@ -282,24 +176,24 @@ static int dgetrs_rm(int n,
     int ldA = (n > 0) ? n : 1;
     int ldB = (n > 0) ? n : 1;
 
-    double *A_cm = (double*)malloc((size_t)ldA * (size_t)n * sizeof(double));
-    double *B_cm = (double*)malloc((size_t)ldB * sizeof(double));
+    double *A_cm = (double *)malloc((size_t)ldA * (size_t)n * sizeof(double));
+    double *B_cm = (double *)malloc((size_t)ldB * sizeof(double));
 
-    if (!A_cm || !B_cm) {
-        free(A_cm); free(B_cm);
+    if (!A_cm || !B_cm)
+    {
+        free(A_cm);
+        free(B_cm);
         return -1010;
     }
 
     rm_to_cm(A_rm, n, n, lda_rm, A_cm, ldA);
-    
+
     for (int i = 0; i < n; ++i)
         B_cm[i] = b_rm[i];
 
     char trans = 'N';
-    F77_CALL(dgetrs)(&trans, &n, &nrhs,
-                     A_cm, &ldA, (int*)ipiv,
-                     B_cm, &ldB, &info
-                     FCONE);
+    F77_CALL(dgetrs)(&trans, &n, &nrhs, A_cm, &ldA, (int *)ipiv, B_cm, &ldB,
+                     &info FCONE);
 
     for (int i = 0; i < n; ++i)
         b_rm[i] = B_cm[i];
@@ -310,14 +204,14 @@ static int dgetrs_rm(int n,
     return info;
 }
 
-
 void st_dgetrs(double *a, gs_UNSIGNED nn, gs_UNSIGNED *indx, double *b)
 {
     int n = (int)nn;
     int lda_rm = (int)nn;
 
-    int *ipiv = (int*)malloc((size_t)n * sizeof(int));
-    if (!ipiv) {
+    int *ipiv = (int *)malloc((size_t)n * sizeof(int));
+    if (!ipiv)
+    {
         gs_info(gv, -1, "Out of memory in st_dgetrs");
         return;
     }
@@ -333,57 +227,56 @@ void st_dgetrs(double *a, gs_UNSIGNED nn, gs_UNSIGNED *indx, double *b)
     free(ipiv);
 }
 
-
-static int dgetri_rm(int n,
-                     double *A_rm, int lda_rm,
-                     const int *ipiv)
+static int dgetri_rm(int n, double *A_rm, int lda_rm, const int *ipiv)
 {
     int info = 0;
     int ldA = (n > 0) ? n : 1;
 
-    double *A_cm = (double*)malloc((size_t)ldA * (size_t)n * sizeof(double));
-    if (!A_cm) return -1010;
+    double *A_cm = (double *)malloc((size_t)ldA * (size_t)n * sizeof(double));
+    if (!A_cm)
+        return -1010;
 
     rm_to_cm(A_rm, n, n, lda_rm, A_cm, ldA);
-    
-    // Workspace query
+
     int lwork = -1;
     double work_query = 0.0;
 
-    F77_CALL(dgetri)(&n, A_cm, &ldA, (int*)ipiv, &work_query, &lwork, &info);
-    if (info != 0) {
+    F77_CALL(dgetri)(&n, A_cm, &ldA, (int *)ipiv, &work_query, &lwork, &info);
+    if (info != 0)
+    {
         free(A_cm);
         return info;
     }
 
     lwork = (int)work_query;
-    if (lwork < 1) lwork = 1;
+    if (lwork < 1)
+        lwork = 1;
 
-    double *work = (double*)malloc((size_t)lwork * sizeof(double));
-    if (!work) {
+    double *work = (double *)malloc((size_t)lwork * sizeof(double));
+    if (!work)
+    {
         free(A_cm);
         return -1010;
     }
 
-    // Actual inversion
-    F77_CALL(dgetri)(&n, A_cm, &ldA, (int*)ipiv, work, &lwork, &info);
+    F77_CALL(dgetri)(&n, A_cm, &ldA, (int *)ipiv, work, &lwork, &info);
 
     cm_to_rm(A_cm, n, n, ldA, A_rm, lda_rm);
-    
+
     free(work);
     free(A_cm);
 
     return info;
 }
 
-
 void st_dgetri(double *a, gs_UNSIGNED nn, gs_UNSIGNED *indx, double *inv)
 {
     int n = (int)nn;
     int lda_rm = (int)nn;
 
-    int *ipiv = (int*)malloc((size_t)n * sizeof(int));
-    if (!ipiv) {
+    int *ipiv = (int *)malloc((size_t)n * sizeof(int));
+    if (!ipiv)
+    {
         gs_info(gv, -1, "Out of memory in st_dgetri");
         return;
     }
@@ -393,73 +286,62 @@ void st_dgetri(double *a, gs_UNSIGNED nn, gs_UNSIGNED *indx, double *inv)
 
     int info = dgetri_rm(n, a, lda_rm, ipiv);
 
-    if (info != 0) {
+    if (info != 0)
+    {
         gs_info(gv, -1, "Error in dgetri");
         free(ipiv);
         return;
     }
 
-    // Preserve old behavior: copy result into inv
     memcpy(inv, a, (size_t)n * (size_t)n * sizeof(double));
 
     free(ipiv);
 }
 
-void st_dgetri_inv (double* a, double* inva, gs_UNSIGNED n)
+void st_dgetri_inv(double *a, double *inva, gs_UNSIGNED n)
 {
-  double d;
-  gs_UNSIGNED* indx  = malloc ( n * sizeof(gs_UNSIGNED) );
+    double d;
+    gs_UNSIGNED *indx = malloc(n * sizeof(gs_UNSIGNED));
 
-  st_dgetrf ( a, n, indx, &d);
-  st_dgetri ( a, n, indx ,inva );
+    st_dgetrf(a, n, indx, &d);
+    st_dgetri(a, n, indx, inva);
 
-  free(indx);
-
+    free(indx);
 }
 
-void st_inv ( double* a, double* inva, int* nn)
+void st_inv(double *a, double *inva, int *nn)
 {
-  gs_UNSIGNED n = (gs_UNSIGNED) *nn;
-  
-  st_dgetri_inv ( a, inva, n);
+    gs_UNSIGNED n = (gs_UNSIGNED)*nn;
+
+    st_dgetri_inv(a, inva, n);
 }
 
-////////////////////////////////////////////////////////////////////////////////
-/// End: LU decomposition
-////////////////////////////////////////////////////////////////////////////////
-
-
-static int dgesv_rm(int n,
-                    double *A_rm, int lda_rm,
-                    double *x_rm,           // in: RHS, out: solution (length n)
-                    int *ipiv)              // length n
+static int dgesv_rm(int n, double *A_rm, int lda_rm, double *x_rm, int *ipiv)
 {
     int info = 0;
     int nrhs = 1;
 
-    int ldA = (n > 0) ? n : 1;  // col-major leading dim for A
-    int ldB = (n > 0) ? n : 1;  // col-major leading dim for B (n x 1)
+    int ldA = (n > 0) ? n : 1;
+    int ldB = (n > 0) ? n : 1;
 
-    double *A_cm = (double*)malloc((size_t)ldA * (size_t)n * sizeof(double));
-    double *B_cm = (double*)malloc((size_t)ldB * (size_t)nrhs * sizeof(double));
+    double *A_cm = (double *)malloc((size_t)ldA * (size_t)n * sizeof(double));
+    double *B_cm =
+        (double *)malloc((size_t)ldB * (size_t)nrhs * sizeof(double));
 
-    if (!A_cm || !B_cm) {
+    if (!A_cm || !B_cm)
+    {
         free(A_cm);
         free(B_cm);
         return -1010;
     }
 
-    // Convert A (n x n) to column-major
     rm_to_cm(A_rm, n, n, lda_rm, A_cm, ldA);
 
-    // Copy RHS vector into column-major B (n x 1)
     for (int i = 0; i < n; ++i)
         B_cm[i] = x_rm[i];
 
-    // Fortran LAPACK: DGESV(N, NRHS, A, LDA, IPIV, B, LDB, INFO)
     F77_CALL(dgesv)(&n, &nrhs, A_cm, &ldA, ipiv, B_cm, &ldB, &info);
 
-    // Copy solution back to x_rm
     for (int i = 0; i < n; ++i)
         x_rm[i] = B_cm[i];
 
@@ -469,9 +351,7 @@ static int dgesv_rm(int n,
     return info;
 }
 
-
-void st_dgesv(gs_UNSIGNED nra, gs_UNSIGNED nca,
-              double *A, double *x, double *b,
+void st_dgesv(gs_UNSIGNED nra, gs_UNSIGNED nca, double *A, double *x, double *b,
               int *retval)
 {
     (void)nca;
@@ -479,14 +359,14 @@ void st_dgesv(gs_UNSIGNED nra, gs_UNSIGNED nca,
     int n = (int)nra;
     int lda_rm = (int)nra;
 
-    int *ipiv = (int*)malloc((size_t)n * sizeof(int));
-    if (!ipiv) {
+    int *ipiv = (int *)malloc((size_t)n * sizeof(int));
+    if (!ipiv)
+    {
         gs_info(gv, -1, "Out of memory in st_dgesv");
         *retval = -2;
         return;
     }
 
-    // preserve original behavior: x <- b
     for (int i = 0; i < n; ++i)
         x[i] = b[i];
 
@@ -494,36 +374,31 @@ void st_dgesv(gs_UNSIGNED nra, gs_UNSIGNED nca,
 
     free(ipiv);
 
-    if (info > 0) {
+    if (info > 0)
+    {
         gs_info(gv, -1, "Singular matrix in the MME (dgesv)");
         *retval = -2;
         return;
     }
 
-    //  Only singular is error
     *retval = 0;
 }
 
-////////////////////////////////////////////////////////////////////////////////
-/// Begin: Eigenvalues
-////////////////////////////////////////////////////////////////////////////////
-
-
-static int dsyevr_vals_rm_m(int n,
-                            double *A_rm, int lda_rm,
-                            double *w, int *m_out)
+static int dsyevr_vals_rm_m(int n, double *A_rm, int lda_rm, double *w,
+                            int *m_out)
 {
     int info = 0;
 
     int ldA = (n > 0) ? n : 1;
-    double *A_cm = (double*)malloc((size_t)ldA * (size_t)n * sizeof(double));
-    if (!A_cm) return -1010;
+    double *A_cm = (double *)malloc((size_t)ldA * (size_t)n * sizeof(double));
+    if (!A_cm)
+        return -1010;
 
     rm_to_cm(A_rm, n, n, lda_rm, A_cm, ldA);
 
-    char jobz  = 'N';
+    char jobz = 'N';
     char range = 'A';
-    char uplo  = 'L';
+    char uplo = 'L';
 
     double vl = 0.0, vu = 0.0;
     int il = 0, iu = 0;
@@ -538,56 +413,47 @@ static int dsyevr_vals_rm_m(int n,
     double work_query = 0.0;
     int iwork_query = 0;
 
-    F77_CALL(dsyevr)(&jobz, &range, &uplo,
-                     &n, A_cm, &ldA,
-                     &vl, &vu, &il, &iu,
-                     &abstol, &m,
-                     w,
-                     &z_dummy, &ldZ,
-                     isuppz_dummy,
-                     &work_query, &lwork,
-                     &iwork_query, &liwork,
-                     &info
-                     FCONE FCONE FCONE);
+    F77_CALL(dsyevr)(&jobz, &range, &uplo, &n, A_cm, &ldA, &vl, &vu, &il, &iu,
+                     &abstol, &m, w, &z_dummy, &ldZ, isuppz_dummy, &work_query,
+                     &lwork, &iwork_query, &liwork, &info FCONE FCONE FCONE);
 
-    if (info != 0) {
+    if (info != 0)
+    {
         free(A_cm);
-        if (m_out) *m_out = m;
+        if (m_out)
+            *m_out = m;
         return info;
     }
 
-    lwork  = (int)work_query;
+    lwork = (int)work_query;
     liwork = (int)iwork_query;
-    if (lwork < 1)  lwork = 1;
-    if (liwork < 1) liwork = 1;
+    if (lwork < 1)
+        lwork = 1;
+    if (liwork < 1)
+        liwork = 1;
 
-    double *work = (double*)malloc((size_t)lwork * sizeof(double));
-    int    *iwork = (int*)malloc((size_t)liwork * sizeof(int));
-    if (!work || !iwork) {
+    double *work = (double *)malloc((size_t)lwork * sizeof(double));
+    int *iwork = (int *)malloc((size_t)liwork * sizeof(int));
+    if (!work || !iwork)
+    {
         free(work);
         free(iwork);
         free(A_cm);
-        if (m_out) *m_out = m;
+        if (m_out)
+            *m_out = m;
         return -1010;
     }
 
-    F77_CALL(dsyevr)(&jobz, &range, &uplo,
-                     &n, A_cm, &ldA,
-                     &vl, &vu, &il, &iu,
-                     &abstol, &m,
-                     w,
-                     &z_dummy, &ldZ,
-                     isuppz_dummy,
-                     work, &lwork,
-                     iwork, &liwork,
-                     &info
-                     FCONE FCONE FCONE);
+    F77_CALL(dsyevr)(&jobz, &range, &uplo, &n, A_cm, &ldA, &vl, &vu, &il, &iu,
+                     &abstol, &m, w, &z_dummy, &ldZ, isuppz_dummy, work, &lwork,
+                     iwork, &liwork, &info FCONE FCONE FCONE);
 
     free(iwork);
     free(work);
     free(A_cm);
 
-    if (m_out) *m_out = m;
+    if (m_out)
+        *m_out = m;
     return info;
 }
 
@@ -599,117 +465,107 @@ void st_dsyevr(double *a, double *w, gs_UNSIGNED N)
     int m = 0;
     int info = dsyevr_vals_rm_m(n, a, lda_rm, w, &m);
 
-    if ((gs_UNSIGNED)m != N) {
+    if ((gs_UNSIGNED)m != N)
+    {
         gs_info(gv, -2, "Matrix is not positive definite");
     }
 
-    if (info > 0) {
+    if (info > 0)
+    {
         gs_info(gv, -2, "Computation of eigenvalues failed");
     }
 }
 
-void st_eigen(double *a, double*w, int*NN)
+void st_eigen(double *a, double *w, int *NN)
 {
-  gs_UNSIGNED N = (gs_UNSIGNED)(*NN);
-  st_dsyevr( a, w, N);
+    gs_UNSIGNED N = (gs_UNSIGNED)(*NN);
+    st_dsyevr(a, w, N);
 }
 
-static int dsyevr_vecs_rm(int n,
-                          double *A_rm, int lda_rm,
-                          double *w,            // length n
-                          double *Z_rm, int ldZ_rm, // n x n row-major, row stride ldZ_rm
-                          int *m_out)            // optional
+static int dsyevr_vecs_rm(int n, double *A_rm, int lda_rm, double *w,
+                          double *Z_rm, int ldZ_rm, int *m_out)
 {
     int info = 0;
 
-    // Convert A to column-major for Fortran
     int ldA = (n > 0) ? n : 1;
-    double *A_cm = (double*)malloc((size_t)ldA * (size_t)n * sizeof(double));
-    if (!A_cm) return -1010;
+    double *A_cm = (double *)malloc((size_t)ldA * (size_t)n * sizeof(double));
+    if (!A_cm)
+        return -1010;
 
     rm_to_cm(A_rm, n, n, lda_rm, A_cm, ldA);
 
-    // dsyevr parameters
-    char jobz  = 'V';  // eigenvectors
-    char range = 'A';  // all eigenvalues
-    char uplo  = 'L';  // lower triangle
+    char jobz = 'V';
+    char range = 'A';
+    char uplo = 'L';
 
     double vl = 0.0, vu = 0.0;
     int il = 0, iu = 0;
-    double abstol = -1.0; 
+    double abstol = -1.0;
 
     int m = 0;
 
-    // Fortran Z is column-major with leading dimension ldZ_cm
     int ldZ_cm = (n > 0) ? n : 1;
-    double *Z_cm = (double*)malloc((size_t)ldZ_cm * (size_t)n * sizeof(double));
-    int *isuppz = (int*)malloc((size_t)2 * (size_t)n * sizeof(int));
-    if (!Z_cm || !isuppz) {
+    double *Z_cm =
+        (double *)malloc((size_t)ldZ_cm * (size_t)n * sizeof(double));
+    int *isuppz = (int *)malloc((size_t)2 * (size_t)n * sizeof(int));
+    if (!Z_cm || !isuppz)
+    {
         free(isuppz);
         free(Z_cm);
         free(A_cm);
         return -1010;
     }
 
-    // Workspace query
     int lwork = -1, liwork = -1;
     double work_query = 0.0;
     int iwork_query = 0;
 
-    F77_CALL(dsyevr)(&jobz, &range, &uplo,
-                     &n, A_cm, &ldA,
-                     &vl, &vu, &il, &iu,
-                     &abstol, &m,
-                     w,
-                     Z_cm, &ldZ_cm,
-                     isuppz,
-                     &work_query, &lwork,
-                     &iwork_query, &liwork,
-                     &info
-                     FCONE FCONE FCONE);
+    F77_CALL(dsyevr)(&jobz, &range, &uplo, &n, A_cm, &ldA, &vl, &vu, &il, &iu,
+                     &abstol, &m, w, Z_cm, &ldZ_cm, isuppz, &work_query, &lwork,
+                     &iwork_query, &liwork, &info FCONE FCONE FCONE);
 
-    if (info != 0) {
-        if (m_out) *m_out = m;
+    if (info != 0)
+    {
+        if (m_out)
+            *m_out = m;
         free(isuppz);
         free(Z_cm);
         free(A_cm);
         return info;
     }
 
-    lwork  = (int)work_query;
+    lwork = (int)work_query;
     liwork = (int)iwork_query;
-    if (lwork < 1)  lwork = 1;
-    if (liwork < 1) liwork = 1;
+    if (lwork < 1)
+        lwork = 1;
+    if (liwork < 1)
+        liwork = 1;
 
-    double *work  = (double*)malloc((size_t)lwork * sizeof(double));
-    int    *iwork = (int*)malloc((size_t)liwork * sizeof(int));
-    if (!work || !iwork) {
+    double *work = (double *)malloc((size_t)lwork * sizeof(double));
+    int *iwork = (int *)malloc((size_t)liwork * sizeof(int));
+    if (!work || !iwork)
+    {
         free(iwork);
         free(work);
         free(isuppz);
         free(Z_cm);
         free(A_cm);
-        if (m_out) *m_out = m;
+        if (m_out)
+            *m_out = m;
         return -1010;
     }
 
-    F77_CALL(dsyevr)(&jobz, &range, &uplo,
-                     &n, A_cm, &ldA,
-                     &vl, &vu, &il, &iu,
-                     &abstol, &m,
-                     w,
-                     Z_cm, &ldZ_cm,
-                     isuppz,
-                     work, &lwork,
-                     iwork, &liwork,
-                     &info
-                     FCONE FCONE FCONE);
+    F77_CALL(dsyevr)(&jobz, &range, &uplo, &n, A_cm, &ldA, &vl, &vu, &il, &iu,
+                     &abstol, &m, w, Z_cm, &ldZ_cm, isuppz, work, &lwork, iwork,
+                     &liwork, &info FCONE FCONE FCONE);
 
-    if (info == 0) {
+    if (info == 0)
+    {
         cm_to_rm(Z_cm, n, n, ldZ_cm, Z_rm, ldZ_rm);
     }
 
-    if (m_out) *m_out = m;
+    if (m_out)
+        *m_out = m;
 
     free(iwork);
     free(work);
@@ -720,7 +576,6 @@ static int dsyevr_vecs_rm(int n,
     return info;
 }
 
-
 void st_dsyevr_v(double *a, double *w, double *z, gs_UNSIGNED N)
 {
     int n = (int)N;
@@ -730,151 +585,116 @@ void st_dsyevr_v(double *a, double *w, double *z, gs_UNSIGNED N)
     int m = 0;
     int info = dsyevr_vecs_rm(n, a, lda_rm, w, z, ldz_rm, &m);
 
-    if (info > 0) {
+    if (info > 0)
+    {
         gs_info(gv, -1, "Error in st_dsyevr_v");
     }
 }
 
-
 void st_dsyevr_v_R(double *a, double *w, double *z, int *nn)
 {
-    if (!a || !w || !z || !nn) return;
+    if (!a || !w || !z || !nn)
+        return;
     st_dsyevr_v(a, w, z, (gs_UNSIGNED)(*nn));
 }
 
-////////////////////////////////////////////////////////////////////////////////
-/// End: Eigenvalues
-////////////////////////////////////////////////////////////////////////////////
-
-
-////////////////////////////////////////////////////////////////////////////////
-/// Begin: Generalised inverse from SVD decomposition
-////////////////////////////////////////////////////////////////////////////////
-
-static int dgesvd_rm_S(int m, int n,
-                       double *A_rm, int lda_rm,
-                       double *Svals,          // length n
-                       double *U_rm, int ldu_rm,   // m x n row-major, row stride ldu_rm
-                       double *VT_rm, int ldvt_rm) // n x n row-major, row stride ldvt_rm
+static int dgesvd_rm_S(int m, int n, double *A_rm, int lda_rm, double *Svals,
+                       double *U_rm, int ldu_rm, double *VT_rm, int ldvt_rm)
 {
     int info = 0;
 
-    if (m >= n && lda_rm == n && ldu_rm == n && ldvt_rm == n) {
-        char jobu  = 'S';
+    if (m >= n && lda_rm == n && ldu_rm == n && ldvt_rm == n)
+    {
+        char jobu = 'S';
         char jobvt = 'S';
 
-        /* Call SVD on A^T view: dimensions swapped */
-        int mm = n;   /* rows of A^T */
-        int nn = m;   /* cols of A^T */
+        int mm = n;
+        int nn = m;
 
-        int ldA  = (n > 0) ? n : 1;   /* leading dim for column-major A^T */
-        int ldU  = (n > 0) ? n : 1;   /* U' is n×n */
-        int ldVT = (n > 0) ? n : 1;   /* VT' is n×m */
+        int ldA = (n > 0) ? n : 1;
+        int ldU = (n > 0) ? n : 1;
+        int ldVT = (n > 0) ? n : 1;
 
-        /* Workspace query */
         int lwork = -1;
         double work_query = 0.0;
 
-        F77_CALL(dgesvd)(&jobu, &jobvt,
-                         &mm, &nn,
-                         A_rm, &ldA,        /* A^T view */
-                         Svals,
-                         VT_rm, &ldU,       /* U' written here -> interpreted as (U')^T row-major */
-                         U_rm,  &ldVT,      /* VT' written here -> interpreted as V' row-major */
-                         &work_query, &lwork,
-                         &info
-                         FCONE FCONE);
+        F77_CALL(dgesvd)(&jobu, &jobvt, &mm, &nn, A_rm, &ldA, Svals, VT_rm,
+                         &ldU, U_rm, &ldVT, &work_query, &lwork,
+                         &info FCONE FCONE);
 
-        if (info != 0) return info;
+        if (info != 0)
+            return info;
 
         lwork = (int)work_query;
-        if (lwork < 1) lwork = 1;
+        if (lwork < 1)
+            lwork = 1;
 
-        double *work = (double*)malloc((size_t)lwork * sizeof(double));
-        if (!work) return -1010;
+        double *work = (double *)malloc((size_t)lwork * sizeof(double));
+        if (!work)
+            return -1010;
 
-        F77_CALL(dgesvd)(&jobu, &jobvt,
-                         &mm, &nn,
-                         A_rm, &ldA,
-                         Svals,
-                         VT_rm, &ldU,
-                         U_rm,  &ldVT,
-                         work, &lwork,
-                         &info
-                         FCONE FCONE);
+        F77_CALL(dgesvd)(&jobu, &jobvt, &mm, &nn, A_rm, &ldA, Svals, VT_rm,
+                         &ldU, U_rm, &ldVT, work, &lwork, &info FCONE FCONE);
 
         free(work);
         return info;
     }
 
-    /* ------------------------------------------------------------------
-       FALLBACK 
-       explicit rm_to_cm / cm_to_rm conversions.
-       ------------------------------------------------------------------ */
-
-    // Fortran expects column-major
     int ldA = (m > 0) ? m : 1;
-    int ldU = (m > 0) ? m : 1; // U is m x n in Fortran, ldU = m
-    int ldVT = (n > 0) ? n : 1; // VT is n x n, ldVT = n
+    int ldU = (m > 0) ? m : 1;
+    int ldVT = (n > 0) ? n : 1;
 
-    double *A_cm  = (double*)malloc((size_t)ldA  * (size_t)n * sizeof(double));
-    double *U_cm  = (double*)malloc((size_t)ldU  * (size_t)n * sizeof(double));
-    double *VT_cm = (double*)malloc((size_t)ldVT * (size_t)n * sizeof(double));
-    if (!A_cm || !U_cm || !VT_cm) {
-        free(VT_cm); free(U_cm); free(A_cm);
+    double *A_cm = (double *)malloc((size_t)ldA * (size_t)n * sizeof(double));
+    double *U_cm = (double *)malloc((size_t)ldU * (size_t)n * sizeof(double));
+    double *VT_cm = (double *)malloc((size_t)ldVT * (size_t)n * sizeof(double));
+    if (!A_cm || !U_cm || !VT_cm)
+    {
+        free(VT_cm);
+        free(U_cm);
+        free(A_cm);
         return -1010;
     }
 
-    // Convert A (m x n) to column-major
     rm_to_cm(A_rm, m, n, lda_rm, A_cm, ldA);
 
-    // Workspace query
     char jobu = 'S';
     char jobvt = 'S';
 
     int lwork = -1;
     double work_query = 0.0;
 
-    F77_CALL(dgesvd)(&jobu, &jobvt,
-                     &m, &n,
-                     A_cm, &ldA,
-                     Svals,
-                     U_cm, &ldU,
-                     VT_cm, &ldVT,
-                     &work_query, &lwork,
-                     &info
-                     FCONE FCONE);
+    F77_CALL(dgesvd)(&jobu, &jobvt, &m, &n, A_cm, &ldA, Svals, U_cm, &ldU,
+                     VT_cm, &ldVT, &work_query, &lwork, &info FCONE FCONE);
 
-    if (info != 0) {
-        free(VT_cm); free(U_cm); free(A_cm);
+    if (info != 0)
+    {
+        free(VT_cm);
+        free(U_cm);
+        free(A_cm);
         return info;
     }
 
     lwork = (int)work_query;
-    if (lwork < 1) lwork = 1;
+    if (lwork < 1)
+        lwork = 1;
 
-    double *work = (double*)malloc((size_t)lwork * sizeof(double));
-    if (!work) {
-        free(VT_cm); free(U_cm); free(A_cm);
+    double *work = (double *)malloc((size_t)lwork * sizeof(double));
+    if (!work)
+    {
+        free(VT_cm);
+        free(U_cm);
+        free(A_cm);
         return -1010;
     }
 
-    // Actual SVD
-    F77_CALL(dgesvd)(&jobu, &jobvt,
-                     &m, &n,
-                     A_cm, &ldA,
-                     Svals,
-                     U_cm, &ldU,
-                     VT_cm, &ldVT,
-                     work, &lwork,
-                     &info
-                     FCONE FCONE);
+    F77_CALL(dgesvd)(&jobu, &jobvt, &m, &n, A_cm, &ldA, Svals, U_cm, &ldU,
+                     VT_cm, &ldVT, work, &lwork, &info FCONE FCONE);
 
-    // Convert U and VT back to row-major buffers expected by downstream GEMMs
-    if (info == 0) {
-        // U is m x n
+    if (info == 0)
+    {
+
         cm_to_rm(U_cm, m, n, ldU, U_rm, ldu_rm);
-        // VT is n x n
+
         cm_to_rm(VT_cm, n, n, ldVT, VT_rm, ldvt_rm);
     }
 
@@ -886,56 +706,59 @@ static int dgesvd_rm_S(int m, int n,
     return info;
 }
 
-
-
 void st_dgesvd_ginv(double *a, double *inva, gs_UNSIGNED nrow, gs_UNSIGNED ncol)
 {
     int m = (int)nrow;
     int n = (int)ncol;
 
-    int lda_rm  = n; // row stride of a (m x n row-major, tight)
-    int ldu_rm  = n; // row stride for u (m x n row-major, tight)
-    int ldvt_rm = n; // row stride for vt (n x n row-major, tight)
+    int lda_rm = n;
+    int ldu_rm = n;
+    int ldvt_rm = n;
 
-    double *u  = (double*)malloc((size_t)m * (size_t)n * sizeof(double));
-    double *s  = (double*)malloc((size_t)n * sizeof(double));
-    double *vt = (double*)malloc((size_t)n * (size_t)n * sizeof(double));
+    double *u = (double *)malloc((size_t)m * (size_t)n * sizeof(double));
+    double *s = (double *)malloc((size_t)n * sizeof(double));
+    double *vt = (double *)malloc((size_t)n * (size_t)n * sizeof(double));
 
-    // tmp = u %*% vt_scaled  (m x n row-major)
-    double *tmp = (double*)malloc((size_t)m * (size_t)n * sizeof(double));
+    double *tmp = (double *)malloc((size_t)m * (size_t)n * sizeof(double));
 
-    if (!u || !s || !vt || !tmp) {
-        free(tmp); free(vt); free(s); free(u);
+    if (!u || !s || !vt || !tmp)
+    {
+        free(tmp);
+        free(vt);
+        free(s);
+        free(u);
         gs_info(gv, -1, "Out of memory in st_dgesvd_ginv");
         return;
     }
 
     int info = dgesvd_rm_S(m, n, a, lda_rm, s, u, ldu_rm, vt, ldvt_rm);
-    if (info != 0) {
+    if (info != 0)
+    {
         gs_info(gv, -1, "Error in dgesvd (st_dgesvd_ginv)");
-        free(tmp); free(vt); free(s); free(u);
+        free(tmp);
+        free(vt);
+        free(s);
+        free(u);
         return;
     }
 
-    // Scale rows of vt by inv singular values (vt := D * vt)
-    // D[i,i] = 1/s[i] if s[i] > tol else 0 
     const double tol = 1.0e-9;
-    for (int i = 0; i < n; ++i) {
+    for (int i = 0; i < n; ++i)
+    {
         double di = (s[i] > tol) ? (1.0 / s[i]) : 0.0;
         double *row = vt + (size_t)i * (size_t)n;
-        for (int j = 0; j < n; ++j) row[j] *= di;
+        for (int j = 0; j < n; ++j)
+            row[j] *= di;
     }
 
-    // tmp = u %*% vt   (m x n)
-    st_dgemm("N", "N",
-             (gs_UNSIGNED)m, (gs_UNSIGNED)n,   // u: m x n
-             (gs_UNSIGNED)n, (gs_UNSIGNED)n,   // vt: n x n
-             u, vt, tmp);
+    st_dgemm("N", "N", (gs_UNSIGNED)m, (gs_UNSIGNED)n, (gs_UNSIGNED)n,
+             (gs_UNSIGNED)n, u, vt, tmp);
 
-    // inva is n x m row-major, and inva = (tmp)^T
-    for (int i = 0; i < n; ++i) {
+    for (int i = 0; i < n; ++i)
+    {
         double *out_row = inva + (size_t)i * (size_t)m;
-        for (int j = 0; j < m; ++j) {
+        for (int j = 0; j < m; ++j)
+        {
             out_row[j] = tmp[(size_t)j * (size_t)n + (size_t)i];
         }
     }
@@ -946,160 +769,124 @@ void st_dgesvd_ginv(double *a, double *inva, gs_UNSIGNED nrow, gs_UNSIGNED ncol)
     free(u);
 }
 
-
-static int dgesdd_rm_S(int m, int n,
-                       double *A_rm, int lda_rm,
-                       double *Svals,              // length n
-                       double *U_rm,  int ldu_rm,  // m x n row-major, row stride n
-                       double *VT_rm, int ldvt_rm) // n x n row-major, row stride n
+static int dgesdd_rm_S(int m, int n, double *A_rm, int lda_rm, double *Svals,
+                       double *U_rm, int ldu_rm, double *VT_rm, int ldvt_rm)
 {
     int info = 0;
 
-    // Fast path 
-    if (m >= n && lda_rm == n && ldu_rm == n && ldvt_rm == n) {
+    if (m >= n && lda_rm == n && ldu_rm == n && ldvt_rm == n)
+    {
         char jobz = 'S';
 
-        // SVD on A^T view: A_rm (m x n row-major) == (n x m) column-major of A^T
-        int mm  = n;   // rows of A^T
-        int nn  = m;   // cols of A^T
-        int ldA = (n > 0) ? n : 1;   // leading dim for (A^T) column-major view
+        int mm = n;
+        int nn = m;
+        int ldA = (n > 0) ? n : 1;
 
-        // For DGESDD with jobz='S':
-        // For A^T (mm x nn) with mm<=nn:
-        //   U'  is mm x mm = n x n
-        //   VT' is mm x nn = n x m
-        // Mapping to original A:
-        //   U (m x n)  := V'  (m x n row-major)  <-- store VT' (n x m col-major) into U_rm
-        //   VT(n x n)  := (U')^T (n x n row-major) <-- store U' (n x n col-major) into VT_rm
-        int ldU  = (n > 0) ? n : 1; // U' leading dim
-        int ldVT = (n > 0) ? n : 1; // VT' leading dim (n rows)
+        int ldU = (n > 0) ? n : 1;
+        int ldVT = (n > 0) ? n : 1;
 
-        // IWORK size: 8*min(mm,nn) = 8*n
-        int *iwork = (int*)malloc((size_t)8 * (size_t)n * sizeof(int));
-        if (!iwork) return -1010;
+        int *iwork = (int *)malloc((size_t)8 * (size_t)n * sizeof(int));
+        if (!iwork)
+            return -1010;
 
-        // Workspace query
         int lwork = -1;
         double work_query = 0.0;
 
-        F77_CALL(dgesdd)(&jobz,
-                         &mm, &nn,
-                         A_rm, &ldA,
-                         Svals,
-                         VT_rm, &ldU,   // U'  -> VT_rm (row-major view of (U')^T)
-                         U_rm,  &ldVT,  // VT' -> U_rm  (row-major view of V')
-                         &work_query, &lwork,
-                         iwork,
-                         &info
-                         FCONE);
+        F77_CALL(dgesdd)(&jobz, &mm, &nn, A_rm, &ldA, Svals, VT_rm, &ldU, U_rm,
+                         &ldVT, &work_query, &lwork, iwork, &info FCONE);
 
-        if (info != 0) {
+        if (info != 0)
+        {
             free(iwork);
             return info;
         }
 
         lwork = (int)work_query;
-        if (lwork < 1) lwork = 1;
+        if (lwork < 1)
+            lwork = 1;
 
-        double *work = (double*)malloc((size_t)lwork * sizeof(double));
-        if (!work) {
+        double *work = (double *)malloc((size_t)lwork * sizeof(double));
+        if (!work)
+        {
             free(iwork);
             return -1010;
         }
 
-        F77_CALL(dgesdd)(&jobz,
-                         &mm, &nn,
-                         A_rm, &ldA,
-                         Svals,
-                         VT_rm, &ldU,
-                         U_rm,  &ldVT,
-                         work, &lwork,
-                         iwork,
-                         &info
-                         FCONE);
+        F77_CALL(dgesdd)(&jobz, &mm, &nn, A_rm, &ldA, Svals, VT_rm, &ldU, U_rm,
+                         &ldVT, work, &lwork, iwork, &info FCONE);
 
         free(work);
         free(iwork);
         return info;
     }
 
-    // Minimal "safe" fallback: return error (keeps behavior explicit).
-    return -6; // indicates unsupported layout/strides for this optimized path
+    return -6;
 }
-
 
 void st_dgesdd_ginv(double *a, double *inva, gs_UNSIGNED nrow, gs_UNSIGNED ncol)
 {
     int m = (int)nrow;
     int n = (int)ncol;
 
-    // tight row-major
-    int lda_rm  = n;
-    int ldu_rm  = n;
+    int lda_rm = n;
+    int ldu_rm = n;
     int ldvt_rm = n;
 
-    double *u  = (double*)malloc((size_t)m * (size_t)n * sizeof(double)); // m x n
-    double *s  = (double*)malloc((size_t)n * sizeof(double));             // n
-    double *vt = (double*)malloc((size_t)n * (size_t)n * sizeof(double)); // n x n
+    double *u = (double *)malloc((size_t)m * (size_t)n * sizeof(double));
+    double *s = (double *)malloc((size_t)n * sizeof(double));
+    double *vt = (double *)malloc((size_t)n * (size_t)n * sizeof(double));
 
-    if (!u || !s || !vt) {
-        free(vt); free(s); free(u);
+    if (!u || !s || !vt)
+    {
+        free(vt);
+        free(s);
+        free(u);
         gs_info(gv, -1, "Out of memory in st_dgesdd_ginv");
         return;
     }
 
     int info = dgesdd_rm_S(m, n, a, lda_rm, s, u, ldu_rm, vt, ldvt_rm);
-    if (info != 0) {
+    if (info != 0)
+    {
         gs_info(gv, -1, "Error in dgesdd (st_dgesdd_ginv)");
-        free(vt); free(s); free(u);
+        free(vt);
+        free(s);
+        free(u);
         return;
     }
 
-    // Build D^+ * V^T in-place by scaling rows of vt (each row i corresponds to singular value s[i])
     const double tol = 1.0e-9;
-    for (int i = 0; i < n; ++i) {
+    for (int i = 0; i < n; ++i)
+    {
         double di = (s[i] > tol) ? (1.0 / s[i]) : 0.0;
         double *row = vt + (size_t)i * (size_t)n;
-        for (int j = 0; j < n; ++j) row[j] *= di;
+        for (int j = 0; j < n; ++j)
+            row[j] *= di;
     }
 
-    // inva = V * D^+ * U^T
-    // We currently have vt = D^+ * V^T (n x n).
-    // So V * D^+ = (D^+ * V^T)^T = vt^T.
-    // Therefore: inva (n x m) = vt^T (n x n) %*% u^T (n x m)
-    st_dgemm("T", "T",
-             (gs_UNSIGNED)n, (gs_UNSIGNED)n,   // vt is n x n
-             (gs_UNSIGNED)m, (gs_UNSIGNED)n,   // u  is m x n  -> u^T is n x m
-             vt, u, inva);
+    st_dgemm("T", "T", (gs_UNSIGNED)n, (gs_UNSIGNED)n, (gs_UNSIGNED)m,
+             (gs_UNSIGNED)n, vt, u, inva);
 
     free(vt);
     free(s);
     free(u);
 }
 
-
-void st_ginv2 ( double* a, double* inva,
-	        int *nrow, int *ncol)
+void st_ginv2(double *a, double *inva, int *nrow, int *ncol)
 {
-  gs_UNSIGNED nr = (gs_UNSIGNED) *nrow;
-  gs_UNSIGNED nc = (gs_UNSIGNED) *ncol;
-  
-  st_dgesvd_ginv (a, inva,nr,nc);
+    gs_UNSIGNED nr = (gs_UNSIGNED)*nrow;
+    gs_UNSIGNED nc = (gs_UNSIGNED)*ncol;
+
+    st_dgesvd_ginv(a, inva, nr, nc);
 }
 
-void st_ginv ( double* a, double* inva,
-	        int *nrow, int *ncol)
+void st_ginv(double *a, double *inva, int *nrow, int *ncol)
 {
-  gs_UNSIGNED nr = (gs_UNSIGNED) *nrow;
-  gs_UNSIGNED nc = (gs_UNSIGNED) *ncol;
-  
-  st_dgesdd_ginv (a, inva,nr,nc);
+    gs_UNSIGNED nr = (gs_UNSIGNED)*nrow;
+    gs_UNSIGNED nc = (gs_UNSIGNED)*ncol;
+
+    st_dgesdd_ginv(a, inva, nr, nc);
 }
-
-
-////////////////////////////////////////////////////////////////////////////////
-/// End: Generalised inverse from SVD decomposition
-////////////////////////////////////////////////////////////////////////////////
 
 static int st_dpotrf_rm_sym(double *A_rm, int n)
 {
@@ -1121,23 +908,19 @@ static int st_dpotri_rm_sym(double *A_rm, int n)
 
 static void symmetrize_from_lower_rm(double *A_rm, int n)
 {
-    for (int i = 0; i < n; ++i) {
-        for (int j = i + 1; j < n; ++j) {
-            /* lower (j,i) is valid -> copy to upper (i,j) */
+    for (int i = 0; i < n; ++i)
+    {
+        for (int j = i + 1; j < n; ++j)
+        {
+
             A_rm[(size_t)i * (size_t)n + (size_t)j] =
                 A_rm[(size_t)j * (size_t)n + (size_t)i];
         }
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-///  Some wrappers for testing from R
-////////////////////////////////////////////////////////////////////////////////
-
-
-SEXP call_st_dgemm_R(SEXP T1_, SEXP T2_,
-                     SEXP A_, SEXP B_,
-                     SEXP nra_, SEXP nca_, SEXP nrb_, SEXP ncb_)
+SEXP call_st_dgemm_R(SEXP T1_, SEXP T2_, SEXP A_, SEXP B_, SEXP nra_, SEXP nca_,
+                     SEXP nrb_, SEXP ncb_)
 {
     const char *T1 = CHAR(STRING_ELT(T1_, 0));
     const char *T2 = CHAR(STRING_ELT(T2_, 0));
@@ -1147,7 +930,6 @@ SEXP call_st_dgemm_R(SEXP T1_, SEXP T2_,
     unsigned int nrb = (unsigned int)asInteger(nrb_);
     unsigned int ncb = (unsigned int)asInteger(ncb_);
 
-    // expected output dims for row-major C
     int transA = (strcmp(T1, "N") == 0) ? 0 : 1;
     int transB = (strcmp(T2, "N") == 0) ? 0 : 1;
     unsigned int m = transA ? nca : nra;
@@ -1155,35 +937,37 @@ SEXP call_st_dgemm_R(SEXP T1_, SEXP T2_,
     unsigned int kB = transB ? ncb : nrb;
     unsigned int n = transB ? nrb : ncb;
 
-    if (kA != kB) error("nonconformable: kA=%u, kB=%u", kA, kB);
+    if (kA != kB)
+        error("nonconformable: kA=%u, kB=%u", kA, kB);
 
-    if (!isReal(A_) || !isReal(B_)) error("A and B must be double");
-    if ((unsigned int)XLENGTH(A_) < nra*nca) error("A too short");
-    if ((unsigned int)XLENGTH(B_) < nrb*ncb) error("B too short");
+    if (!isReal(A_) || !isReal(B_))
+        error("A and B must be double");
+    if ((unsigned int)XLENGTH(A_) < nra * nca)
+        error("A too short");
+    if ((unsigned int)XLENGTH(B_) < nrb * ncb)
+        error("B too short");
 
     SEXP C_ = PROTECT(allocVector(REALSXP, (R_xlen_t)m * (R_xlen_t)n));
 
-    // st_dgemm may overwrite C, so make sure it's writable
-    // pass T1/T2 as mutable local buffers because st_dgemm expects char[]
-    char t1buf[2] = { T1[0], '\0' };
-    char t2buf[2] = { T2[0], '\0' };
+    char t1buf[2] = {T1[0], '\0'};
+    char t2buf[2] = {T2[0], '\0'};
 
-    st_dgemm(t1buf, t2buf, nra, nca, nrb, ncb,
-             REAL(A_), REAL(B_), REAL(C_));
+    st_dgemm(t1buf, t2buf, nra, nca, nrb, ncb, REAL(A_), REAL(B_), REAL(C_));
 
     UNPROTECT(1);
     return C_;
 }
 
-
 void st_dgetrf_R(double *a, int *nn, int *indx, double *d)
 {
-    if (!a || !nn || !indx || !d) return;
+    if (!a || !nn || !indx || !d)
+        return;
 
     gs_UNSIGNED n = (gs_UNSIGNED)(*nn);
 
-    gs_UNSIGNED *piv = (gs_UNSIGNED*)malloc((size_t)n * sizeof(gs_UNSIGNED));
-    if (!piv) return;
+    gs_UNSIGNED *piv = (gs_UNSIGNED *)malloc((size_t)n * sizeof(gs_UNSIGNED));
+    if (!piv)
+        return;
 
     st_dgetrf(a, n, piv, d);
 
@@ -1193,17 +977,16 @@ void st_dgetrf_R(double *a, int *nn, int *indx, double *d)
     free(piv);
 }
 
-/* Backsolve using LU: b is length n, overwritten with solution
- * R: .C("st_dgetrs_R", a=..., nn=..., indx=..., b=...)
- */
 void st_dgetrs_R(double *a, int *nn, int *indx, double *b)
 {
-    if (!a || !nn || !indx || !b) return;
+    if (!a || !nn || !indx || !b)
+        return;
 
     gs_UNSIGNED n = (gs_UNSIGNED)(*nn);
 
-    gs_UNSIGNED *piv = (gs_UNSIGNED*)malloc((size_t)n * sizeof(gs_UNSIGNED));
-    if (!piv) return;
+    gs_UNSIGNED *piv = (gs_UNSIGNED *)malloc((size_t)n * sizeof(gs_UNSIGNED));
+    if (!piv)
+        return;
 
     for (gs_UNSIGNED i = 0; i < n; ++i)
         piv[i] = (gs_UNSIGNED)indx[i];
@@ -1213,17 +996,16 @@ void st_dgetrs_R(double *a, int *nn, int *indx, double *b)
     free(piv);
 }
 
-/* Inverse from LU: inv is output n*n
- * R: .C("st_dgetri_R", a=..., nn=..., indx=..., inv=double(n*n))
- */
 void st_dgetri_R(double *a, int *nn, int *indx, double *inv)
 {
-    if (!a || !nn || !indx || !inv) return;
+    if (!a || !nn || !indx || !inv)
+        return;
 
     gs_UNSIGNED n = (gs_UNSIGNED)(*nn);
 
-    gs_UNSIGNED *piv = (gs_UNSIGNED*)malloc((size_t)n * sizeof(gs_UNSIGNED));
-    if (!piv) return;
+    gs_UNSIGNED *piv = (gs_UNSIGNED *)malloc((size_t)n * sizeof(gs_UNSIGNED));
+    if (!piv)
+        return;
 
     for (gs_UNSIGNED i = 0; i < n; ++i)
         piv[i] = (gs_UNSIGNED)indx[i];
@@ -1233,28 +1015,23 @@ void st_dgetri_R(double *a, int *nn, int *indx, double *inv)
     free(piv);
 }
 
-/* Convenience: LU + inverse
- * inva is output n*n
- * R: .C("st_dgetri_inv_R", a=..., inva=double(n*n), n=as.integer(n))
- */
 void st_dgetri_inv_R(double *a, double *inva, int *n)
 {
-    if (!a || !inva || !n) return;
+    if (!a || !inva || !n)
+        return;
     st_dgetri_inv(a, inva, (gs_UNSIGNED)(*n));
 }
 
-/* Interface: st_inv(double* a, double* inva, int* nn)
- * R: .C("st_inv_R", a=..., inva=double(n*n), nn=as.integer(n))
- */
 void st_inv_R(double *a, double *inva, int *nn)
 {
-    if (!a || !inva || !nn) return;
+    if (!a || !inva || !nn)
+        return;
     st_inv(a, inva, nn);
 }
 
-// .C wrapper for st_dgesvd_ginv (C row-major matrix in 'a', output in 'inva')
 void st_dgesvd_ginv_R(double *a, double *inva, int *nrow, int *ncol)
 {
-    if (!a || !inva || !nrow || !ncol) return;
+    if (!a || !inva || !nrow || !ncol)
+        return;
     st_dgesvd_ginv(a, inva, (gs_UNSIGNED)(*nrow), (gs_UNSIGNED)(*ncol));
 }

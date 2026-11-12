@@ -1,9 +1,9 @@
 \name{gs.return.pvals}
 \alias{gs.return.pvals}
-\title{Return marker p-values for a genomic-selection data set}
+\title{Returns marker p-values for a genomic-selection data set}
 
 \description{
-Return marker p-values for a genomic-selection data set.
+Returns marker p-values for a genomic-selection data set.
 }
 
 \usage{
@@ -11,7 +11,7 @@ gs.return.pvals(out.filename ="effects", data.set ="default")
 }
 
 \arguments{
-   \item{out.filename}{Character string retained for compatibility and used as part of the name of an internal file in the R session temporary directory. The temporary file is removed before the function returns.}
+   \item{out.filename}{Character string retained for compatibility. The result is returned directly from memory; this argument does not name an output file.}
    \item{data.set}{Name of the SelectionTools data set.}
 }
 \value{

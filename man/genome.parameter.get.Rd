@@ -1,6 +1,6 @@
 \name{genome.parameter.get}
 \alias{genome.parameter.get}
-\title{Return the current genome parameters}
+\title{Returns the current genome parameters}
 
 \description{
 Returns the chromosome structure currently installed in the simulation backend.

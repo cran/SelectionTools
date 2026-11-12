@@ -1,9 +1,9 @@
 \name{st.chrom.stats}
 \alias{st.chrom.stats}
-\title{Return chromosome statistics for a data set}
+\title{Returns chromosome statistics for a data set}
 
 \description{
-Return chromosome statistics for a data set.
+Returns chromosome statistics for a data set.
 }
 
 \usage{
@@ -11,8 +11,8 @@ st.chrom.stats(filename = "chrom.stats", auxfiles = TRUE, data.set ="default")
 }
 
 \arguments{
-   \item{filename}{Character string retained for compatibility and used as part of the name of the internal session-temporary result file.}
-   \item{auxfiles}{Logical. If \code{TRUE}, the compiled result is written to the R session temporary directory, read back by the R wrapper, and removed before the function returns.}
+   \item{filename}{Character string retained for compatibility. Results are returned from memory without creating a file.}
+   \item{auxfiles}{Logical. If \code{TRUE}, the result is returned directly from memory.}
    \item{data.set}{Name of the SelectionTools data set.}
 }
 \value{

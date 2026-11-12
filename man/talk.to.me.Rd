@@ -1,9 +1,9 @@
 \name{talk.to.me}
 \alias{talk.to.me}
-\title{Enable or control SelectionTools console output}
+\title{Enables or controls SelectionTools console output}
 
 \description{
-Enable or control SelectionTools console output.
+Enables or controls SelectionTools console output.
 }
 
 \usage{

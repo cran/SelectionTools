@@ -1,9 +1,9 @@
 \name{st.select.phen}
 \alias{st.select.phen}
-\title{Select individuals using phenotypic information}
+\title{Selects individuals using phenotypic information}
 
 \description{
-Select individuals using phenotypic information supplied as a data frame or
+Selects individuals using phenotypic information supplied as a data frame or
 stored in a SelectionTools data set.
 }
 

@@ -1,9 +1,9 @@
 \name{gs.set.allele.codes}
 \alias{gs.set.allele.codes}
-\title{Set allele codes used by the genomic-selection routines}
+\title{Sets allele codes used by the genomic-selection routines}
 
 \description{
-Set allele codes used by the genomic-selection routines.
+Sets allele codes used by the genomic-selection routines.
 }
 
 \usage{

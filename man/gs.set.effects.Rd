@@ -1,9 +1,9 @@
 \name{gs.set.effects}
 \alias{gs.set.effects}
-\title{Set effects used by the genomic-selection routines}
+\title{Sets effects used by the genomic-selection routines}
 
 \description{
-Set effects used by the genomic-selection routines.
+Sets effects used by the genomic-selection routines.
 }
 
 \usage{
@@ -12,7 +12,7 @@ gs.set.effects(eff, filename ="seteffects", data.set ="default")
 
 \arguments{
    \item{eff}{Function argument used by this operation.}
-   \item{filename}{Character string retained for compatibility and used as part of the name of the internal session-temporary file used to pass the effects to compiled code. The file is removed before the function returns.}
+   \item{filename}{Character string retained for compatibility. The effects are transferred in memory.}
    \item{data.set}{Name of the SelectionTools data set.}
 }
 \value{

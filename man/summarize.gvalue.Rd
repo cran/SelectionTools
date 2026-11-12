@@ -25,4 +25,4 @@ If no effects are specified the weighted sum of all effects are used,
 otherwise only the single specified effects is used without using weights.
 }
 
-\note{See the \code{lib00.example1} for an application of the command.}
+\note{Further details appear in the \code{lib00.example1} for an application of the command.}

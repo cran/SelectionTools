@@ -318,7 +318,7 @@ hold genetic effects. Mathematically ridge regression in an `animal
 model' is carried out and the effects were obtained from the genotypic
 values and the marker matrix with the transfomation given in Eq.~(8)
 of Shen et al.\ (2013). The core computations are carried out with
-SelectionTool's mixed model engine \cde{st.mxd()}.
+SelectionTools' mixed model engine.
 
 \subsection{Initialization of the simulation routines}
 

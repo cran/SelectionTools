@@ -3,7 +3,7 @@
 \title{Gd distance similarity}
 
 \description{
-Calculate genetic distance or similarity measures, with optional bootstrap inputs.
+Calculates genetic distance or similarity measures, with optional bootstrap inputs.
 }
 
 \usage{

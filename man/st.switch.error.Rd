@@ -1,7 +1,7 @@
 \name{st.switch.error}
 \alias{st.switch.error}
 \alias{print.st.switch.error}
-\title{Calculate Switch Error against Known Phase}
+\title{Calculates Switch Error against Known Phase}
 
 \description{
 Compares a phased SelectionTools marker data set with a data set containing
@@ -76,7 +76,7 @@ with one column, \code{result}.  The row names are
 \code{NA} when no switch link is available and the latter is \code{NA} when
 the true data contain no observed heterozygotes.  The full result is always
 returned.  Its print method displays only \code{switch.error}, \code{coverage},
-and \code{genotype.mismatches} by default; use \code{complete=TRUE} to print
+and \code{genotype.mismatches} by default; \code{complete=TRUE} prints
 all rows.
 }
 

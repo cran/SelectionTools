@@ -1,6 +1,6 @@
 \name{set.population.gvalue}
 \alias{set.population.gvalue}
-\title{Set genetic selection values for a simulation population}
+\title{Sets genetic selection values for a simulation population}
 
 \description{
 Sets element 0 of the stored genetic value array for every active individual

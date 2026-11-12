@@ -1,9 +1,9 @@
 \name{get.mdp}
 \alias{get.mdp}
-\title{Return the current marker-assisted donor-parent information}
+\title{Returns the current marker-assisted donor-parent information}
 
 \description{
-Return the current marker-assisted donor-parent information.
+Returns the current marker-assisted donor-parent information.
 }
 
 \usage{

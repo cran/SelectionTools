@@ -10,7 +10,8 @@ show.phase(label, result, score)
 }
 \arguments{
   \item{label}{Character string printed above the summary.}
-  \item{result}{An object returned by \code{st.phase()}.}
+  \item{result}{Dry-run diagnostics from \code{st.phase(commit = FALSE)}, \code{NULL}
+  after a committed call.}
   \item{score}{The one-column data frame returned by \code{st.switch.error()}.}
 }
 \value{

@@ -1,9 +1,9 @@
 \name{evaluate.locus}
 \alias{evaluate.locus}
-\title{Evaluate selected loci in a population}
+\title{Evaluates selected loci in a population}
 
 \description{
-Evaluate selected loci in a population.
+Evaluates selected loci in a population.
 }
 
 \usage{

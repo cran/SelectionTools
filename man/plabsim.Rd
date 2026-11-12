@@ -1,9 +1,9 @@
 \name{plabsim}
 \alias{plabsim}
-\title{Perform the SelectionTools operation "plabsim"}
+\title{Performs the SelectionTools operation "plabsim"}
 
 \description{
-Perform the SelectionTools operation "plabsim".
+Performs the SelectionTools operation "plabsim".
 }
 
 \format{A list containing PLABSIM run-time state and parameters.}

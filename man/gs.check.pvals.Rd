@@ -1,9 +1,9 @@
 \name{gs.check.pvals}
 \alias{gs.check.pvals}
-\title{Check whether p-values are available for a genomic-selection data set}
+\title{Checks whether p-values are available for a genomic-selection data set}
 
 \description{
-Check whether p-values are available for a genomic-selection data set.
+Checks whether p-values are available for a genomic-selection data set.
 }
 
 \usage{

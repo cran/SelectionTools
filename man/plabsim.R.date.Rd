@@ -1,9 +1,9 @@
 \name{plabsim.R.date}
 \alias{plabsim.R.date}
-\title{Perform the SelectionTools operation "plabsim R date"}
+\title{Performs the SelectionTools operation "plabsim R date"}
 
 \description{
-Perform the SelectionTools operation "plabsim R date".
+Performs the SelectionTools operation "plabsim R date".
 }
 
 \format{A character string containing the PLABSIM R-code date.}

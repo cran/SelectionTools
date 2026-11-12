@@ -1,6 +1,6 @@
 \name{population.append}
 \alias{population.append}
-\title{Append a copy of a simulation population}
+\title{Appends a copy of a simulation population}
 
 \description{
 Appends a copy of a source population to the end of a destination population.
@@ -16,7 +16,7 @@ population.append(NameP1, NameP2)
 modified.}
 }
 \value{
-An invisible \code{list} returned by the underlying \code{.C} routine. The list is an implementation-level result containing the arguments returned by the compiled routine; the function is primarily called for its side effect of appending a copy of one simulation population to another.
+An invisible \code{list} returned by the compiled routine. The list is an implementation-level result containing the arguments returned by the compiled routine; the function is primarily called for its side effect of appending a copy of one simulation population to another.
 }
 
 \details{

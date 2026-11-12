@@ -3,7 +3,7 @@
 \title{remove.all.populations()}
 
 \description{
-Removes all currently registered simulation populations.
+Removes all currently supported simulation populations.
 }
 
 \usage{

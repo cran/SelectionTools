@@ -1,4 +1,4 @@
-# Interface to simulation routines of SelectionTools02.c 
+# Interface to simulation routines of SelectionTools02.c
 # by Hans Peter Maurer and Matthias Frisch
 
 plabsim.R.version <- "19.3"
@@ -10,28 +10,21 @@ plabsim$allele.missing.indicator <- 65535
 
 
 "info" <-  function(lev,msg){
-    c <- .C("r_info",
-            as.integer(lev),
-            as.character(msg)
-            );
+    c <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="r_info",
+        arguments=list(as.integer(lev), as.character(msg))), PACKAGE="SelectionTools");
   }
 
-"info.cat" <-  function(lev,msg){
-
-  level = 0
-  c  <-  .C(  "get_info_level",
-               level = as.integer(level)   )
-
-  if ( lev >= c$level) message(sprintf("M: %s\r", msg), appendLF = FALSE)
-  
-  }
+"info.cat" <- function(lev, msg)
+  invisible(.Call("st_legacy_sim", list(action="info.cat", environment=environment()),
+                  PACKAGE="SelectionTools"))
 
 
 "write.version.2" <-
   function(){
-    c <- .C("print_version_2",
-            msg = as.character(plabsim.R.date)
-            );
+    c <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="print_version_2",
+        arguments=list(msg = as.character(plabsim.R.date))), PACKAGE="SelectionTools");
   }
 
 "plabsim.init" <- function() {
@@ -43,22 +36,18 @@ plabsim$allele.missing.indicator <- 65535
   NameP1,
   NameP2
 ) {
-  c  <- .C(
-    "append_population",
-    as.character(NameP1),
-    as.character(NameP2)
-  )
+  c  <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="append_population",
+        arguments=list(as.character(NameP1), as.character(NameP2))), PACKAGE="SelectionTools")
 }
 
 "population.concat" <- function(
   NameP1,
   NameP2
 ) {
-  c  <- .C(
-    "concat_population",
-    as.character(NameP1),
-    as.character(NameP2)
-  )
+  c  <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="concat_population",
+        arguments=list(as.character(NameP1), as.character(NameP2))), PACKAGE="SelectionTools")
 }
 
 "population.copy" <- function(
@@ -67,13 +56,9 @@ plabsim$allele.missing.indicator <- 65535
   start=1,
   n=-1
 ) {
-  c  <- .C(
-    "copy_population",
-    as.character(NameP1),
-    as.character(NameP2),
-    format(start,scientific=FALSE),
-    format(n,scientific=FALSE)
-  )
+  c  <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="copy_population",
+        arguments=list(as.character(NameP1), as.character(NameP2), format(start,scientific=FALSE), format(n,scientific=FALSE))), PACKAGE="SelectionTools")
 }
 
 "population.divide" <- function(
@@ -81,49 +66,37 @@ plabsim$allele.missing.indicator <- 65535
   NameP2,
   NoI=-1
 ) {
-  c  <- .C(
-    "divide_population",
-    as.character(NameP1),
-    as.character(NameP2),
-    format(NoI,scientific=FALSE)
-  )
+  c  <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="divide_population",
+        arguments=list(as.character(NameP1), as.character(NameP2), format(NoI,scientific=FALSE))), PACKAGE="SelectionTools")
 }
 
 "population.exist" <- function(PopName) {
-   invisible(as.logical(sum(as.character(population.list()$PopName)==PopName)))
+   invisible(.Call("st_legacy_sim", list(action="population.exists",
+       name=PopName), PACKAGE="SelectionTools"))
 }
 
-"population.info.get" <- function(
-  PopName,
-  ind
-) {
-  if ((ind > 0) && (ind <= population.size.get(PopName)$NoInds)) {
-    info <- paste(rep("a",256),collapse="")
-    c  <- .C(
-      "get_population_info",
-      as.character(PopName),
-      format(ind,scientific=FALSE),
-      info = as.character(info)
-    )
-    c$info
-  }
+"population.info.get" <- function(PopName, ind) {
+  if ((ind > 0) && (ind <= population.size.get(PopName)$NoInds))
+    .Call("st_legacy_sim", list(action="population.info", population=as.character(PopName),
+          individual=format(ind,scientific=FALSE)), PACKAGE="SelectionTools")
 }
+
 
 "population.name.swap" <- function(
   NameP1,
   NameP2
-) { 
-  c  <- .C(
-    "swap_population_name",
-    as.character(NameP1),
-    as.character(NameP2)
-  )
+) {
+  c  <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="swap_population_name",
+        arguments=list(as.character(NameP1), as.character(NameP2))), PACKAGE="SelectionTools")
 }
 
 "population.optimize" <-
   function(PopNames){
-    c  <- .C("optimize_population",
-             as.character(PopNames))
+    c  <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="optimize_population",
+        arguments=list(as.character(PopNames))), PACKAGE="SelectionTools")
   }
 
 "population.remove" <-  function(
@@ -132,50 +105,32 @@ plabsim$allele.missing.indicator <- 65535
   if (length(PopNames) > 1) {
     PopNames <- paste(PopNames, collapse=" ")
   }
-  c  <- .C(
-    "remove_population",
-    as.character(PopNames)
-  )
+  c  <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="remove_population",
+        arguments=list(as.character(PopNames))), PACKAGE="SelectionTools")
 }
 
-"population.remove.all" <- function(){
-
-  b <- .C("list_populations_parameter",
-          lPopName = as.integer(0),
-          NoPops   = as.integer(0))
-
-  if (b$NoPops == 0L) {
-    info(1,"All populations removed")
-    return(invisible(NULL))
-  }
-
-  y <- population.list()$PopName
-  population.remove(y)
-
-  info(1,"All populations removed")
-  invisible(NULL)
+"population.remove.all" <- function() {
+  invisible(.Call("st_legacy_sim", list(action="remove.all"), PACKAGE="SelectionTools"))
 }
+
 
 "population.rename" <- function(
   OldName,
   NewName
 ) {
-  c <- .C(
-    "rename_population",
-    as.character(OldName),
-    as.character(NewName)
-  )
+  c <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="rename_population",
+        arguments=list(as.character(OldName), as.character(NewName))), PACKAGE="SelectionTools")
 }
 
 "population.resize" <- function(
   PopName,
   newSize
 ) {
-  c <- .C(
-    "resize_population",
-    as.character(PopName),
-    format(newSize,scientific=FALSE)
-  )
+  c <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="resize_population",
+        arguments=list(as.character(PopName), format(newSize,scientific=FALSE))), PACKAGE="SelectionTools")
 }
 
 "population.sample" <-
@@ -185,34 +140,14 @@ plabsim$allele.missing.indicator <- 65535
     } else {
       rep <- 0
     }
-    c  <- .C("sample_population",
-             as.character(NameP1),
-             as.character(NameP2),
-             format(size,scientific=FALSE),
-             as.integer(rep))
+    c  <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="sample_population",
+        arguments=list(as.character(NameP1), as.character(NameP2), format(size,scientific=FALSE), as.integer(rep))), PACKAGE="SelectionTools")
   }
 
-"population.size.get" <- function(
-  PopName
-) {
-  if (length(PopName) > 1) {
-    PopName <- paste(PopName, collapse=" ")
-  }
-  digits <- 50;
-  sNoInds <- paste(rep("a",digits),collapse="");
-  sNoIndsAlloc <- paste(rep("a",digits),collapse="");
-  c  <- .C(
-    "get_population_size",
-    as.character(PopName),
-    NoInds=as.character(sNoInds),
-    NoIndsAlloc=as.character(sNoIndsAlloc)
-  )
-  if( sNoInds==c$NoInds ) return ( invisible(NULL) )
-  data.frame(
-    NoInds=as.integer(c$NoInds),
-    NoIndsAlloc=as.integer(c$NoIndsAlloc)
-  )
-  }
+"population.size.get" <- function (PopName) 
+.Call("st_legacy_sim", list(action = "output", operation = "size", population = as.character(PopName)), 
+    PACKAGE = "SelectionTools")
 
 population.transfer <- function(
   NameP1,
@@ -241,57 +176,22 @@ population.transfer <- function(
   crossing.scheme = 0
 ) {
   significant <- -1
-  c  <- .C(
-    "cross",
-    as.character(NamePg),
-    as.character(NameP1),
-    as.character(NameP2),
-    as.double(self),
-    format(NoPg,scientific=FALSE),
-    as.double(significant),
-    as.integer(mode),
-    as.integer(crossing.scheme)
-  )
+  c  <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="cross",
+        arguments=list(as.character(NamePg), as.character(NameP1), as.character(NameP2), as.double(self), format(NoPg,scientific=FALSE), as.double(significant), as.integer(mode), as.integer(crossing.scheme))), PACKAGE="SelectionTools")
 }
 
-"define.effects" <- function (
-  name,
-  description
-) {
-  tmp.file <- tempfile(
-    pattern = "SelectionTools-effects-definition-",
-    tmpdir = tempdir()
-  )
-  on.exit(unlink(tmp.file), add = TRUE)
-  generate.effect.file(tmp.file, description)
-  load.effmap(name, tmp.file)
-  unlink(tmp.file)
-}
+st.cross.plan.execute <- function(plan, population, name, scheme = "DH") invisible(.Call("st_legacy_sim",
+    list(action = "cross.plan.execute", plan = plan, population = population, name = name,
+        scheme = scheme), PACKAGE = "SelectionTools"))
 
-"define.map" <- function (
-  description
-) {
-  tmp.file <- tempfile()
+"define.effects" <- function (name, description) 
+invisible(.Call("st_legacy_sim", list(action = "define.effects", name = as.character(name), description = as.character(description)), 
+    PACKAGE = "SelectionTools"))
 
-  on.exit(
-    unlink(tmp.file),
-    add=TRUE
-  )
-
-  c <- generate.map.file(
-    tmp.file,
-    description
-  )
-
-  if (is.null(c$retval) ||
-      0 != c$retval) {
-    return(invisible(c))
-  }
-
-  c <- linkage.map.load(tmp.file)
-
-  invisible(c)
-}
+"define.map" <- function (description) 
+invisible(.Call("st_legacy_sim", list(action = "define.map", description = as.character(description)), 
+    PACKAGE = "SelectionTools"))
 
 
 
@@ -301,13 +201,9 @@ population.transfer <- function(
   NoPg
 ) {
   significant <- -1;
-  c  <- .C(
-    "dh",
-    as.character(NamePg),
-    as.character(NameP1),
-    format(NoPg,scientific=FALSE),
-    as.double(significant)
-  )
+  c  <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="dh",
+        arguments=list(as.character(NamePg), as.character(NameP1), format(NoPg,scientific=FALSE), as.double(significant))), PACKAGE="SelectionTools")
 }
 
 "dh" <- function (
@@ -316,153 +212,50 @@ population.transfer <- function(
   NoPg=-1
 ) {
   significant <- -1;
-  c  <- .C(
-    "dh",
-    as.character(NamePg),
-    as.character(NameP1),
-    format(NoPg,scientific=FALSE),
-    as.double(significant)
-  )
+  c  <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="dh",
+        arguments=list(as.character(NamePg), as.character(NameP1), format(NoPg,scientific=FALSE), as.double(significant))), PACKAGE="SelectionTools")
 }
 
-"evaluate.allele" <- function(
-  PopName,
-  Loci,
-  missing=0
-) {
-  if (1==missing) {
-    evallo <- evaluate.locus(PopName,Loci)
-    summe <- evallo[,1] + evallo[,2]
-    locivec <- unlist(strsplit(Loci," "))
-    Loci <- paste(locivec[which(summe>0)],collapse=" ")
-  }
-  if (0 < nchar(Loci)) {
-    bg <- plabsim$allele.missing.indicator
-    result <- .Call("allele_evaluate",
-                    as.character(PopName),
-                    as.character(unlist(strsplit(Loci," "))),
-                    as.integer(missing),
-                    as.integer(bg));
-    if ( is.null(result) ) return (invisible( NULL) )
-    result <- as.data.frame(result)
-    result <- result[,-(dim(result)[2])]
-  } else {
-    return(invisible( NULL))
-  }
-  result
-}
+"evaluate.allele" <- function(PopName, Loci, missing=0)
+    .Call("st_legacy_sim", list(action="allele", population=PopName,
+          loci=unlist(strsplit(Loci, " ")), missing=missing,
+          background=plabsim$allele.missing.indicator, drop.empty=TRUE,
+          frequencies=FALSE), PACKAGE="SelectionTools")
 
-"evaluate.allele.freq" <- function( PopName,
-                                    Loci,
-                                    missing=0 )
+"evaluate.allele.freq" <- function(PopName, Loci, missing=0)
 {
-  if ( 1 <length(Loci) ){
-    info(-2,"Only available for single loci")
-    return(invisible(NULL))
-  }
-  e.a <- evaluate.allele(PopName,Loci,missing)
-  if (is.null(e.a)) return(invisible(NULL))
-  e.a$freq <-e.a$count/sum(e.a$count)
-  return(e.a)
+    if (length(Loci) > 1L) {
+        info(-2, "Only available for single loci")
+        return(invisible(NULL))
+    }
+    .Call("st_legacy_sim", list(action="allele", population=PopName,
+          loci=unlist(strsplit(Loci, " ")), missing=missing,
+          background=plabsim$allele.missing.indicator, drop.empty=TRUE,
+          frequencies=TRUE), PACKAGE="SelectionTools")
 }
 
+evaluate.genome <- function(PopName, allele, chromosome=NULL, begin=NULL,
+                            end=NULL, verbose=FALSE)
+    .Call("st_legacy_sim", list(action="genome.evaluate", population=PopName,
+          allele=allele, chromosome=chromosome, begin=begin, end=end, verbose=verbose),
+          PACKAGE="SelectionTools")
 
-"evaluate.genome" <- function (
-  PopName,
-  allele,
-  chromosome=NULL,
-  begin=NULL,
-  end=NULL,
-  verbose=FALSE
-) {
-  empty <- rep(0,as.integer(population.size.get(PopName)$NoInds));
-  if (is.null(chromosome)) {
-    c  <- .C("evaluate_genome",
-             as.character(PopName),
-             as.integer(allele),
-             ratio  = as.double(empty),
-             length = as.double(empty),
-             total  = as.double(empty),
-             blocks = as.integer(empty))
-  } else {
-    if (is.null(begin)) {
-      begin <- 0
-    }
-    if (is.null(end)) {
-      end <- genome.parameter.get()$chrom.len[chromosome]
-    }
-    c  <- .C("evaluate_genome_region",
-             as.character(PopName),
-             as.integer(allele),
-             as.integer(chromosome-1),
-             as.double(begin),
-             as.double(end),
-             ratio  = as.double(empty),
-             length = as.double(empty),
-             total  = as.double(empty),
-             blocks = as.integer(empty))
-  }
-  ratio  <- data.frame(ratio=c$ratio)
-  length <- data.frame(length=c$length)
-  total  <- data.frame(total=c$total)
-  blocks <- data.frame(noBlocks=c$blocks)
-  if (verbose) {
-    return.value <- cbind(ratio, length)
-    return.value <- cbind(return.value, total)
-    return.value <- cbind(return.value, blocks)
-  } else {
-    return.value <- ratio
-  }   
-  return.value
-}
+"evaluate.genotype" <- function(PopName, Loci, alleles=0, mode=2, bg=0)
+    .Call("st_legacy_sim", list(action="genotype", population=PopName,
+          loci=unlist(strsplit(Loci, " ")), alleles=alleles, mode=mode,
+          omit=bg, background=plabsim$allele.missing.indicator),
+          PACKAGE="SelectionTools")
 
-"evaluate.genotype" <- function(PopName, Loci, alleles=0, mode=2, bg=0) {
-  result <- .Call("genotype_evaluate",
-                  as.character(PopName),
-                  as.character(unlist(strsplit(Loci," "))),
-                  as.integer(mode));
-  if ( is.null(result) ) return( invisible(NULL) )
-  if (bg == 1) {
-    col.name <- colnames(result)
-    res <- matrix(result[,1:(dim(result)[2]-2)],ncol=dim(result)[2]-2)
-    result <- matrix(result[(0==rowSums(plabsim$allele.missing.indicator == res)),],ncol=dim(result)[2])
-    result[,dim(result)[2]] <- result[,dim(result)[2]-1]/sum(result[,dim(result)[2]-1])
-    colnames(result) <- col.name
-  } else {
-    result[,dim(result)[2]] <- result[,dim(result)[2]-1]/result[,dim(result)[2]]
-  }
-  if (alleles[1] != 0) {
-    ng <- nrow(result)
-    na <- length(alleles)
-    passt <- 0; i <- 0
-    while ( (i < ng) && (passt==0) ){
-      passt <- 1 ; i <- i+1
-      for (j in 1:na){
-        if (result[i,j] != alleles[j]) {passt <- 0}
-      }
-      if (passt==1) {select <- i} 
-    }
-    if (passt==1) {result <- result[select,]}
-  }  
-  as.data.frame(result)
-}
-
-"evaluate.haplotype" <-
-  function(PopName,Loci,missing=0,bg=plabsim$allele.missing.indicator){
-    genotype.population(PopName);
-    y <- .Call("evaluate_haplotype",
-             as.character(PopName),
-             as.character(Loci),
-             as.integer(missing),
-             as.integer(bg));
-    y <- y[-1,]
-    if (!is.null(dim(y))) {
-      y <- as.data.frame(y);
-    } else {
-      y <- as.data.frame(t(y));
-    }
+"evaluate.haplotype" <- function (PopName, Loci, missing = 0, bg = plabsim$allele.missing.indicator) 
+{
+    genotype.population(PopName)
+    y <- .Call("evaluate_haplotype", as.character(PopName), as.character(Loci), as.integer(missing), 
+        as.integer(bg), PACKAGE = "SelectionTools")
+    if (is.null(y)) 
+        stop("incorrect number of dimensions")
     y
-  }
+}
 
 
 "evaluate.hap.init" <-
@@ -471,78 +264,38 @@ population.transfer <- function(
 # doubleHetero 1: double heterozygotes are removed
 # missing 0: missing alleles are removed
 # missing 1: missing alleles are not removed
-    bg <- plabsim$allele.missing.indicator  
+    bg <- plabsim$allele.missing.indicator
     genotype.population(PopName);
-    c <- .C("haplotype_init",
-            as.character(PopName),
-            as.integer(missing),
-            as.integer(doubleHetero),
-            as.integer(bg));
+    c <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="haplotype_init",
+        arguments=list(as.character(PopName), as.integer(missing), as.integer(doubleHetero), as.integer(bg))), PACKAGE="SelectionTools");
   }
 
 
-"evaluate.hap.calc" <-
-  function(locusA,locusB){
-    c <- .C("haplotype_next",
-            as.integer(locusA),
-            as.integer(locusB),
-            noTI = as.integer(0),
-            noI  = as.integer(0),
-            nodH = as.integer(0),
-            dLocA= as.integer(0),
-            dLocB= as.integer(0));
-    c(c$noTI,c$noI,c$nodH,c$dLocA,c$dLocB);
-  }
+"evaluate.hap.calc" <- function(locusA, locusB)
+  .Call("st_legacy_sim", list(action="hap.next", locusA=as.integer(locusA),
+        locusB=as.integer(locusB)), PACKAGE="SelectionTools")
 
-"evaluate.hap.calc.d" <-
-  function(locusA,locusB){
-    c <- .C("haplotype_calc_d",
-            dd = as.double(0),
-            rr = as.double(0),
-            dp = as.double(0))
-            
-    invisible(c(c$dd, c$dp, c$rr))
-  }
+"evaluate.hap.calc.d" <- function(locusA, locusB)
+  invisible(.Call("st_legacy_sim", list(action="hap.d"), PACKAGE="SelectionTools"))
 
-"evaluate.hap.return.genotype" <-
-  function(){
-    y <- .Call("haplotype_return_genotype");
-    as.data.frame(y);  
-  }
 
-"evaluate.hap.return.table" <-
-  function(){
-    y <- .Call("haplotype_return_table");
-    as.data.frame(y);  
-  }
+"evaluate.hap.return.genotype" <- function () 
+.Call("haplotype_return_genotype", PACKAGE = "SelectionTools")
+
+"evaluate.hap.return.table" <- function () 
+.Call("haplotype_return_table", PACKAGE = "SelectionTools")
 
 "evaluate.hap.free" <-
   function(){
-    c <- .C("haplotype_free");
+    c <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="haplotype_free",
+        arguments=list()), PACKAGE="SelectionTools");
   }
 
-"evaluate.locus" <- function(
-  PopName,
-  eLoci
-) {
-  bg <- plabsim$allele.missing.indicator  
-  genotype.population(PopName);
-  noLoci <- length(unlist(strsplit(eLoci," ")));
-  empty <- rep(0,3 * noLoci)
-  c  <- .C(
-    "evaluate_locus",
-    as.character(PopName),  
-    as.character(eLoci),
-    matrix=as.integer(empty),
-    as.integer(noLoci),
-    as.integer(bg)
-  )
-  dim(c$matrix) <- c(noLoci, 3)
-  result <- data.frame(c$matrix);
-  names(result) <- unlist(c("homozygote","heterozygote","missing"));
-  rownames(result) <- unlist(strsplit(eLoci," "));
-  result;
-}
+"evaluate.locus" <- function (PopName, eLoci) 
+.Call("st_legacy_sim", list(action = "output", operation = "locus", population = as.character(PopName), 
+    loci = as.character(eLoci), background = as.integer(plabsim$allele.missing.indicator)), PACKAGE = "SelectionTools")
 
 "evaluate.all.loci" <- function(
   PopName,
@@ -551,44 +304,21 @@ population.transfer <- function(
   evaluate.locus(
     PopName,
     loci
-  )    
+  )
 }
 
-"evaluate.mdp" <- function(
-  NamePg,
-  NameP1,
-  NameP2,
-  effectfile=NULL
-) {
-  genotype.population(NameP1)
-  genotype.population(NameP2)
-  if (is.null(effectfile)) {
-    abc  <- list.effects()
-    for (i in 1:nrow(abc)) { 
-      if (0 != abc[i,2]) {
-        evaluate.mdp(NamePg, NameP1, NameP2, abc[i,1])
-      }
-    }
-  } else {
-    c <- .C(
-      "evaluate_mdp",
-      as.character(NamePg),
-      as.character(NameP1),
-      as.character(NameP2),
-      as.character(effectfile)
-    )
-  }
-}
+evaluate.mdp <- function(NamePg, NameP1, NameP2, effectfile=NULL)
+    invisible(.Call("st_legacy_sim", list(action="mdp", progeny=NamePg,
+              parent1=NameP1, parent2=NameP2, effect=effectfile),
+              PACKAGE="SelectionTools"))
 
 "evaluate.population" <- function(
   PopNames,
   effName=NULL
 ) {
-  c <- .C(
-    "evaluate_population",
-    as.character(PopNames),
-    as.character(effName)
-  )
+  c <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="evaluate_population",
+        arguments=list(as.character(PopNames), as.character(effName))), PACKAGE="SelectionTools")
 }
 
 "phenotype.population" <- function(
@@ -619,25 +349,19 @@ population.transfer <- function(
   genotype.population(PopName)
   evaluate.population(PopName)
 
-  c <- .C(
-    "phenotype_population",
-    as.character(PopName),
-    as.double(hsq),
-    as.integer(length(hsq)),
-    retval=as.integer(-2)
-  )
+  c <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="phenotype_population",
+        arguments=list(as.character(PopName), as.double(hsq), as.integer(length(hsq)), retval=as.integer(-2))), PACKAGE="SelectionTools")
 }
 
 
 "generate.effect.file" <- function(
   fName,
   description
-) { 
-  c <- .C(
-    "generate_effect_file",
-    as.character(fName),
-    as.character(description)
-  )
+) {
+  c <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="generate_effect_file",
+        arguments=list(as.character(fName), as.character(description))), PACKAGE="SelectionTools")
 }
 
 
@@ -664,233 +388,66 @@ population.transfer <- function(
     )
   }
 
-  c <- .C(
-    "generate_map_file",
-    as.character(fName),
-    as.character(description),
-    retval=as.integer(-2)
-  )
+  c <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="generate_map_file",
+        arguments=list(as.character(fName), as.character(description), retval=as.integer(-2))), PACKAGE="SelectionTools")
 
   invisible(c)
 }
 
 
 
-"generate.population" <- function(
-  dta,
-  backcross=FALSE
-) {
-  bg <- plabsim$allele.missing.indicator
-  p <- data.params(dta)
-  no.pop.u <- p$no.pop
-  pop.u    <- 1:p$no.pop
-  no.ind.u <- p$no.ind
-  ind.u    <- p$ind.list
-  no.mar.u <- p$no.mar
-  mar.u    <- 1:p$no.mar
-  DTA  <- as.matrix(dta)
-  FREQ <- matrix(16,nrow=sum(p$no.all[mar.u]),ncol=p$no.pop)
-  pop.list <- paste(as.vector(p$pop.list),collapse = " ")
+generate.population <- function(dta, backcross=FALSE)
+    invisible(.Call("st_legacy_sim", list(action="data", operation="generate",
+          data=dta, backcross=backcross, background=plabsim$allele.missing.indicator),
+          PACKAGE="SelectionTools"))
 
-  b <- as.data.frame(as.numeric(p$rowhead[,2]));
-  colnames(b) <- c("allele")
-  if ( (any(is.na(b$allele))) || (any(b$allele==0)) ) {
-    info(-2,"Error in allele encoding: only objects of type integer allowed")
-  } else {
-    c  <- .C(
-             "generate_population",
-             as.integer(p$no.pop),
-             as.integer(p$no.ind),
-             as.integer(p$no.mar),
-             as.integer(p$no.all),
-             as.integer(no.pop.u),
-             as.integer(pop.u),
-             as.integer(no.ind.u),
-             as.integer(ind.u),
-             as.integer(no.mar.u),
-             as.integer(mar.u),
-             DTA =as.double(DTA),
-             FREQ=as.double(FREQ),
-    as.character(paste(as.vector(p$pop.list),collapse = " ")),
-    as.character(paste(as.vector(p$mar.list),collapse = " ")),
-             as.integer(b$allele),
-             as.integer(bg),
-             NAOK=TRUE,
-             as.integer(backcross)
-             )
-  }
-}
-
-"genome.contribution" <-
-  function (
-            pops,
-            allele,
-            chromosome=NULL,
-            begin=NULL,
-            end=NULL
-            ) 
-{
-  p <- unlist(strsplit(pops, " "))
-  n <- length(p)
-  result <- matrix(ncol = 7, nrow = n)
-  for (i in 1:n) {
-    g <- evaluate.genome(
-            p[i],
-            allele,
-            chromosome = chromosome,
-            begin      = begin,
-            end        = end
-          )
-    result[i, 1] <- nrow(g)
-    result[i, 2] <- mean(g$ratio)
-    result[i, 3] <- sdev(g$ratio)
-    result[i, 4] <- min(g$ratio)
-    result[i, 5] <- stats::quantile(g$ratio, 0.1)
-    result[i, 6] <- stats::quantile(g$ratio, 0.5)
-    result[i, 7] <- max(g$ratio)
-  }
-  colnames(result) <- c("Obs", "Mean", "SDev", "Min", "Q10", 
-                        "Med", "Max")
-  rownames(result) <- p
-  result
-}
-
+"genome.contribution" <- function(pops, allele, chromosome=NULL,
+                                      begin=NULL, end=NULL)
+    .Call("st_legacy_sim", list(action="summary", kind="ratio",
+          pops=unlist(strsplit(pops, " ")), allele=allele,
+          chromosome=chromosome, begin=begin, end=end), PACKAGE="SelectionTools")
 
 "genotype.population" <-
   function(PopNames){
     if (length(PopNames) > 1) {
       PopNames <- paste(PopNames, collapse=" ")
     }
-    c  <- .C("genotype_population",
-             as.character(PopNames))
+    c  <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="genotype_population",
+        arguments=list(as.character(PopNames))), PACKAGE="SelectionTools")
   }
 
 
-"genome.parameter.get" <- function() {
-  no.chrom <- 0;
-  no.hom   <- 0;
-  c  <- .C("get_genome_par",
-           no.chrom=as.integer(no.chrom),
-           no.hom  =as.integer(no.hom))
-  d  <- .C("get_genome_par_b",
-           chrom.len = as.double(rep(0,c$no.chrom)))
-  list (
-    no.chrom  = c$no.chrom,
-    no.hom    = c$no.hom,
-    chrom.len = d$chrom.len 
-  )
-}
+"genome.parameter.get" <- function () 
+.Call("st_legacy_sim", list(action = "output", operation = "genome"), PACKAGE = "SelectionTools")
 
-"linkage.map.get" <- function() {
-  digits <- 50;
-  no.mappoints <- 0;
-  maxname      <- 0;
-  classlgth <- namelgth <- paste(rep("a",digits),collapse="");
-  c  <- .C("get_map_a",
-           no.mappoints = as.integer(no.mappoints),
-           maxname      = as.integer(maxname),
-           classlgth    = as.character(classlgth),
-           namelgth     = as.character(namelgth))
-  chrom <- rep(0,c$no.mappoints)
-  pos   <- rep(0,c$no.mappoints)
-  class <- paste(rep(" ", c$classlgth), collapse="")
-  name  <- paste(rep(" ", c$namelgth), collapse="")
-  d  <- .C("get_map_b",
-           chrom = as.double(chrom),
-           pos   = as.double(pos),
-           name  = as.character(name),
-           class = as.character(class))
-  name <- unlist(strsplit(d$name," "))
-  class <- unlist(strsplit(d$class," "))
-  data.frame(
-    chrom = d$chrom,
-    pos   = d$pos,
-    name  = name,
-    class = class
-  )
-}
+"linkage.map.get" <- function () 
+.Call("st_legacy_sim", list(action = "output", operation = "map"), PACKAGE = "SelectionTools")
 
-"get.mdp" <- function() {
-  digits <- 50;
-  cmdp <- paste(rep("a",digits),collapse="");
-  c  <- .C(
-    "get_mdp",
-    mdp = as.character(cmdp)
-  )
-  as.integer(c$mdp)
-}
+"get.mdp" <- function () 
+.Call("st_legacy_sim", list(action = "output", operation = "mdp"), PACKAGE = "SelectionTools")
 
 "set.mdp" <- function(
   MDP=0
 ) {
-  c <- .C(
-    "set_mdp",
-    format(MDP,scientific=FALSE)
-  )
+  c <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="set_mdp",
+        arguments=list(format(MDP,scientific=FALSE))), PACKAGE="SelectionTools")
 }
 
-"get.population" <- function(
-  PopName
-) {
-  count <- 0;
-  c  <- .C(
-    "get_allele_number",
-    as.character(PopName),
-    count=as.integer(count)
-  )
-  empty <- rep(0,c$count)
-  c  <- .C(
-    "get_population",
-    as.character(PopName),
-    ind   = as.integer(empty),
-    chrom = as.integer(empty),
-    hom   = as.integer(empty),
-    pos   = as.double (empty),
-    all   = as.integer(empty)
-  )
-  data.frame(
-    ind   = c$ind,
-    chrom = c$chrom,
-    hom   = c$hom,
-    pos   = c$pos,
-    all   = c$all
-  )
-}
+"get.population" <- function (PopName) 
+.Call("st_legacy_sim", list(action = "output", operation = "population", population = as.character(PopName)), 
+    PACKAGE = "SelectionTools")
 
-"get.population.gvalue" <- function(
-  name,
-  EffName=NULL
-) {
-  empty <- rep(0,as.integer(population.size.get(name)$NoInds))
-  effect.name <- if (is.null(EffName)) "" else as.character(EffName)
-  c <- .C(
-    "get_population_value",
-    as.character(name),
-    value=as.double(empty),
-    effect.name,
-    as.character("G"),
-    retval=as.integer(-2)
-  )
-  data.frame(gvalue=c$value)
-}
+"get.population.gvalue" <- function (name, EffName = NULL) 
+.Call("st_legacy_sim", list(action = "output", operation = "gvalue", population = as.character(name), 
+    effect = EffName), PACKAGE = "SelectionTools")
 
 
-"get.population.pvalue" <- function(
-  name,
-  EffName=NULL
-) {
-  empty <- rep(0,as.integer(population.size.get(name)$NoInds))
-  effect.name <- if (is.null(EffName)) "" else as.character(EffName)
-  c <- .C(
-    "get_population_value",
-    as.character(name),
-    value=as.double(empty),
-    effect.name,
-    as.character("P"),
-    retval=as.integer(-2)
-  )
-  data.frame(pvalue=c$value)
-}
+"get.population.pvalue" <- function (name, EffName = NULL) 
+.Call("st_legacy_sim", list(action = "output", operation = "pvalue", population = as.character(name), 
+    effect = EffName), PACKAGE = "SelectionTools")
 
 
 "get.score" <-
@@ -902,55 +459,13 @@ population.transfer <- function(
   }
 
 
-"homozygote" <-  function (
-  allele,
-  NoInd = 1
-) {
-  c  <- .C(
-    "get_genome_par",
-    no.chrom = as.integer(0),
-    no.hom   = as.integer(0)
-  )  
-  pop  <-  NULL
-  for (ind in 1:NoInd) {
-    for (chrom in 1:c$no.chrom) {
-      for (hom in 1:c$no.hom) {
-        pop <- rbind(
-          pop,
-          c(ind, chrom, hom, 0, allele)
-        )
-      } #hom
-    } #chrom
-  } #ind
-  pop <- as.data.frame(pop)
-  names(pop) <- c("ind","chrom","hom","pos","all")
-  pop
-}
+homozygote <- function(allele, NoInd=1)
+    .Call("st_legacy_sim", list(action="plant", genotype=allele, n=NoInd,
+          constant=TRUE), PACKAGE="SelectionTools")
 
-"plant" <-  function (
-  genotype,
-  NoInd=1
-) {
-  c  <- .C(
-    "get_genome_par",
-    no.chrom = as.integer(0),
-    no.hom   = as.integer(0)
-  )  
-  pop  <-  NULL
-  for (ind in 1:NoInd) {
-    for (chrom in 1:c$no.chrom) {
-      for (hom in 1:c$no.hom) {
-        pop <- rbind(
-          pop,
-          c(ind, chrom, hom, 0, genotype[hom])
-        )
-      } #hom
-    } #chrom
-  } #ind
-  pop <- as.data.frame(pop)
-  names(pop) <- c("ind","chrom","hom","pos","all")
-  pop
-}
+plant <- function(genotype, NoInd=1)
+    .Call("st_legacy_sim", list(action="plant", genotype=genotype, n=NoInd,
+          constant=FALSE), PACKAGE="SelectionTools")
 
 "init.population" <- function(
   name,
@@ -961,52 +476,16 @@ population.transfer <- function(
   if (delete == TRUE) {
     population.remove(name)
   }
-  c <- .C(
-    "init_population",
-    as.character(name),
-    format(nrow(data),scientific=FALSE),
-    as.integer(data$ind),
-    as.integer(data$chrom),
-    as.integer(data$hom),
-    as.double(data$pos),
-    as.integer(data$all)
-  )
+  c <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="init_population",
+        arguments=list(as.character(name), format(nrow(data),scientific=FALSE), as.integer(data$ind), as.integer(data$chrom), as.integer(data$hom), as.double(data$pos), as.integer(data$all))), PACKAGE="SelectionTools")
 }
 
-"list.effects" <-
-  function(){
-    lEffName <- 0;
-    nrEffects   <-  0;
-    b <- .C("list_eff_parameter",
-            lEffName=as.integer(lEffName),
-            nrEffects=as.integer(nrEffects));
-    empty  <- rep(0,b$nrEffects);
-    name <- paste(rep("a",b$lEffName),collapse="")
-    c  <- .C("list_eff",
-             name=as.character(name),
-             weight=as.double(empty))
-    x <- data.frame(strsplit(c$name," "),c$weight);
-    names(x)  <- c("effect","weight");
-    x
-  }
+"list.effects" <- function () 
+.Call("st_legacy_sim", list(action = "output", operation = "effects"), PACKAGE = "SelectionTools")
 
-"population.list" <-
-  function(){
-    lPopName <- 0
-    NoPops <- 0
-    b <- .C("list_populations_parameter",
-            lPopName=as.integer(lPopName),
-            NoPops=as.integer(NoPops))
-    empty <- rep(0,b$NoPops)
-    name <- paste(rep("a",b$lPopName),collapse="")
-    c  <- .C("list_populations",
-             name=as.character(name),
-             inds=as.integer(empty) )
-    PopName <- strsplit(c$name," ")
-    x <- data.frame(PopName,c$inds)
-    names (x) <- c("PopName","count")
-    x
-  }
+"population.list" <- function () 
+.Call("st_legacy_sim", list(action = "output", operation = "populations"), PACKAGE = "SelectionTools")
 
 "load.effmap" <- function(
   name,
@@ -1017,23 +496,20 @@ population.transfer <- function(
   }
   allPops <- paste(as.vector(population.list()$PopName),collapse = " ")
   remove.evaluate.population(allPops)
-  c  <- .C(
-    "load_effmap",
-    as.character(file),
-    as.character(name)
-  )
+  c  <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="load_effmap",
+        arguments=list(as.character(file), as.character(name))), PACKAGE="SelectionTools")
 }
 
 "load.internal.effmap" <-
   function(name, spec, weight){
-    c <- population.list();    
+    c <- population.list();
     y <- as.vector((c$PopName));
     allPops <- paste(y,collapse = " ");
     remove.evaluate.population(allPops)
-    b  <- .C("load_effmap_mod",
-             as.character(name),
-             as.character(spec),
-             as.double(weight));
+    b  <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="load_effmap_mod",
+        arguments=list(as.character(name), as.character(spec), as.double(weight))), PACKAGE="SelectionTools");
   }
 
 "linkage.map.load" <-
@@ -1071,26 +547,21 @@ population.transfer <- function(
       file.disperse <- as.character(file.disperse)
     }
 
-    c <- .C(
-      "linkage_map_load",
-      as.character(file),
-      as.integer(as.logical(disperse)),
-      as.character(file.disperse),
-      as.double(disperse.factor),
-      retval=as.integer(-2)
-    )
+    c <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="linkage_map_load",
+        arguments=list(as.character(file), as.integer(as.logical(disperse)), as.character(file.disperse), as.double(disperse.factor), retval=as.integer(-2))), PACKAGE="SelectionTools")
 
     invisible(c)
   }
 
 "linkage.map.save" <- function(file, dta.map=linkage.map.get()) {
   utils::write.table(
-    dta.map, 
-    file, 
+    dta.map,
+    file,
     row.names = FALSE,
     col.names = FALSE,
     quote     = FALSE
-  )  
+  )
 }
 
 "population.individual.remove" <- function (
@@ -1120,42 +591,49 @@ population.transfer <- function(
       }
     } else {
       remove.population(PopName)
-    } 
+    }
   }
 }
 
 "effmap.remove" <-
-  function(Name){ 
-    c  <- .C("effmap_remove",
-             as.character(Name))
+  function(Name){
+    c  <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="effmap_remove",
+        arguments=list(as.character(Name))), PACKAGE="SelectionTools")
   }
 
 "effmap.remove.all" <-
-  function(){ 
-    c  <- .C("effmap_remove_all");
+  function(){
+    c  <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="effmap_remove_all",
+        arguments=list()), PACKAGE="SelectionTools");
   }
 
 "remove.effmaps" <-
-  function(){ 
+  function(){
     effmap.remove.all()
   }
 
 "remove.evaluate.population" <-
-  function(PopNames){ 
-    c  <- .C("remove_evaluate_population",
-             as.character(PopNames))
+  function(PopNames){
+    c  <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="remove_evaluate_population",
+        arguments=list(as.character(PopNames))), PACKAGE="SelectionTools")
   }
 
 "remove.genotype.population" <-
   function(PopNames){
-    c  <- .C("remove_genotype_population",
-             as.character(PopNames))
+    c  <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="remove_genotype_population",
+        arguments=list(as.character(PopNames))), PACKAGE="SelectionTools")
   }
 
 
 "remove.map" <-
   function(){
-    c  <- .C("remove_map")
+    c  <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="remove_map",
+        arguments=list()), PACKAGE="SelectionTools")
   }
 
 "reset.all" <-
@@ -1168,7 +646,9 @@ population.transfer <- function(
 
 "reset.mdp" <-
   function(){
-    c  <- .C("reset_mdp");
+    c  <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="reset_mdp",
+        arguments=list()), PACKAGE="SelectionTools");
   }
 
 "resources" <-
@@ -1188,28 +668,21 @@ population.transfer <- function(
   }
 
 
-"return.population" <- function(
-  PopNames,
-  missing.rm=TRUE
-) {
-  if (1<length(PopNames)) {
-    PopNames <- paste(PopNames, collapse=" ")
-  }
-  ## hier noch abfrage ob loci verloren gehen!!!
-    
-  if (missing.rm) {
-    bg <- plabsim$allele.missing.indicator
-  } else {
-    bg <- 3334
-  }
-  genotype.population(PopNames);
-  y <- .Call(
-    "return_population",
-    as.character(PopNames),
-    as.integer(bg)
-  )
-  if ( is.null(y) ) return ( invisible(NULL) )
-  as.data.frame(y)
+"return.population" <- function(PopNames, missing.rm = TRUE) {
+    if (1 < length(PopNames)) {
+        PopNames <- paste(PopNames, collapse = " ")
+    }
+    if (missing.rm) {
+        bg <- plabsim$allele.missing.indicator
+    }
+    else {
+        bg <- 3334
+    }
+    genotype.population(PopNames)
+    y <- .Call("return_population", as.character(PopNames), as.integer(bg))
+    if (is.null(y)) 
+        return(invisible(NULL))
+    y
 }
 
 "select.all.best" <- function(
@@ -1274,44 +747,9 @@ population.transfer <- function(
 }
 
 
-"select.all.best.intern" <- function(
-  NamePop,
-  n=1,
-  selection.criterion="G",
-  effect=NULL
-) {
-  selection.criterion <- match.arg(
-    selection.criterion,
-    c("G", "P")
-  )
-
-  digits <- 50
-  minscore <- 0
-  maxscore <- 0
-  indexbest <- paste(rep("a",digits),collapse="")
-  effect.name <- if (is.null(effect)) "" else as.character(effect)
-
-  c <- .C(
-    "select_all_n_best",
-    as.character(NamePop),
-    indexbest=as.character(indexbest),
-    as.integer(n),
-    minscore=as.double(minscore),
-    maxscore=as.double(maxscore),
-    as.character(selection.criterion),
-    effect.name,
-    retval=as.integer(-2)
-  )
-
-  if (0L != c$retval)
-    return(invisible(NULL))
-
-  data.frame(
-    n=as.integer(c$indexbest),
-    minscore=as.double(c$minscore),
-    maxscore=as.double(c$maxscore)
-  )
-}
+"select.all.best.intern" <- function (NamePop, n = 1, selection.criterion = "G", effect = NULL) 
+.Call("st_legacy_sim", list(action = "output", operation = "select.best", population = as.character(NamePop), 
+    n = as.integer(n), criterion = match.arg(selection.criterion, c("G", "P")), effect = effect), PACKAGE = "SelectionTools")
 
 
 "select.n.best" <- function(
@@ -1367,25 +805,26 @@ population.transfer <- function(
 
 
 "set.co.freq" <-
-  function(cofreq=1){ 
-    c  <- .C("set_co_freq",
-             as.double(cofreq))
+  function(cofreq=1){
+    c  <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="set_co_freq",
+        arguments=list(as.double(cofreq))), PACKAGE="SelectionTools")
   }
 
 "set.NoLociInit" <-
-  function(NoLociInit){ 
-    c  <- .C("set_nolociinit",
-             as.integer(NoLociInit))
+  function(NoLociInit){
+    c  <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="set_nolociinit",
+        arguments=list(as.integer(NoLociInit))), PACKAGE="SelectionTools")
   }
 
 
 "effect.weight.set.all" <- function(
   weight
 ) {
-  c <- .C(
-    "effect_weight_set_all",
-    as.double(weight)
-  )
+  c <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="effect_weight_set_all",
+        arguments=list(as.double(weight))), PACKAGE="SelectionTools")
 }
 
 
@@ -1393,11 +832,9 @@ population.transfer <- function(
   fname,
   weight
 ) {
-  c <- .C(
-    "set_eff_weight",
-    as.character(fname),
-    as.double(weight)
-  )
+  c <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="set_eff_weight",
+        arguments=list(as.character(fname), as.double(weight))), PACKAGE="SelectionTools")
 }
 
 "genome.parameter.set" <- function(
@@ -1410,22 +847,18 @@ population.transfer <- function(
   } else {
     population.remove.all();
     remove.map();
-    c  <- .C(
-             "set_genome_par",
-             as.integer(no.chrom),
-             as.integer(no.hom),
-             as.double(chrom.len)
-             )
+    c  <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="set_genome_par",
+        arguments=list(as.integer(no.chrom), as.integer(no.hom), as.double(chrom.len))), PACKAGE="SelectionTools")
   }
 }
 
 "set.info.level" <- function(
   level
 ) {
-  c  <-  .C(
-    "set_info_level",
-    as.integer(level)
-  )
+  c  <-  .Call("st_legacy_marker", list(action="legacy.result",
+        routine="set_info_level",
+        arguments=list(as.integer(level))), PACKAGE="SelectionTools")
 }
 
 "set.population.gvalue" <- function(
@@ -1455,43 +888,24 @@ population.transfer <- function(
     evaluate.population(name)
   }
 
-  c <- .C(
-    "set_population_gvalue",
-    as.character(name),
-    as.double(gvalue),
-    as.integer(length(gvalue)),
-    retval=as.integer(-2)
-  )
+  c <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="set_population_gvalue",
+        arguments=list(as.character(name), as.double(gvalue), as.integer(length(gvalue)), retval=as.integer(-2))), PACKAGE="SelectionTools")
 }
 
 
 "population.info.set" <-
   function(PopName,ind,info){
     if ((ind > 0) && (ind <= population.size.get(PopName)$NoInds)) {
-      c  <- .C("set_population_info",
-               as.character(PopName),
-               format(ind,scientific=FALSE),
-               as.character(info))
+      c  <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="set_population_info",
+        arguments=list(as.character(PopName), format(ind,scientific=FALSE), as.character(info))), PACKAGE="SelectionTools")
     }
   }
 
-"single.cross" <-
-  function(PgName,PopName,classSize=1){
-    population.remove(PgName);
-    b  <- population.size.get(PopName);
-    gtypes <- b$NoInds / classSize;
-    for(i in 1:(as.integer(gtypes)-1)){
-      copy.population("single-cross-b",PopName,i*classSize+1);
-      b  <- population.size.get("single-cross-b");
-      for(j in 1:classSize){
-        copy.population("single-cross-a",PopName,(i-1)*classSize+j,1);
-        cross("single-cross-tmp","single-cross-a","single-cross-b",b$NoInds,crossing.scheme=3)
-        concat.population(PgName,"single-cross-tmp");
-      }
-      population.remove("single-cross-b");
-    }
-    population.remove("single-cross-a");
-  }
+single.cross <- function(PgName, PopName, classSize=1)
+    invisible(.Call("st_legacy_sim", list(action="single.cross", target=PgName,
+              source=PopName, size=classSize), PACKAGE="SelectionTools"))
 
 "population.sort" <- function(
   PopName,
@@ -1505,14 +919,9 @@ population.transfer <- function(
   )
   effect.name <- if (is.null(effect)) "" else as.character(effect)
 
-  c <- .C(
-    "sort_population",
-    as.character(paste(PopName,sep=" ")),
-    as.integer(decreasing),
-    as.character(selection.criterion),
-    effect.name,
-    retval=as.integer(-2)
-  )
+  c <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="sort_population",
+        arguments=list(as.character(paste(PopName,sep=" ")), as.integer(decreasing), as.character(selection.criterion), effect.name, retval=as.integer(-2))), PACKAGE="SelectionTools")
 }
 
 
@@ -1523,99 +932,22 @@ population.transfer <- function(
   maxcycles=1
 ) {
   significant <- -1;
-  c  <- .C(
-    "ssd_mating",
-    as.character(NamePg),
-    as.character(NameP),
-    format(NoPg,scientific=FALSE),
-    as.integer(maxcycles),
-    as.double(significant)
-  )
+  c  <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="ssd_mating",
+        arguments=list(as.character(NamePg), as.character(NameP), format(NoPg,scientific=FALSE), as.integer(maxcycles), as.double(significant))), PACKAGE="SelectionTools")
 }
 
-"summarize.gvalue" <-
-  function(pops,effectfile=NULL){
-    p <- unlist(strsplit(pops," "))
-    n <- length(p) 
-    result <- matrix(ncol=7,nrow=n)
-    for (i in 1:n) {
-      genotype.population(p[i]);
-      evaluate.population(p[i]);
-      g <- as.matrix(get.population.gvalue(p[i],effectfile))
-      result[i,1] <- nrow(g) 
-      result[i,2] <- mean(g)
-      result[i,3] <- sdev(g)
-      result[i,4] <- min (g) 
-      result[i,5] <- stats::quantile(g,0.1)
-      result[i,6] <- stats::quantile(g,0.5)
-      result[i,7] <- max(g)
-    }
-    colnames(result) <- c("Obs", "Mean", "SDev","Min","Q10","Med","Max")
-    rownames(result) <- p
-    result
-  }
+"summarize.gvalue" <- function(pops, effectfile=NULL)
+    .Call("st_legacy_sim", list(action="summary", kind="gvalue",
+          pops=unlist(strsplit(pops, " ")), effect=effectfile),
+          PACKAGE="SelectionTools")
 
 "talk.to.me" <-
   function(){
     set.info.level(1);
   }
 
-"data.params" <-
-  function (dta){
-    colhead <- splitdt(colnames(dta))
-    rowhead <- splitdt(row.names(dta))
-    # Number of markers
-    no.mar  <- length(levels(as.factor(rowhead[,1])))
-    # Number of alleles per marker and list of markers
-    no.all      <- matrix(0,ncol=no.mar)
-    no.all[1]   <- 1
-    mar.list    <- matrix("",nrow=no.mar)
-    mar.list[1] <- rowhead[1,1] 
-    no.rows <- nrow(rowhead)
-    if (no.rows>1){
-      k <- 1
-      for (i in 2:no.rows) {
-        if ( rowhead[i,1] == rowhead[i-1,1] ) {
-          no.all[k] <- no.all[k] + 1
-        }
-        else {
-          k            <- k+1
-          no.all[k]    <- 1
-          mar.list[k]  <- rowhead[i,1]
-        }
-      }
-    }
-    # Number of populations
-    no.pop  <- length(levels(as.factor(colhead[,1])))
-    # Number of individuals and list of populations
-    no.ind      <- matrix(0,ncol=no.pop)
-    no.ind[1]   <- 1
-    pop.list    <- matrix("",nrow=no.pop)
-    pop.list[1] <- colhead[1,1]
-    no.cols <- nrow(colhead)
-    if (no.cols>1){
-      k <- 1
-      for (i in 2:no.cols) {
-        if ( colhead[i,1] == colhead[i-1,1] ) {
-          no.ind[k] <- no.ind[k] + 1
-        }
-        else {
-          k           <- k+1
-          no.ind[k]   <- 1
-          pop.list[k] <- colhead[i,1] 
-        }
-      }
-    }
-    # List of individuals
-    ind.list <- 1:(no.ind[1])
-    if (no.pop>1){
-      for (i in 2:no.pop ) ind.list <- c(ind.list,1:(no.ind[i]))
-    }
-    # Return values
-    list(colhead=colhead,rowhead=rowhead,no.mar=no.mar,
-         no.all=no.all,no.pop=no.pop,no.ind=no.ind,ind.list=ind.list,
-         mar.list=mar.list, pop.list=pop.list)
-  }
+data.params <- function(dta) gd.data.parameters(dta)
 
 
 "splitdt" <-
@@ -1667,17 +999,17 @@ population.transfer <- function(
         if (is.na(indid)) {
           info(-2,"IndID not numeric")
         } else {
-        col.names <- c(col.names, 
+        col.names <- c(col.names,
                        paste(dta.param$pop.list[p],
                              indid,
                              sep=".")
                        )
       }
-      } #i     
+      } #i
     } #p
     colnames(dta) <- col.names
   }
-  
+
   utils::write.table(dta,
               file = file,
               quote = FALSE)
@@ -1723,12 +1055,12 @@ population.transfer <- function(
 "population.plabsim.save" <- function(file, PopName) {
   dta <- get.population(PopName)
   write(
-    file = file, 
+    file = file,
     paste("#",PopName,population.size.get(PopName)$NoInds,sep=" ")
   )
   for (i in 1:population.size.get(PopName)$NoInds) {
     write(
-      file   = file, 
+      file   = file,
       paste("# ",i," \"",population.info.get(PopName,i),"\"",sep=""),
       append = TRUE
     )
@@ -1751,35 +1083,38 @@ population.transfer <- function(
 
 "rng.choose" <-
   function(rngName="") {
-    c <- .C("rng_choose",
-            as.character(rngName));
+    c <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="rng_choose",
+        arguments=list(as.character(rngName))), PACKAGE="SelectionTools");
   }
 
 "rng.info" <-
   function() {
-    c <- .C("rng_info")
+    c <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="rng_info",
+        arguments=list()), PACKAGE="SelectionTools")
   }
 
 "rng.list" <-
   function() {
-    c <- .C("rng_list")
+    c <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="rng_list",
+        arguments=list()), PACKAGE="SelectionTools")
   }
 
 "rng.init" <-
   function(seed = NULL) {
     if (is.null(seed))
-      return(invisible(.C("rng_init", PACKAGE = "SelectionTools")))
+      return(invisible(.Call("st_legacy_marker", list(action="legacy.result",
+        routine="rng_init",
+        arguments=list()), PACKAGE="SelectionTools")))
     if (!is.numeric(seed) || is.complex(seed) || length(seed) != 1L || is.na(seed) ||
         !is.finite(seed) || seed != trunc(seed) ||
         seed < -.Machine$integer.max || seed > .Machine$integer.max)
       stop("seed must be NULL or a single finite integer in R's seed range")
     set.seed(as.integer(seed))
-    # Fixed-size draws make initialization independent of thread count.
-    seeds <- as.integer(floor(stats::runif(257L) * 1073741824))
-    seeds[-1L] <- seeds[-1L] + 1L
-    result <- .C("rng_init_seed", seeds, as.integer(length(seeds)),
-                 retval = integer(1L),
-                 PACKAGE = "SelectionTools")
+    result <- .Call("st_legacy_sim", list(action="rng.init"),
+                    PACKAGE="SelectionTools")
     if (result$retval != 0L)
       stop("Could not initialize internal random-number generators")
     invisible(result)
@@ -1850,14 +1185,14 @@ population.transfer <- function(
 "list.populations" <-
   function(){
     deprecated("list.populations()","population.list()")
-    population.list()    
+    population.list()
   }
 
 "optimize.population" <-
   function(PopNames){
     deprecated("optimize.population()","population.optimize()")
     population.optimize(PopNames)
-    
+
   }
 
 "population.swap.name" <-
@@ -1868,7 +1203,7 @@ population.transfer <- function(
 
 "remove.all.populations" <-
   function(){
-    deprecated("remove.all.populations()","population.remove.all()")   
+    deprecated("remove.all.populations()","population.remove.all()")
     population.remove.all()
   }
 
@@ -1933,127 +1268,25 @@ population.transfer <- function(
 
 ## Begin Code 2010
 
-genome.segments <-
-function (
-            pops,
-            allele,
-            chromosome=NULL,
-            begin=NULL,
-            end=NULL
-            ) 
-{
- p <- unlist (strsplit(pops, " "))
-  n <- length(p)
-  result <- matrix(ncol = 7, nrow = n)
-  for (i in 1:n) {
-    g <- evaluate.genome(
-            p[i],
-            as.integer(allele),
-            chromosome = chromosome,
-            begin      = begin,
-            end        = end,
-            verbose    = TRUE
-          )
-    result[i, 1] <- nrow(g)
-    result[i, 2] <- mean(g$noBlocks)
-    result[i, 3] <- sdev(g$noBlocks)
-    result[i, 4] <- min(g$noBlocks)
-    result[i, 5] <- stats::quantile(g$noBlocks, 0.1)
-    result[i, 6] <- stats::quantile(g$noBlocks, 0.5)
-    result[i, 7] <- max(g$noBlocks)
-  }
-  colnames(result) <- c("Obs", "Mean", "SDev", "Min", "Q10", 
-                        "Med", "Max")
-  rownames(result) <- p
-  result
-}
+genome.segments <- function(pops, allele, chromosome=NULL,
+                            begin=NULL, end=NULL)
+    .Call("st_legacy_sim", list(action="summary", kind="segments",
+          pops=unlist(strsplit(pops, " ")), allele=allele,
+          chromosome=chromosome, begin=begin, end=end), PACKAGE="SelectionTools")
 
+select.n.best.segments <- function(newPop, oldPop, n=1, allele=1, decreasing=FALSE)
+    invisible(.Call("st_legacy_sim", list(action="select.segments", target=newPop,
+              source=oldPop, n=n, allele=allele, decreasing=decreasing),
+              PACKAGE="SelectionTools"))
 
-"select.n.best.segments" <- function(
-  newPop,
-  oldPop,
-  n=1,
-  allele = 1 ,                                  
-  decreasing = FALSE
-) {
-  popsize <- population.size.get(oldPop)$NoInds
-  if ((n > popsize) || (0 == popsize)) {
-    info(-2,
-      paste(
-        "Population",oldPop,
-        "has only",popsize,
-        "individuals. Selection of\n",n,
-        "individuals is not possible!"
-      )
-    )
-    return (invisible(NULL))
-  }
-  g <- evaluate.genome(
-            oldPop,
-            as.integer(allele),
-            chromosome = NULL,
-            begin      = NULL,
-            end        = NULL,
-            verbose    = TRUE
-          )$noBlocks
-  set.population.gvalue(oldPop,g)
-  population.sort(oldPop, decreasing)
-  population.divide(newPop,oldPop,n)
-}
+linkage.drag <- function(pops, allele, chrom, pos)
+    .Call("st_legacy_sim", list(action="summary", kind="drag",
+          pops=unlist(strsplit(pops, " ")), allele=allele,
+          chromosome=chrom, pos=pos), PACKAGE="SelectionTools")
 
-linkage.drag <-
-function (
-            pops,
-            allele,
-            chrom,
-            pos
-            ) 
-{
-  p <- unlist (strsplit(pops, " "))
-  n <- length(p)
-  result <- matrix(ncol = 7, nrow = n)
-  for (i in 1:n) {
-    g <- evaluate.ld(
-            p[i],
-            as.integer(allele),
-            chrom = chrom,
-            pos   = pos
-          )
-    result[i, 1] <- nrow(g)
-    result[i, 2] <- mean(g$length)
-    result[i, 3] <- sdev(g$length)
-    result[i, 4] <- min(g$length)
-    result[i, 5] <- stats::quantile(g$length, 0.1)
-    result[i, 6] <- stats::quantile(g$length, 0.5)
-    result[i, 7] <- max(g$length)
-  }
-  colnames(result) <- c("Obs", "Mean", "SDev", "Min", "Q10", 
-                        "Med", "Max")
-  rownames(result) <- p
-  result
-}
-
-"evaluate.ld" <- function (
-  PopName,
-  allele,
-  chrom,
-  pos
-)
-{
-
-  empty <- rep(0,as.integer(population.size.get(PopName)$NoInds));
-
-  c  <- .C("evaluate_ld",
-             as.character(PopName),
-             as.integer(allele),
-             as.integer(chrom),
-             as.double(pos),
-             ld  = as.double(empty)
-           )
-  
-  ld  <- data.frame(length=c$ld)
-  return(ld)
-}
+"evaluate.ld" <- function (PopName, allele, chrom, pos) 
+.Call("st_legacy_sim", list(action = "output", operation = "ld", population = as.character(PopName), 
+    allele = as.integer(allele), chromosome = as.integer(chrom), position = as.double(pos)), PACKAGE = "SelectionTools")
 
 
 ## End Code 2010
@@ -2065,169 +1298,36 @@ function (
 
 "gd.allow.zero.frequencies" <-
   function(allow=0){
-    c  <- .C("set_allow_zeros",
-             as.integer(allow)
-             )
+    c  <- .Call("st_legacy_marker", list(action="legacy.result",
+        routine="set_allow_zeros",
+        arguments=list(as.integer(allow))), PACKAGE="SelectionTools")
   }
 
-"gd.status.zero.frequencies" <-
-  function(){
-    allow=99;
-    c  <- .C("get_allow_zeros",
-             allow=as.integer(allow)
-             )
-    c$allow
-  }
+"gd.status.zero.frequencies" <- function()
+  .Call("st_legacy_sim", list(action="allow.zeros"), PACKAGE="SelectionTools")
 
-"gd.allele.frequencies" <-
-  function(dta){
-    p <- gd.data.parameters(dta)
-    no.pop.u <- p$no.pop
-    pop.u    <- 1:p$no.pop
-    no.ind.u <- p$no.ind
-    ind.u    <- p$ind.list
-    no.mar.u <- p$no.mar
-    mar.u    <- 1:p$no.mar
-    DTA  <- as.matrix(dta)
-    DTA[is.na(DTA)] <- -1
-    FREQ <- matrix(16,nrow=sum(p$no.all[mar.u]),ncol=p$no.pop)
-    c  <- .C("allele_freq",
-             as.integer(p$no.pop),
-             as.integer(p$no.ind),
-             as.integer(p$no.mar),
-             as.integer(p$no.all),
-             as.integer(no.ind.u),
-             as.integer(ind.u),
-             DTA =as.double(DTA),
-             FREQ=as.double(FREQ)
-            )
-    c$FREQ[c$FREQ==-1] <- NA
-    FREQ <- data.frame(matrix(c$FREQ,ncol=p$no.pop))
-    names(FREQ) <- c(as.character(p$pop.list))
-    row.names(FREQ) <- row.names(dta)
-    FREQ
-  }
+gd.allele.frequencies <- function(dta)
+    .Call("st_legacy_sim", list(action="data", operation="frequencies", data=dta),
+          PACKAGE="SelectionTools")
 
-"gd.correct.missing" <-
-  function(dta){
-    p <- gd.data.parameters(dta)
-    no.pop.u <- p$no.pop
-    pop.u    <- 1:p$no.pop
-    no.ind.u <- p$no.ind
-    ind.u    <- p$ind.list
-    no.mar.u <- p$no.mar
-    mar.u    <- 1:p$no.mar
-    DTA  <- as.matrix(dta)
-    DTA[is.na(DTA)] <- -1
-    FREQ <- matrix(16,nrow=sum(p$no.all[mar.u]),ncol=p$no.pop)
-    c  <- .C("correct_missing",
-             as.integer(p$no.pop),
-             as.integer(p$no.ind),
-             as.integer(p$no.mar),
-             as.integer(p$no.all),
-             as.integer(no.ind.u),
-             as.integer(ind.u),
-             DTA =as.double(DTA),
-             FREQ=as.double(FREQ)
-            )
-    c$DTA[c$DTA==-1] <- NA
-    c$DTA[c$DTA==0.5] <- 1
-    result <- data.frame(matrix(c$DTA,ncol=length(p$ind.list)))
-    names(result) <- names (dta)
-    rownames(result) <- rownames (dta)
-    result
- }
+gd.correct.missing <- function(dta)
+    .Call("st_legacy_sim", list(action="data", operation="correct", data=dta),
+          PACKAGE="SelectionTools")
 
-"gd.list.missing" <-
-  function (dta){
-    r <- data.frame(ind=" ",marker=" ")
-    y <- gd.splitdot(rownames(dta))[,1]
-    for (i in 1:length(dta)){
-      m <- levels(as.factor(as.character(y[is.na(dta[,i])])))
-      n <-  names(dta)[i]
-      r <- rbind(r,data.frame(ind=rep(n,length(m)),marker=m))
-      remove(m,n)
-    }
-    r <- r[-1,]
-    r
-  }
+gd.list.missing <- function(dta)
+    .Call("st_legacy_sim", list(action="data", operation="missing", data=dta),
+          PACKAGE="SelectionTools")
 
-"gd.list.irregular" <-
-  function (dta1){
-    dta <- gd.correct.missing(dta1)
-    r <- data.frame(ind=" ",marker=" ")
-    y <- gd.splitdot(rownames(dta))[,1]
-    for (i in 1:length(dta)){
-      index <-  (dta[,i] != 0) & (dta[,i] != 1) & (dta[,i] != 0.5)
-      m <- levels(as.factor(as.character(y[index])))
-      n <-  names(dta)[i]
-      r <- rbind(r,data.frame(ind=rep(n,length(m)),marker=m))
-      remove(m,n)
-    }
-    r <- r[-1,]
-    r
-  }
+gd.list.irregular <- function(dta1)
+    .Call("st_legacy_sim", list(action="data", operation="irregular", data=dta1),
+          PACKAGE="SelectionTools")
 
-"gd.distance.similarity" <-
-  function(dta,measure,par,boot=0,
-           no.pop.u=0,pop.u=0,no.ind.u=0,ind.u=0,no.mar.u=0,mar.u=0){
-    # Distance measures
-    if (measure=="rd")  m <- 1
-    if (measure=="mrd") m <- 2
-    if (measure=="euc") m <- 3
-    # Similarity coefficients
-    if (measure=="dic") m <- 11
-    if (measure=="jac") m <- 12
-    if (measure=="sma") m <- 13
-    if (pmatch("sdev",par,nomatch=0)) s <- 1 else s <- 0
-    if (pmatch("sdev/jack",par,nomatch=0)) s <- 1 else s <- 0
-    if (pmatch("sdev/boot",par,nomatch=0)) s <- boot
-    p <- gd.data.parameters(dta)
-    if(no.pop.u==0) no.pop.u <- p$no.pop
-    if(pop.u   ==0) pop.u    <- 1:p$no.pop
-    if(no.ind.u==0) no.ind.u <- p$no.ind
-    if(ind.u   ==0) ind.u    <- p$ind.list
-    if(no.mar.u==0) no.mar.u <- p$no.mar
-    if(mar.u   ==0) mar.u    <- 1:p$no.mar
-    DTA  <- as.matrix(dta)
-    DTA[is.na(DTA)] <- -1
-    FREQ <- matrix(16,nrow=sum(p$no.all[mar.u]),ncol=p$no.pop)
-    u    <- (((p$no.pop^2)-p$no.pop)/2 )
-    DIST <- as.double(1:u)
-    if (s) SDEV  <- DIST
-    else SDEV  <- 1
-    c  <- .C("gen_dist",
-             as.integer(m),
-             as.integer(p$no.pop),
-             as.integer(p$no.ind),
-             as.integer(p$no.mar),
-             as.integer(p$no.all),
-             as.integer(no.pop.u),
-             as.integer(pop.u),
-             as.integer(no.ind.u),
-             as.integer(ind.u),
-             as.integer(no.mar.u),
-             as.integer(mar.u),
-             DTA =as.double(DTA),
-             FREQ=as.double(FREQ),
-             DIST=as.double(DIST),
-             as.integer(s),  
-             SDEV=as.double(SDEV),
-             as.character(par)
-            )
-    r1 <- r2 <- array("",c(u,1))
-    i3 <- 0;
-    for (i1 in 1:(p$no.pop-1)){ 
-      for (i2 in (i1+1):p$no.pop){
-        i3 <- i3 + 1;
-        r1[i3] <- p$pop.list[i1]; 
-        r2[i3] <- p$pop.list[i2];
-      }
-    }
-    result <- data.frame(OTU1=r1,OTU2=r2,Measure=c$DIST)
-    if (s)  result <- data.frame(result,SDev=c$SDEV);
-    result
-  }
+gd.distance.similarity <- function(dta, measure, par, boot=0,
+        no.pop.u=0, pop.u=0, no.ind.u=0, ind.u=0, no.mar.u=0, mar.u=0)
+    .Call("st_legacy_sim", list(action="data", operation="distance", data=dta,
+          measure=measure, par=par, boot=boot, no.pop.u=no.pop.u, pop.u=pop.u,
+          no.ind.u=no.ind.u, ind.u=ind.u, no.mar.u=no.mar.u, mar.u=mar.u),
+          PACKAGE="SelectionTools")
 
 "gd.similarity.coefficient" <-
   function(dta,measure="jac",par="dist",boot=0,
@@ -2255,23 +1355,14 @@ function (
       info (-1,"Each population should consist of only one individual")
       info (-1,"when using similarity coefficients.")
     }
-    y <- dta
-    if (resample.primers){
-      # Respample over primers
-      x <- rownames(dta)
-      m <- regexpr("\\.",x)
-      good <- m > 0
-      lens <- attr(m,"match.length")
-      x <- paste(substring(x,1,m[good]-1),substring(x,m[good]+lens),sep="")
-      m <- regexpr("\\+",x)
-      good <- m > 0
-      lens <- attr(m,"match.length")
-      x <- paste(substring(x,1,m[good]-1),".",substring(x,m[good]+lens),sep="")
-      rownames(y) <- x
-    }
-    
-    gd.distance.similarity(y,measure,par,boot,
-           no.pop.u,pop.u,no.ind.u,ind.u,no.mar.u,mar.u)
+    if (resample.primers)
+      .Call("st_legacy_sim", list(action="data", operation="distance", data=dta,
+            measure=measure, par=par, boot=boot, no.pop.u=no.pop.u, pop.u=pop.u,
+            no.ind.u=no.ind.u, ind.u=ind.u, no.mar.u=no.mar.u, mar.u=mar.u,
+            primers=TRUE), PACKAGE="SelectionTools")
+    else
+      gd.distance.similarity(dta,measure,par,boot,
+             no.pop.u,pop.u,no.ind.u,ind.u,no.mar.u,mar.u)
   }
 
 "gd.genetic.distance" <-
@@ -2282,7 +1373,7 @@ function (
       info(-2,"Distance measure not defined")
       return (invisible(NULL))
     }
-    
+
     p <- gd.data.parameters(dta)
 
     if ( sum(p$no.all)==p$no.mar){
@@ -2308,98 +1399,42 @@ function (
            no.pop.u,pop.u,no.ind.u,ind.u,no.mar.u,mar.u)
   }
 
-"gd.data.parameters" <-
-  function (dta){
-    colhead <- gd.splitdot(colnames(dta))
-    rowhead <- gd.splitdot(row.names(dta))
-    # Number of markers
-    no.mar  <- length(levels(as.factor(rowhead[,1])))
-    # Number of alleles per marker and list of markers
-    no.all      <- matrix(0,ncol=no.mar)
-    no.all[1]   <- 1
-    mar.list    <- matrix("",nrow=no.mar)
-    mar.list[1] <- rowhead[1,1] 
-    no.rows <- nrow(rowhead)
-    if (no.rows>1){
-      k <- 1
-      for (i in 2:no.rows) {
-        if ( rowhead[i,1] == rowhead[i-1,1] ) {
-          no.all[k] <- no.all[k] + 1
-        }
-        else {
-          k            <- k+1
-          no.all[k]    <- 1
-          mar.list[k]  <- rowhead[i,1]
-        }
-      }
-    }
-    # Number of populations
-    no.pop  <- length(levels(as.factor(colhead[,1])))
-    # Number of individuals and list of populations
-    no.ind      <- matrix(0,ncol=no.pop)
-    no.ind[1]   <- 1
-    pop.list    <- matrix("",nrow=no.pop)
-    pop.list[1] <- colhead[1,1]
-    no.cols <- nrow(colhead)
-    if (no.cols>1){
-      k <- 1
-      for (i in 2:no.cols) {
-        if ( colhead[i,1] == colhead[i-1,1] ) {
-          no.ind[k] <- no.ind[k] + 1
-        }
-        else {
-          k           <- k+1
-          no.ind[k]   <- 1
-          pop.list[k] <- colhead[i,1] 
-        }
-      }
-    }
-    # List of individuals
-    ind.list <- 1:(no.ind[1])
-    if (no.pop>1){
-      for (i in 2:no.pop ) ind.list <- c(ind.list,1:(no.ind[i]))
-    }
-    # Return values
-    list(colhead=colhead,rowhead=rowhead,no.mar=no.mar,
-         no.all=no.all,no.pop=no.pop,no.ind=no.ind,ind.list=ind.list,
-         mar.list=mar.list, pop.list=pop.list)
-  }
+gd.data.parameters <- function(dta)
+    .Call("st_legacy_sim", list(action="data", operation="parameters", data=dta),
+          PACKAGE="SelectionTools")
 
 "gd.splitdot" <-
   function(m.a) {
     .Call("splitdot", as.character(m.a) )
   }
 
-"gd.mk.matr" <- function (dta,distance){
-  p <- gd.data.parameters(dta)
-  aa <- distance[,3]
-  bb <- p$no.pop
-  cc <- p$pop.list
-  dd <- structure(aa, Size = bb, Labels = cc,
-                  Diag = FALSE, Upper = FALSE, method = "euclidean", class = "dist")
-  as.matrix(dd)         
-}
+gd.mk.matr <- function(dta, distance)
+    .Call("st_legacy_sim", list(action="data", operation="matrix", data=dta,
+          distance=distance[,3]), PACKAGE="SelectionTools")
 
-"gd.pcoa" <-  function(dta,k=3){
-  distance <- gd.genetic.distance(dta,measure="mrd")
-  D <- gd.mk.matr(dta,distance)
-  Y <-  stats::cmdscale( D, k=k ) 
-  Y
-}
+"gd.pcoa" <- function(dta, k=3)
+    .Call("st_legacy_sim", list(action="pcoa", data=dta, k=k),
+          PACKAGE="SelectionTools")
 
 ###############################################################################
 # Genetic Distances End
 ###############################################################################
 
-sdev <- function (x, na.rm = FALSE) 
-{
-    if (is.matrix(x)) {
-        apply(x, 2, sd, na.rm = na.rm)
-    }
-    else if (is.vector(x)) 
-        sqrt(var(x, na.rm = na.rm))
-    else if (is.data.frame(x)) {
-        sapply(x, sd, na.rm = na.rm)
-    }
-    else sqrt(var(as.vector(x), na.rm = na.rm))
-}
+sdev <- function(x, na.rm=FALSE)
+    .Call("st_legacy_sim", list(action="sdev", data=x, na.rm=na.rm),
+          PACKAGE="SelectionTools")
+
+# Native identity, breeding-map and snapshot entry points.
+population.pedigree <- function(name, source=c("auto", "simulation", "marker"))
+    .Call("st_population_pedigree", as.character(name), match.arg(source), PACKAGE="SelectionTools")
+
+population.cross <- function(name, pool1, pool2, n)
+    .Call("st_population_cross", as.character(name), as.character(pool1), as.character(pool2),
+          as.double(n), PACKAGE="SelectionTools")
+
+population.marker.map <- function(n.markers)
+    invisible(.Call("st_population_marker_map", n.markers, PACKAGE="SelectionTools"))
+
+# Extend the active simulation map to this total marker count.
+extend.marker.map <- function(n.markers)
+    invisible(.Call("st_extend_marker_map", n.markers, PACKAGE="SelectionTools"))

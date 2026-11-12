@@ -1,9 +1,9 @@
 \name{evaluate.hap.return.table}
 \alias{evaluate.hap.return.table}
-\title{Return the table produced by the current haplotype evaluation}
+\title{Returns the table produced by the current haplotype evaluation}
 
 \description{
-Return the table produced by the current haplotype evaluation.
+Returns the table produced by the current haplotype evaluation.
 }
 
 \usage{

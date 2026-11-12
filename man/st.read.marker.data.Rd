@@ -12,7 +12,7 @@ st.read.marker.data(filename, format, auxfiles = FALSE, data.set = "default")
 \arguments{
 \item{filename}{Character string naming the marker input file. Absolute paths are used directly; relative names are resolved using \code{st.input.dir}.}
    \item{format}{Character string selecting the input layout: \code{"l"} for list format, \code{"m"} for marker-major matrix format, \code{"t"} for transposed semicolon-separated matrix format, or \code{"n"} for NTSys/Plabsim allele-incidence format.}
-   \item{auxfiles}{Logical. If \code{TRUE}, marker, individual, and genotype summary files are created in the R session temporary directory, read back by the R wrapper, and removed before the function returns.}
+   \item{auxfiles}{Logical. If \code{TRUE}, marker, individual, and genotype summary tables are returned directly from memory.}
    \item{data.set}{Character string naming the SelectionTools marker data set that is replaced after a successful read.}
 }
 %
@@ -26,7 +26,7 @@ In matrix genotype fields, a single allele is interpreted as homozygous. A slash
 
 The read is transactional. The new marker data, names, genotype matrix, and marker statistics are built and validated before replacing an existing data set. If the file cannot be read or is structurally invalid, the previous marker data set is left unchanged. Duplicate marker or individual identities that would make a matrix ambiguous are rejected. NTSys marker blocks must be contiguous and incidence values must be zero or one.
 
-After a successful read the marker statistics are recomputed from the imported matrix. When \code{auxfiles=TRUE}, the R wrapper reads the generated individual, marker, and genotype summaries back into R and removes the temporary output files.
+After a successful read the marker statistics are recomputed from the imported matrix. When \code{auxfiles=TRUE}, the individual, marker, and genotype summaries are returned directly from memory.
 }
 
 \value{

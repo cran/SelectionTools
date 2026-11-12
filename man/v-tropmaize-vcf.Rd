@@ -2,7 +2,7 @@
 \alias{v-tropmaize-vcf}
 \alias{v.tropmaize.vcf}
 \docType{data}
-\title{Compact STvcf Genotype and Genetic-Map Data for Tropical Maize}
+\title{Compacts STvcf Genotype and Genetic-Map Data for Tropical Maize}
 \description{
 A compact STvcf representation of genotypes and genetic linkage positions for
 264 tropical maize inbred lines. It contains markers occurring in both the
@@ -44,10 +44,11 @@ REF label \code{"1"} is VCF allele index 0 and ALT label \code{"2"} is VCF
 allele index 1. Loading maps these indices to internal SelectionTools alleles
 1 and 2 and maps raw 255 to the internal SelectionTools missing representation.
 
-The marker and individual identifiers obey the strict STvcf/SelectionTools
-name convention used by the new converters: only ASCII letters and digits are
-permitted. The tropical-maize marker IDs are alphanumeric and the individual
-IDs are the digit strings 1 through 264.
+The marker and individual identifiers obey the STvcf/SelectionTools name
+convention used by the converters: identifiers are non-empty and contain no
+whitespace or control characters. Ordinary punctuation is permitted. The
+tropical-maize marker IDs happen to be alphanumeric and the individual IDs are
+the digit strings 1 through 264.
 
 Marker statistics and individual missing-data frequencies after loading are
 calculated from the 1076 markers in this object. Applying NoAll.MAX=2,

@@ -1,9 +1,9 @@
 \name{select.n.best.segments}
 \alias{select.n.best.segments}
-\title{Select the best genome segments according to the requested criterion}
+\title{Selects the best genome segments according to the requested criterion}
 
 \description{
-Select the best genome segments according to the requested criterion.
+Selects the best genome segments according to the requested criterion.
 }
 
 \usage{

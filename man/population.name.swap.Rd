@@ -3,7 +3,7 @@
 \title{Swap the names of two simulation populations}
 
 \description{
-Swaps the registered names of two simulation populations.
+Swaps the supported names of two simulation populations.
 }
 
 \usage{
@@ -15,5 +15,5 @@ population.name.swap(NameP1, NameP2)
    \item{NameP2}{Name of the second parental population.}
 }
 \value{
-An invisible \code{list} returned by the underlying \code{.C} routine. The list is an implementation-level result containing the arguments returned by the compiled routine; the function is primarily called for its side effect of swapping simulation-population names.
+An invisible \code{list} returned by the compiled routine. The list is an implementation-level result containing the arguments returned by the compiled routine; the function is primarily called for its side effect of swapping simulation-population names.
 }

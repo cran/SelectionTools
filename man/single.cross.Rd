@@ -1,9 +1,9 @@
 \name{single.cross}
 \alias{single.cross}
-\title{Create or evaluate a single cross}
+\title{Creates or evaluate a single cross}
 
 \description{
-Create or evaluate a single cross.
+Creates or evaluate a single cross.
 }
 
 \usage{

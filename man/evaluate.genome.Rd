@@ -31,4 +31,4 @@ loaded marker map.
 A \code{data.frame} with one row per individual. It always contains \code{ratio}, the evaluated allele proportion. With \code{verbose = TRUE} it additionally contains \code{length}, \code{total}, and \code{noBlocks}, as returned by the genome-evaluation routine.
 }
 
-\note{See the \code{lib00.example1} for an application of the command.}
+\note{Further details appear in the \code{lib00.example1} for an application of the command.}

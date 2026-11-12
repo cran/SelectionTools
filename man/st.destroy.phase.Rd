@@ -1,6 +1,6 @@
 \name{st.destroy.phase}
 \alias{st.destroy.phase}
-\title{Randomize the Stored Phase of a Marker Data Set}
+\title{Randomizes the Stored Phase of a Marker Data Set}
 
 \description{
 Destroys known phase in a SelectionTools marker data set without changing any
@@ -25,9 +25,9 @@ the allele pair at every marker remains biologically identical, while the
 correspondence of the two stored homologues across heterozygous markers is
 randomized.
 
-The function uses R's random-number generator.  Call \code{set.seed()} before
-\code{st.destroy.phase()} when a reproducible randomized phase is required.
-The marker data set is modified in place and its native phase state is set to
+The function uses R's random-number generator.  A call to \code{set.seed()} before
+\code{st.destroy.phase()} provides reproducible randomized phase.
+The marker data set is modified in place and its compiled phase state is set to
 \code{FALSE}, including the degenerate case in which no heterozygous genotype
 was present.
 }

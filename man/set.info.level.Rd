@@ -23,7 +23,7 @@ set.info.level(level)
    \item{level}{information level}
 }
 \value{
-An invisible \code{list} returned by the underlying \code{.C} routine. The list is an implementation-level result containing the arguments returned by the compiled routine; the function is primarily called for its side effect of setting the simulation information level.
+An invisible \code{list} returned by the compiled routine. The list is an implementation-level result containing the arguments returned by the compiled routine; the function is primarily called for its side effect of setting the simulation information level.
 }
 \note{
   If you want to read only error messages then you have to set your

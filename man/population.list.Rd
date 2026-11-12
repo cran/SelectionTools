@@ -3,7 +3,7 @@
 \title{List a population or population data}
 
 \description{
-Lists the currently registered simulation populations and their active sizes.
+Lists the currently supported simulation populations and their active sizes.
 }
 
 \usage{

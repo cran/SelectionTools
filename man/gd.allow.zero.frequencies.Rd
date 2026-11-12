@@ -21,5 +21,5 @@ gd.allow.zero.frequencies(allow=0)
   \code{gd.maize.aflp}.}
 }
 \value{
-An invisible \code{list} returned by the underlying \code{.C} routine. The list is an implementation-level result containing the arguments returned by the compiled routine; the function is primarily called for its side effect of setting whether zero allele frequencies are allowed in the genetic-diversity routines.
+An invisible \code{list} returned by the compiled routine. The list is an implementation-level result containing the arguments returned by the compiled routine; the function is primarily called for its side effect of setting whether zero allele frequencies are allowed in the genetic-diversity routines.
 }

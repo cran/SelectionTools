@@ -97,12 +97,12 @@ no longer current.
 }
 
 \value{
-An invisible \code{list} returned by the underlying \code{.C} routine. Component \code{r} is the status value used by the simulation bridge; the function is primarily called for its side effect of transferring the requested data to the simulation backend.
+An invisible \code{list} returned by the compiled routine. Component \code{r} is the status value used by the simulation bridge; the function is primarily called for its side effect of transferring the requested data to the simulation backend.
 }
 
 \references{
 Stranden I, Christensen OF (2011) Allele coding in genomic evaluation.
-Genetics Selection Evolution 43:25. See Equation (2).
+Genetics Selection Evolution 43:25. Further details appear in Equation (2).
 }
 
 \seealso{

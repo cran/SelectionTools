@@ -564,8 +564,8 @@ x2 <- st.marker.data.statistics(data.set="t3detail")
 
 \section{Using predefined haplotype definitions}
 
-Predefined block boundaries can be transferred to another marker data set with
-\cde{st.set.hblocks()}. The \cde{haplotype.list} argument can be the data frame
+\cde{st.set.hblocks()} can be used to transfer predefined block boundaries
+can be transferred to another marker data set. The \cde{haplotype.list} argument can be the data frame
 returned by \cde{st.def.hblocks()} or a manually constructed data frame. The
 current wrapper uses the \cde{Markers} column to construct the positional block
 assignment. Consequently, the target data set must contain the corresponding
@@ -601,7 +601,7 @@ st.recode.hil(data.set="tother")
 @
 
 
-\section{LD definitions implemented for homozygous data}
+\section{LD measures for homozygous data}
 
 For an allele $x$ at one locus and an allele $y$ at a second locus, let
 $f_x$ and $f_y$ denote allele frequencies and $f_{xy}$ the frequency of the
@@ -629,7 +629,7 @@ D'=\sum_x\sum_y f_xf_y D'_{xy}.
 The behavior and interpretation of different LD measures, including their
 dependence on allele frequencies, are reviewed by Hedrick (1987).
 
-\section{Gametic phase of the input data}
+\section{LD measures for heterozygous data}
 
 \subsection{Known gametic phase}
 

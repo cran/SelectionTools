@@ -1,9 +1,9 @@
 \name{evaluate.hap.return.genotype}
 \alias{evaluate.hap.return.genotype}
-\title{Return genotype results from the current haplotype evaluation}
+\title{Returns genotype results from the current haplotype evaluation}
 
 \description{
-Return genotype results from the current haplotype evaluation.
+Returns genotype results from the current haplotype evaluation.
 }
 
 \usage{

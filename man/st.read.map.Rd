@@ -14,8 +14,8 @@ st.read.map(filename, skip = 0, format = "cpms", m.stretch = 1,
 \item{filename}{Character string naming the map input file. Absolute paths are used directly; relative names are resolved using \code{st.input.dir}.}
    \item{skip}{Non-negative integer giving the number of initial input lines to ignore.}
    \item{format}{Character string specifying \code{"cpms"} or \code{"mcp"}.}
-   \item{m.stretch}{Finite numeric multiplier applied to every map position after reading. Use 1 when positions already use the desired map unit.}
-   \item{auxfiles}{Logical. If \code{TRUE}, the matched and sorted map is written to an internal file in the R session temporary directory, read back by the R wrapper, and removed before the function returns.}
+   \item{m.stretch}{Finite numeric multiplier applied to every map position after reading. A value of 1 retains positions already in the desired map unit.}
+   \item{auxfiles}{Logical. If \code{TRUE}, the matched and sorted map is returned directly from memory.}
    \item{data.set}{Character string naming the marker data set to which the map is attached.}
 }
 %

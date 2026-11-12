@@ -1,6 +1,6 @@
 \name{st.read.map.df}
 \alias{st.read.map.df}
-\title{Load a marker map from a data frame or matrix}
+\title{Loads a marker map from a data frame or matrix}
 \description{
   Attaches a linkage map supplied in R to an existing marker data set,
   without writing temporary files.
@@ -30,4 +30,21 @@
 }
 \value{
   Returns \code{NULL} invisibly. The named marker data set is updated.
+}
+\examples{
+data("v-tropmaize-vcf", package = "SelectionTools")
+marker.frame <- st.STvcf.to.dataframe(v.tropmaize.vcf)[1:12, c(1:6, 7:14)]
+vcf <- st.dataframe.to.STvcf(marker.frame)
+st.load.vcf.data(vcf, data.set = "maize.example")
+dosage <- t(matrix(as.integer(vcf$allele1) + as.integer(vcf$allele2),
+                   nrow = length(vcf$ID)))
+dosage[dosage > 2] <- NA_integer_
+dimnames(dosage) <- list(vcf$individual, vcf$ID)
+st.read.marker.data.df(dosage, format = "matrix", data.set = "mapped.example")
+map <- data.frame(marker = vcf$ID, chrom = vcf$CHROM, pos = vcf$POS)
+st.read.map.df(map, data.set = "mapped.example")
+}
+\seealso{
+  \code{\link{st.read.map}}, \code{\link{st.read.marker.data.df}},
+  \code{\link{define.genome}}.
 }

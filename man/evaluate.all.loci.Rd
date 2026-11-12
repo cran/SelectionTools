@@ -1,9 +1,9 @@
 \name{evaluate.all.loci}
 \alias{evaluate.all.loci}
-\title{Evaluate all loci in a population}
+\title{Evaluates all loci in a population}
 
 \description{
-Evaluate all loci in a population.
+Evaluates all loci in a population.
 }
 
 \usage{

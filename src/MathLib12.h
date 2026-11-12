@@ -16,8 +16,27 @@ double st_rand_uniform_stream(int stream);
 double st_rand_uniform_pos(void);
 double st_rand_uniform_pos_stream(int stream);
 void st_rng_cleanup(void);
-/* Called only from the serial initialization path. */
+
 void st_rng_set_seed(uint32_t seed);
 int st_rng_is_seeded(void);
+
+typedef double st_optim_function(int, double *, void *);
+typedef void st_optim_gradient(int, double *, double *, void *);
+typedef void st_optim_monitor(int, int, double, double, const double *, int,
+                              void *);
+
+typedef struct
+{
+    int status, iterations, function_calls, gradient_calls;
+    double value, projected_gradient;
+    const char *message;
+} st_lbfgsb_result;
+
+void st_lbfgsb_minimize(int n, int history, double *x, const double *lower,
+                        const double *upper, const int *bounds,
+                        st_optim_function *function,
+                        st_optim_gradient *gradient, void *data, int maxit,
+                        double factr, double pgtol, st_optim_monitor *monitor,
+                        void *monitor_data, st_lbfgsb_result *result);
 
 #endif

@@ -1,6 +1,6 @@
 \name{gs.cross.eval.mu}
 \alias{gs.cross.eval.mu}
-\title{Evaluate Crosses by Expected Progeny Mean}
+\title{Evaluates Crosses by Expected Progeny Mean}
 
 \description{
 Calculates the expected mean performance of the progeny for every possible

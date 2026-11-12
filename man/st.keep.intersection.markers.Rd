@@ -2,7 +2,7 @@
 %
 \name{st.keep.intersection.markers}
 \alias{st.keep.intersection.markers}
-\title{Keep the Marker Intersection of Two SelectionTools Data Sets}
+\title{Keeps the Marker Intersection of Two SelectionTools Data Sets}
 \description{
 Restricts two SelectionTools marker data sets to markers present in both data sets.
 }

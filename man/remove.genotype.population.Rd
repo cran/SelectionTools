@@ -1,6 +1,6 @@
 \name{remove.genotype.population}
 \alias{remove.genotype.population}
-\title{Remove cached genotype information from a population}
+\title{Removes cached genotype information from a population}
 
 \description{
 Clears cached marker-genotype data for one or more simulation populations.
@@ -14,7 +14,7 @@ remove.genotype.population(PopNames)
 \item{PopNames}{Population name or population specification.}
 }
 \value{
-An invisible \code{list} returned by the underlying \code{.C} routine. The list is an implementation-level result containing the arguments returned by the compiled routine; the function is primarily called for its side effect of removing cached genotype information.
+An invisible \code{list} returned by the compiled routine. The list is an implementation-level result containing the arguments returned by the compiled routine; the function is primarily called for its side effect of removing cached genotype information.
 }
 
 \details{

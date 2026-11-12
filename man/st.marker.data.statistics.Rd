@@ -2,7 +2,7 @@
 %
 \name{st.marker.data.statistics}
 \alias{st.marker.data.statistics}
-\title{Summarize a SelectionTools Marker Data Set}
+\title{Summarizes a SelectionTools Marker Data Set}
 \description{
 Recomputes and optionally returns summary statistics for the current marker matrix.
 }
@@ -12,11 +12,11 @@ st.marker.data.statistics(data.set ="default", filename ="marker.stats",
 }
 \arguments{
 \item{data.set}{Character string naming the marker data set.}
-   \item{filename}{Character string retained for compatibility and used as part of the names of internal statistics files in the R session temporary directory. These temporary files are removed before the function returns.}
-   \item{ind}{Logical. Request the individual missingness table.}
-   \item{mar}{Logical. Request the marker statistics table.}
-   \item{gen}{Logical. Request the genotype matrix table.}
-   \item{auxfiles}{Logical. If \code{TRUE}, the compiled result is written to the R session temporary directory, read back by the R wrapper, and removed before the function returns.}
+   \item{filename}{Character string retained for compatibility. The statistics are returned directly from memory.}
+   \item{ind}{Logical. TRUE requests the individual missingness table.}
+   \item{mar}{Logical. TRUE requests the marker statistics table.}
+   \item{gen}{Logical. TRUE requests the genotype matrix table.}
+   \item{auxfiles}{Logical. If \code{TRUE}, the result is returned directly from memory.}
 }
 
 \details{
@@ -52,32 +52,12 @@ Invisibly returns a named \code{list} containing the requested marker-data summa
 }
 
 \examples{
-# Two markers and three individuals
-markers <- data.frame(
-   CHROM = c(1, 1),
-   POS = c(5, 10),
-   ID = c("M1", "M2"),
-   REF = c("A", "C"),
-   ALT = c("G", "T"),
-   Plant1 = c("0/0", "0/1"),
-   Plant2 = c("0/1", "1/1"),
-   Plant3 = c("1/1", "./.")
-)
-
-st.load.vcf.data(
-   st.dataframe.to.STvcf(markers),
-   data.set = "example"
-)
-
-stats <- st.marker.data.statistics(data.set = "example")
-stats$genotypes
-
-# Expected genotype entries:
-# Marker  Plant1  Plant2  Plant3
-# M1      1/1     1/2     2/2
-# M2      1/2     2/2     --
-#
-# 1 = REF, 2 = first ALT, -- = missing genotype
+data("v-tropmaize-vcf", package = "SelectionTools")
+marker.frame <- st.STvcf.to.dataframe(v.tropmaize.vcf)[1:12, c(1:6, 7:14)]
+vcf <- st.dataframe.to.STvcf(marker.frame)
+st.load.vcf.data(vcf, data.set = "maize.example")
+statistics <- st.marker.data.statistics(data.set = "maize.example")
+statistics$genotypes
 }
 
 \seealso{

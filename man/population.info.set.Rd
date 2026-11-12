@@ -1,6 +1,6 @@
 \name{population.info.set}
 \alias{population.info.set}
-\title{Set stored information for an individual}
+\title{Sets stored information for an individual}
 
 \description{
 Sets the character information stored for an individual in a simulation population.

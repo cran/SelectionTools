@@ -39,29 +39,17 @@ within a locus, evaluate that locus separately.
 }
 
 \examples{
-map <- data.frame(
-   chrom = 1:2,
-   pos = c(0.01, 0.02),
-   name = c("form", "color"),
-   class = paste0("trait", 1:2)
-)
-define.genome(map)
-
-init.population("P1", homozygote(1))
-init.population("P2", homozygote(2))
-cross("F1", "P1", "P2", 10)
-cross("F2", "F1", "F1", 1000, self = 1)
-
-# Allele frequencies at a single locus
-evaluate.allele.freq2("F2", "form")
-
-# Allele counts at both loci, with frequencies normalised
-# across the complete table
-evaluate.allele.freq2("F2", map$name)
-
-# Evaluate each locus separately for within-locus frequencies
-evaluate.allele.freq2("F2", "form")
-evaluate.allele.freq2("F2", "color")
+data("v-tropmaize-vcf", package = "SelectionTools")
+marker.frame <- st.STvcf.to.dataframe(v.tropmaize.vcf)[1:12, c(1:6, 7:14)]
+vcf <- st.dataframe.to.STvcf(marker.frame)
+st.load.vcf.data(vcf, data.set = "maize.example")
+reset.all()
+st.set.sim.gp(data.set = "maize.example")
+st.set.sim.mp(data.set = "maize.example")
+st.set.sim.pp("Maize", data.set = "maize.example")
+loci <- vcf$ID
+evaluate.allele.freq2("Maize", loci[1])
+evaluate.allele.freq2("Maize", loci[1:2])
 }
 
 \seealso{

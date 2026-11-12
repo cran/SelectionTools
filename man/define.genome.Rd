@@ -1,6 +1,6 @@
 \name{define.genome}
 \alias{define.genome}
-\title{Define a genome from a linkage map and optional chromosome lengths}
+\title{Defines a genome from a linkage map and optional chromosome lengths}
 
 \description{
 Defines a diploid simulation genome and linkage map from a data frame
@@ -56,23 +56,13 @@ Existing simulation populations and effect definitions are removed.
 }
 
 \examples{
-map <- data.frame(chrom = 1:2,
-   pos = c(0.01,0.02),
-   name = c("form","color"))
+data("v-tropmaize-map", package = "SelectionTools")
+map <- v.tropmaize.map[1:12, c("chrom", "pos", "name")]
+map$pos <- map$pos / 100
 define.genome(map)
-
-map <- data.frame(chrom = 1:2,
-   pos = c(0.01,0.02),
-   name = c("form","color"),
-   class = paste0("trait",1:2))
-define.genome(map)
-
-map <- data.frame(chrom = 1:2,
-   pos = c(0.01,0.02),
-   name = c("form","color"),
-   class = paste0("trait",1:2))
-define.genome(map, length.vec=c(0.1,0.1))
-
+linkage.map.get()
+lengths <- tapply(map$pos, map$chrom, max)
+define.genome(map, length.vec = lengths)
 }
 \seealso{
 This function is a wrapper for the more explicit [set.genome.par] and [define.map] 

@@ -1,9 +1,9 @@
 \name{genome.segments}
 \alias{genome.segments}
-\title{Extract or summarize genome segments for populations}
+\title{Extracts or summarizes genome segments for populations}
 
 \description{
-Extract or summarize genome segments for populations.
+Extracts or summarizes genome segments for populations.
 }
 
 \usage{

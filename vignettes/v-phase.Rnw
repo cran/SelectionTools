@@ -339,7 +339,7 @@ without selecting settings against the known simulated phase. See
 \cde{help("st.phase")} for every option, valid range and default.
 Observed unordered genotypes are retained, and the missing-call default
 is \cde{impute=FALSE}. The function writes to the named data set only after a
-complete result has been validated. Use \cde{commit=FALSE} to inspect a result:
+complete result has been validated. Use \cde{commit=FALSE} to inspect diagnostics without changing the data set:
 
 <<preview,eval=FALSE>>=
 ph <- list(seed=42)
@@ -349,7 +349,8 @@ fit <- st.phase(
     phasing.options=ph,
     commit=FALSE
 )
-fit$diagnostics
+fit[c("windows", "maximum.worker.team", "chromosome.windows",
+      "filled.genotypes", "reference", "committed")]
 @
 \vspace{-\baselineskip}
 \begin{Soutput}
@@ -384,7 +385,9 @@ $committed
 [1] FALSE
 \end{Soutput}
 
-The phased target is returned in \cde{fit\$data}.
+The dry run discards its proposed genotypes and returns diagnostics only.
+With \cde{commit=TRUE}, the validated result is written to the data set and
+the function returns invisible \cde{NULL}.
 The diagnostics report the number of windows, the largest worker team used,
 and the number of filled genotypes. The reference panel is unchanged, and
 \cde{committed=FALSE} confirms that the target data set was not modified.
@@ -527,6 +530,7 @@ inferred calls are kept. No posterior-probability output is provided.
 % of haplotype phase accuracy. American Journal of Human Genetics 109:1016--1025.
 % doi:10.1016/j.ajhg.2022.04.019.
 
+\end{document}
 
 
 \appendix
@@ -573,4 +577,3 @@ sel5SYN5 & reference & Beagle & 8.136 & 2.08 \\
 \end{tabular}
 \end{center}
 
-\end{document}

@@ -1,6 +1,6 @@
 \name{st.STvcf.to.dataframe}
 \alias{st.STvcf.to.dataframe}
-\title{Convert Compact STvcf Data to a VCF-Like Data Frame}
+\title{Converts Compact STvcf Data to a VCF-Like Data Frame}
 \description{
 Expands a compact STvcf list to a wide VCF-like R data frame with one marker
 per row and one genotype column per individual.
@@ -13,6 +13,10 @@ st.STvcf.to.dataframe(STvcf)
 identifiers, chromosome mapping, and two allele matrices.}
 }
 \details{
+The optional \code{allele.codes} attribute is a list of integer coding vectors, named and ordered by marker ID. It records the internal allele codes corresponding to REF and successive ALT entries. STvcf exchange retains this attribute so fixed or subsetted loci keep the same coding as their fitted marker reference. The loader validates it before replacing a destination. Conversions preserve it; a manually edited marker list must keep it aligned. It is not part of plain-text VCF exchange.
+
+The optional versioned \code{pedigree} attribute is a data frame with \code{name} and \code{pedigree} columns and integer attribute \code{version=1L}. Its names must match the individual identifiers in order. Without it, individuals are founders. Full strings are owned independently of ancestor populations. The optional \code{prediction.state} attribute preserves a compatible active symbolic-A fitted state during STvcf/RDS exchange. Conversion in either direction retains both attributes; loading validates them before replacing the destination.
+
 The function validates the STvcf object before expansion. The list must
 contain exactly the nine documented STvcf components, each exactly once;
 extra, missing, duplicated, unnamed, or unknown components are rejected.
@@ -22,10 +26,9 @@ positions must be finite and nonnegative, allele indices must agree with
 REF/ALT, and marker and individual identifiers must obey the same restrictions
 as \code{st.load.vcf.data()}.
 
-Marker and individual identifiers must be unique, shorter than 256 bytes, and
-contain only ASCII letters and digits. Dots and all other punctuation are
-rejected. These checks are intentionally the same on conversion in both
-directions.
+Marker identifiers must be unique, non-empty, and shorter than 256 bytes. Individual identifiers must be unique and non-empty; they use dynamically allocated strings subject to the R string-size limit. Whitespace and control characters are rejected; ordinary
+punctuation such as dots, underscores, and hyphens is permitted. These checks
+are intentionally the same on conversion in both directions.
 
 REF may not be missing, \code{"."}, empty, or comma-separated. ALT may be
 \code{"."} or a comma-separated list. ALT entries must be non-empty, unique,

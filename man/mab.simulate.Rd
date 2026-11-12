@@ -39,8 +39,8 @@ mab.simulate(simulation.name, simulation.run, repetitions = 1000,
     value is \code{H}.  \emph{Note:} \code{recurrent.parent} and
     \code{donor.parent} need to be specified consistently. Either for both a
     \code{H}, or for both a file name.}
-   \item{donor.parent}{Description of the donor parent. See \code{recurrent.parent}.}
-   \item{linkage.map}{Name of the file, in which the linkage map is described. See the
+   \item{donor.parent}{Description of the donor parent. Further details appear in \code{recurrent.parent}.}
+   \item{linkage.map}{Name of the file, in which the linkage map is described. Further details appear in the
     section 'Input Files' for a description of the file structure.The file
     must be located in the directory \code{st.input.dir}.  The argument is
     required and has no default value.}

@@ -2,7 +2,7 @@
 %
 \name{gs.plot.model.fit}
 \alias{gs.plot.model.fit}
-\title{Plot the Fit of a Genomic Prediction Model}
+\title{Plots the Fit of a Genomic Prediction Model}
 \description{
 Plots observed performance values against genomic predictions for the
 individuals used to fit the marker model.

@@ -1,9 +1,9 @@
 \name{st.genetic.distances.fct}
 \alias{st.genetic.distances.fct}
-\title{Calculate genetic distances from SelectionTools marker data}
+\title{Calculates genetic distances from SelectionTools marker data}
 
 \description{
-Calculate genetic distances from SelectionTools marker data.
+Calculates genetic distances from SelectionTools marker data.
 }
 
 \usage{

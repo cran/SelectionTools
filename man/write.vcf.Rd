@@ -1,6 +1,6 @@
 \name{write.vcf}
 \alias{write.vcf}
-\title{Write SelectionTools Marker Data for Beagle}
+\title{Writes SelectionTools Marker Data for Beagle}
 
 \description{
 Writes a SelectionTools marker data set as a minimal GT-only VCF intended for
@@ -8,13 +8,15 @@ direct use as Beagle target genotype input.
 }
 
 \usage{
-write.vcf(vcffile, data.set = "default")
+write.vcf(vcffile, data.set = "default", pedigree = TRUE)
 }
 
 \arguments{
+\item{pedigree}{Logical; controls writing or reading quoted \code{SelectionToolsPedigree} records in the VCF header.}
+
   \item{vcffile}{
     Character string giving the output VCF file.  If the name ends in
-    \code{.gz}, the native writer first creates a temporary plain VCF and base
+    \code{.gz}, the compiled writer first creates a temporary plain VCF and base
     R \code{gzfile()} compresses it to the requested file.
   }
   \item{data.set}{
@@ -23,6 +25,15 @@ write.vcf(vcffile, data.set = "default")
 }
 
 \details{
+Full simulated pedigrees are stored in quoted \code{SelectionToolsPedigree}
+header records within the VCF, including compressed files. Sample names retain
+stable individual identifiers and may contain long pedigree-based names.
+Without these records, imported individuals are founders whose pedigree equals
+their sample name. Incomplete, duplicate or inconsistent pedigree records cause
+import to fail before replacing the destination. \code{pedigree=FALSE} omits
+these records on output and ignores them on input. Fitted prediction state is
+retained by the in-memory STvcf representation, rather than plain VCF.
+
 The output is deliberately small and Beagle-oriented. It contains VCF 4.3
 header information and one FORMAT field, \code{GT}. A marker data set whose
 stored phase state is known is written with the phased separator \code{|}; an

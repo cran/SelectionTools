@@ -1,6 +1,6 @@
 \name{select.n.best}
 \alias{select.n.best}
-\title{Select a fixed number of best individuals}
+\title{Selects a fixed number of best individuals}
 
 \description{
 Selects a fixed number of individuals from a simulation population according

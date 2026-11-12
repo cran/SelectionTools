@@ -1,6 +1,6 @@
 \name{st.set.sim.gp}
 \alias{st.set.sim.gp}
-\title{Set sim gp used by SelectionTools}
+\title{Sets sim gp used by SelectionTools}
 
 \description{
 Derives simulation genome parameters from a SelectionTools marker-data map and installs them in the simulation backend.
@@ -14,7 +14,7 @@ st.set.sim.gp(data.set="default")
 \item{data.set}{Character string naming the SelectionTools marker data set that provides the linkage map.}
 }
 \value{
-An invisible \code{list} returned by the underlying \code{.C} routine. Component \code{r} is the status value used by the simulation bridge; the function is primarily called for its side effect of transferring the requested data to the simulation backend.
+An invisible \code{list} returned by the compiled routine. Component \code{r} is the status value used by the simulation bridge; the function is primarily called for its side effect of transferring the requested data to the simulation backend.
 }
 
 \details{

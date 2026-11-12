@@ -40,7 +40,7 @@ summaries:
   \item{\code{HT}}{Number of marker data points attributed to high-throughput
   assays.}
 }
-See \code{mab.simulate} for the selection-strategy rules used to count
+Further details appear in \code{mab.simulate} for the selection-strategy rules used to count
 \code{SM} and \code{HT} marker data points.
 }
 

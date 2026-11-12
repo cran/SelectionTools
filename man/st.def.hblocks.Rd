@@ -2,7 +2,7 @@
 %
 \name{st.def.hblocks}
 \alias{st.def.hblocks}
-\title{Define Haplotype Blocks}
+\title{Defines Haplotype Blocks}
 \description{
 Defines haplotype-block boundaries by a fixed number of markers, a genetic
 window in cM, linkage disequilibrium, or disjunct chromosome segments.
@@ -33,8 +33,8 @@ st.def.hblocks(hap = 5, hap.unit = 1, ld.threshold = 0.8,
    \item{hap.symbol}{Character prefix used for generated block names. With the
    default \code{"b"}, blocks are named \code{b000000}, \code{b000001}, and
    so on.}
-   \item{out.filename}{Character string retained for compatibility and used as part of the name of an internal file in the R session temporary directory. The temporary file is removed before the function returns.}
-   \item{auxfiles}{Logical. If \code{TRUE}, the compiled result is written to the R session temporary directory, read back by the R wrapper, and removed before the function returns.}
+   \item{out.filename}{Character string retained for compatibility. The result is returned directly from memory; this argument does not name an output file.}
+   \item{auxfiles}{Logical. If \code{TRUE}, the result is returned directly from memory.}
    \item{data.set}{Character string naming the marker data set in which
    haplotype blocks are defined.}
 }

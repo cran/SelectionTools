@@ -3,7 +3,7 @@
 \title{Rename a simulation population}
 
 \description{
-Renames a registered simulation population.
+Renames a supported simulation population.
 }
 
 \usage{
@@ -16,5 +16,5 @@ population.rename(OldName, NewName)
 fewer than 256 characters.}
 }
 \value{
-An invisible \code{list} returned by the underlying \code{.C} routine. The list is an implementation-level result containing the arguments returned by the compiled routine; the function is primarily called for its side effect of renaming a simulation population.
+An invisible \code{list} returned by the compiled routine. The list is an implementation-level result containing the arguments returned by the compiled routine; the function is primarily called for its side effect of renaming a simulation population.
 }

@@ -3,7 +3,7 @@
 \title{rename.population()}
 
 \description{
-Changes the registered name of a simulation population without changing its individuals.
+Changes the supported name of a simulation population without changing its individuals.
 }
 
 \usage{

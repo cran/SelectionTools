@@ -1,6 +1,6 @@
 \name{st.set.simpop}
 \alias{st.set.simpop}
-\title{Initialize the Simulation Backend from a SelectionTools Data Set}
+\title{Initializes the Simulation Backend from a SelectionTools Data Set}
 
 \description{
 Initializes the simulation backend from a SelectionTools marker data set and
@@ -47,7 +47,7 @@ transferred directly under \code{effect.name}; no intermediate effect file is
 created. The genomic-selection routines normally use additive marker dosage
 coding 0/1/2, whereas the simulation representation is equivalent to -1/0/1.
 The required baseline correction of the general mean is therefore applied
-during effect transfer. See \code{st.set.sim.ef} for the exact coding and
+during effect transfer. Further details appear in \code{st.set.sim.ef} for the exact coding and
 formula.
 
 The individual bridge functions can also be called separately. In particular,
@@ -66,7 +66,7 @@ Maurer HP, Melchinger AE, Frisch M (2008) Population genetic simulation and
 data analysis with Plabsoft. Euphytica 161:133--139.
 
 Stranden I, Christensen OF (2011) Allele coding in genomic evaluation.
-Genetics Selection Evolution 43:25. See Equation (2).
+Genetics Selection Evolution 43:25. Further details appear in Equation (2).
 }
 
 \seealso{

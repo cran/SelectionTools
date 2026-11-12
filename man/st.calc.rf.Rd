@@ -1,9 +1,9 @@
 \name{st.calc.rf}
 \alias{st.calc.rf}
-\title{Calculate recombination fractions}
+\title{Calculates recombination fractions}
 
 \description{
-Calculate recombination fractions.
+Calculates recombination fractions.
 }
 
 \usage{
@@ -12,7 +12,7 @@ st.calc.rf(map.function = "Haldane", auxfiles = TRUE, data.set = "default")
 
 \arguments{
    \item{map.function}{Map function to use.}
-   \item{auxfiles}{Logical. If \code{TRUE}, the compiled result is written to the R session temporary directory, read back by the R wrapper, and removed before the function returns.}
+   \item{auxfiles}{Logical. If \code{TRUE}, the result is returned directly from memory.}
    \item{data.set}{Name of the SelectionTools data set.}
 }
 \value{

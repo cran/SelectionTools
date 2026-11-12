@@ -1,9 +1,9 @@
 \name{resources}
 \alias{resources}
-\title{Return or display resource information used by SelectionTools}
+\title{Returns or display resource information used by SelectionTools}
 
 \description{
-Return or display resource information used by SelectionTools.
+Returns or display resource information used by SelectionTools.
 }
 
 \usage{

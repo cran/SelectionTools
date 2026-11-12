@@ -1,6 +1,6 @@
 \name{remove.map}
 \alias{remove.map}
-\title{Remove the linkage map from the simulation}
+\title{Removes the linkage map from the simulation}
 
 \description{
 Removes the current linkage map and map-dependent cached simulation data.
@@ -10,7 +10,7 @@ Removes the current linkage map and map-dependent cached simulation data.
 remove.map()
 }
 \value{
-An invisible \code{list} returned by the underlying \code{.C} routine. The list is an implementation-level result containing the arguments returned by the compiled routine; the function is primarily called for its side effect of removing the current linkage map.
+An invisible \code{list} returned by the compiled routine. The list is an implementation-level result containing the arguments returned by the compiled routine; the function is primarily called for its side effect of removing the current linkage map.
 }
 
 \details{
