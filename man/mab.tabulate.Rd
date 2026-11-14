@@ -19,17 +19,17 @@ mab.tabulate(simulation.names.runs, par.summary = TRUE, ext.summary = FALSE,
    \item{simulation.names.runs}{Character vector containing alternating
     simulation names and simulation-run identifiers. It is interpreted as
     a two-column matrix, one row per simulation result to be tabulated.}
-   \item{par.summary}{Logical. Include a summary of the main simulation parameters.}
-   \item{ext.summary}{Logical. Include an extended summary of the simulation parameters.}
-   \item{RPG.gw.mean}{Logical. Include mean genome-wide recurrent-parent genome (RPG) values.}
-   \item{TargetAlleles}{Logical. Include the mean target-allele summary.}
-   \item{RPG.gw.Q10}{Logical. Include the Q10 value of the genome-wide RPG.}
-   \item{RPG.reg.Q10}{Logical. Include Q10 values of RPG in the defined chromosome regions.}
-   \item{RPG.reg.mean}{Logical. Include mean RPG values in the defined chromosome regions.}
-   \item{DonorSegments.gw}{Logical. Include the mean number of donor segments genome-wide.}
-   \item{DonorSegments.reg}{Logical. Include the mean number of donor segments in the defined chromosome regions.}
-   \item{LinkageDrag}{Logical. Include mean linkage-drag summaries for the target loci.}
-   \item{MarkerAnalyses}{Logical. Include mean single-marker (SM) and high-throughput (HT) marker-analysis counts.}
+   \item{par.summary}{Logical. A value of \code{TRUE} includes a summary of the main simulation parameters.}
+   \item{ext.summary}{Logical. A value of \code{TRUE} includes an extended summary of the simulation parameters.}
+   \item{RPG.gw.mean}{Logical. A value of \code{TRUE} includes mean genome-wide recurrent-parent genome (RPG) values.}
+   \item{TargetAlleles}{Logical. A value of \code{TRUE} includes the mean target-allele summary.}
+   \item{RPG.gw.Q10}{Logical. A value of \code{TRUE} includes the Q10 value of the genome-wide RPG.}
+   \item{RPG.reg.Q10}{Logical. A value of \code{TRUE} includes Q10 values of RPG in the defined chromosome regions.}
+   \item{RPG.reg.mean}{Logical. A value of \code{TRUE} includes mean RPG values in the defined chromosome regions.}
+   \item{DonorSegments.gw}{Logical. A value of \code{TRUE} includes the mean number of donor segments genome-wide.}
+   \item{DonorSegments.reg}{Logical. A value of \code{TRUE} includes the mean number of donor segments in the defined chromosome regions.}
+   \item{LinkageDrag}{Logical. A value of \code{TRUE} includes mean linkage-drag summaries for the target loci. Individual values average over donor-bearing homologues at each target and are zero when neither homologue carries the donor allele.}
+   \item{MarkerAnalyses}{Logical. A value of \code{TRUE} includes mean single-marker (SM) and high-throughput (HT) marker-analysis counts.}
    \item{digits}{Number of decimal places used when rounding numerical
     summaries.}
    \item{percent}{Logical. If \code{TRUE}, RPG summaries are multiplied by

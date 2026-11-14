@@ -2,7 +2,7 @@
 \alias{linkage.map.get}
 \alias{population.marker.map}
 \alias{extend.marker.map}
-\title{Get a linkage map used by the simulation routines}
+\title{Returns a linkage map used by the simulation routines}
 
 \description{
 Returns the currently active simulation linkage map.
@@ -35,7 +35,7 @@ The active linkage map, invisibly.
 
 }
 
-\section{Extend an existing marker map}{
+\section{Extension of an existing marker map}{
 \code{extend.marker.map} retains every existing locus with its identifier,
 position and class, and adds random marker positions until the map contains
 \code{n.markers} points in total. New positions are uniform over genome length;

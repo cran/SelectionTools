@@ -14,12 +14,9 @@ The first three doses have three observations each; dose 7 has two.}
 \item{\code{ertrag}}{Numeric crop yield.}
 }}
 \details{Measurement units are not recorded. There are no missing values.
-For a lack-of-fit test, include \code{dueng} followed by \code{factor(dueng)}
-in the fixed formula and request sequential tests with
-\code{method="moments"} and \code{type=1}.
-The \code{factor(dueng)} test returned by \code{anova} compares the linear
-mean function with unrestricted dose means, using the pure-error residual.
-Pure error has 7 df and lack of fit has 2 df.}
+Replication at the four dose levels provides 7 degrees of freedom for
+pure error. A linear mean function has 2 degrees of freedom for lack of fit
+relative to unrestricted dose means.}
 \value{Loading the dataset creates the \code{fertilizer.replicated}
 data frame.}
 \keyword{datasets}

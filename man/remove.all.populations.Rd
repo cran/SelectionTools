@@ -18,5 +18,5 @@ The current population list is collected and all listed populations are removed.
 }
 
 \seealso{
-For vector based input of loci, see \code{\link{evaluate.allele.freq2}}.
+Vector-based input of loci is supported by \code{\link{evaluate.allele.freq2}}.
 }

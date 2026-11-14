@@ -162,7 +162,7 @@ st.predict(m, "0 + geno")
 \section{Stored marker prediction state}{
 Returns the active fitted effects and prediction information stored by a successful symbolic-A fit.
 
-A successful top-level fit with quoted symbolic \code{"A"} or \code{"kro(a,a)"} replaces the participating source datasets' previous state. Failed or nonconverged fits do not replace it. Two parental sources of a hybrid fit share one model identity. Numeric covariance matrices and fits without symbolic covariance requests do not establish this association. Stored state is separate from the legacy \code{gs.return.effects} result. This accessor returns a private copy.
+A successful top-level fit with quoted symbolic \code{"A"} or \code{"kro(a,a)"} replaces the participating source datasets' previous state. Failed or nonconverged fits do not replace it. Two parental sources of a hybrid fit share one model identity. Numeric covariance matrices and fits without symbolic covariance requests do not establish this association. Stored state is separate from the older \code{gs.return.effects} result. This accessor returns a private copy.
 
 A versioned list containing \code{model}, \code{sources}, marker-reference \code{panels}, \code{dataset}, source hybrid \code{performance} where applicable, \code{genotype.effects}, \code{marker.effects}, and training conditional \code{predictions}. Marker effects are available for supported single-pool genomic terms; SCA is retained through relationship scores and parental kernels. The model identity is an attribute.
 

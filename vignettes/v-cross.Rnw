@@ -452,13 +452,12 @@ for (i in seq_len(min(10,nrow(crosses)))) {
     pdf(f.nme,width=8,height=0.8,pointsize=10)
     st.plot.ggt(i.list=c(a,b),
                 show.performance=TRUE,
-                cex.chrom=0.8,
+                cex.chrom=1,
                 p.t=FALSE,
                 p.s=FALSE,
                 data.set="gd01")
     dev.off()
 }
-st.set.info.level(0)
 @
 
 \centerline{\includegraphics[width=\hsize]{figures/ex-crs-07-101.pdf}}
@@ -1134,30 +1133,30 @@ Optimum cross selection (usefulness)
 Criterion: maximum predicted usefulness
 Status: best.found
 Families: 15; progeny per family: 100; total progeny: 1500
-Expected mean: 2.3810
-Expected usefulness: 2.6649; accuracy: 1.0000
-Group relatedness: 0.0197; requested limit: 0.0200
-Average within-cross relatedness: -0.0780
-Objective bound: 2.8596; optimality gap: 0.1947
+Expected mean: 2.3753
+Expected usefulness: 2.6667; accuracy: 1.0000
+Group relatedness: 0.0196; requested limit: 0.0200
+Average within-cross relatedness: -0.1004
+Objective bound: 2.8596; optimality gap: 0.1930
 Maximum constraint residual: 0.0000
 
 Chosen crosses
   Family  Parent 1  Parent 2  Progeny    Mean  Kinship  Usefulness
        1  1         22            100  2.4721  -0.0856      2.7121
-       2  1         38            100  2.4299  -0.0573      2.6846
-       3  2         32            100  2.3382  -0.1653      2.6422
-       4  2         38            100  2.4789  -0.0825      2.7414
-       5  3         11            100  2.3039  -0.0416      2.6072
-       6  5         11            100  2.4457  -0.0028      2.6916
-       7  6         21            100  2.4029  -0.1087      2.6662
-       8  7         32            100  2.3070  -0.1223      2.6658
-       9  14        30            100  2.5019   0.0507      2.7260
-      10  14        34            100  2.6336  -0.0500      2.8920
-      11  14        37            100  2.3940  -0.1685      2.6840
-      12  16        33            100  2.0838  -0.0930      2.3953
-      13  22        31            100  2.2458  -0.0605      2.5957
-      14  27        41            100  2.3448  -0.0940      2.6309
-      15  29        34            100  2.3329  -0.0888      2.6380
+       2  1         32            100  2.2892  -0.2974      2.5902
+       3  2         21            100  2.3264  -0.0940      2.6401
+       4  2         27            100  2.4013  -0.1014      2.6538
+       5  3         34            100  2.1981  -0.2146      2.5346
+       6  5         22            100  2.4391  -0.1884      2.7195
+       7  6         27            100  2.4778   0.0098      2.7180
+       8  6         30            100  2.3667   0.0192      2.5886
+       9  7         34            100  2.3908  -0.0552      2.7169
+      10  11        34            100  2.5678  -0.1328      2.8246
+      11  11        39            100  2.2377  -0.0856      2.5555
+      12  14        40            100  2.2893  -0.0594      2.6583
+      13  14        41            100  2.5370  -0.0867      2.8071
+      14  22        31            100  2.2458  -0.0605      2.5957
+      15  29        38            100  2.3899  -0.0731      2.6850
 \end{Verbatim}
 
 Both results report the predicted population mean and usefulness, making
@@ -1387,8 +1386,8 @@ diversity.loss
 @
 \begin{Verbatim}[frame=single,fontsize=\footnotesize,formatcom=\color{bl}]
 Proportional loss of expected sample SD
-PropSD: 0.0256
-Expected SD: reference 1.0044; selected 0.9788
+PropSD: 0.0195
+Expected SD: reference 1.0044; selected 0.9848
 Sample occurrences: reference 30.0000; selected 30.0000
 Gaussian moments; two-moment Gamma approximation
 \end{Verbatim}
@@ -1436,31 +1435,31 @@ Optimum cross selection (usefulness)
 Criterion: maximum predicted usefulness
 Status: best.found
 Families: 15; progeny per family: 100; total progeny: 1500
-Expected mean: 2.3730
-Expected usefulness: 2.6597; accuracy: 1.0000
-Group relatedness: 0.0197; requested limit: 0.0200
-PropSD (family slots): 0.0148; strict upper limit: 0.0250
-Average within-cross relatedness: -0.0601
-Objective bound: 2.8596; optimality gap: 0.1999
+Expected mean: 2.3702
+Expected usefulness: 2.6513; accuracy: 1.0000
+Group relatedness: 0.0198; requested limit: 0.0200
+PropSD (family slots): 0.0223; strict upper limit: 0.0250
+Average within-cross relatedness: -0.0542
+Objective bound: 2.8596; optimality gap: 0.2083
 Maximum constraint residual: 0.0000
 
 Chosen crosses
   Family  Parent 1  Parent 2  Progeny    Mean  Kinship  Usefulness
-       1  1         14            100  2.5445   0.0570      2.7570
-       2  1         38            100  2.4299  -0.0573      2.6846
-       3  2         21            100  2.3264  -0.0940      2.6401
-       4  2         34            100  2.4219  -0.1611      2.6972
-       5  3         30            100  2.0664  -0.0510      2.3144
-       6  5         22            100  2.4391  -0.1884      2.7195
+       1  1         32            100  2.2892  -0.2974      2.5902
+       2  1         41            100  2.2763  -0.0154      2.5384
+       3  2         5             100  2.2998  -0.0626      2.6027
+       4  2         22            100  2.5211  -0.0164      2.7462
+       5  3         37            100  1.9585  -0.1444      2.2316
+       6  5         14            100  2.5115  -0.1087      2.7796
        7  6         11            100  2.6042  -0.0972      2.8350
-       8  7         32            100  2.3070  -0.1223      2.6658
-       9  11        38            100  2.6248  -0.0542      2.8665
-      10  14        40            100  2.2893  -0.0594      2.6583
-      11  14        41            100  2.5370  -0.0867      2.8071
-      12  22        37            100  2.3215   0.1293      2.6162
-      13  27        34            100  2.4414   0.0685      2.7007
-      14  28        32            100  2.0388  -0.1905      2.3958
-      15  29        33            100  2.2024   0.0056      2.5369
+       8  7         34            100  2.3908  -0.0552      2.7169
+       9  11        33            100  2.4373  -0.0699      2.6973
+      10  14        35            100  2.4060  -0.0877      2.6929
+      11  14        40            100  2.2893  -0.0594      2.6583
+      12  16        38            100  2.2713  -0.0772      2.5509
+      13  21        22            100  2.4657   0.2835      2.7443
+      14  27        34            100  2.4414   0.0685      2.7007
+      15  29        38            100  2.3899  -0.0731      2.6850
 \end{Verbatim}
 
 The diversity line reports the computed loss and its strict upper limit.
@@ -1480,6 +1479,8 @@ therefore weights each family by its ten retained individuals. Selection
 intensity is recalculated for every proposed integer family size from the
 cross mean and segregation variance; an earlier score at 100 progeny is not
 reused at other family sizes.
+The default selection differential is the finite-family approximation of
+Burrows (1972).
 
 <<eval=FALSE>>=
 progeny.allocation <- st.cross.allocate(
@@ -1497,25 +1498,25 @@ progeny.allocation
 Fixed-pair progeny allocation
 Status: optimal
 Families: 15; produced: 1500; retained: 150
-Predicted retained mean: 2.661; response: 0.2876
-Objective upper bound: 2.661; response gap: 6.661e-16
-Group relatedness, nominal retained: 0.01975; produced: 0.01939
+Predicted retained mean: 2.652; response: 0.2816
+Objective upper bound: 2.652; response gap: 6.661e-16
+Group relatedness, nominal retained: 0.01982; produced: 0.02027
 Family: parents; produced / retained; predicted retained mean
-1: 1 x 14; 78 / 10; 2.742
-2: 1 x 38; 91 / 10; 2.678
-3: 2 x 21; 108 / 10; 2.647
-4: 2 x 34; 97 / 10; 2.695
-5: 3 x 30; 89 / 10; 2.306
-6: 5 x 22; 98 / 10; 2.718
-7: 6 x 11; 84 / 10; 2.824
-8: 7 x 32; 121 / 10; 2.684
-9: 11 x 38; 87 / 10; 2.857
-10: 14 x 40; 124 / 10; 2.68
-11: 14 x 41; 95 / 10; 2.803
-12: 22 x 37; 102 / 10; 2.618
-13: 27 x 34; 92 / 10; 2.695
-14: 28 x 32; 120 / 10; 2.413
-15: 29 x 33; 114 / 10; 2.549
+1: 1 x 32; 106 / 10; 2.595
+2: 1 x 41; 94 / 10; 2.534
+3: 2 x 5; 106 / 10; 2.608
+4: 2 x 22; 83 / 10; 2.734
+5: 3 x 37; 98 / 10; 2.23
+6: 5 x 14; 96 / 10; 2.777
+7: 6 x 11; 85 / 10; 2.824
+8: 7 x 34; 113 / 10; 2.728
+9: 11 x 33; 94 / 10; 2.693
+10: 14 x 35; 102 / 10; 2.694
+11: 14 x 40; 126 / 10; 2.681
+12: 16 x 38; 100 / 10; 2.551
+13: 21 x 22; 99 / 10; 2.743
+14: 27 x 34; 94 / 10; 2.696
+15: 29 x 38; 104 / 10; 2.688
 \end{Verbatim}
 
 The family table gives produced and retained counts together with the
@@ -1537,38 +1538,1591 @@ assignment \cde{planned.crosses <- progeny.allocation\$crosses} therefore
 provides the variable counts to that same crossing and DH-generation loop.
 The equal-family execution adapter retains its equal-size requirement.
 
+An alternative calculation uses finite-sample normal order statistics
+following Okoye et al.\ (2026, Equations~4--8). The same fixed families,
+retained counts and total budget are used below. The selection method
+changes the expected selection differential; it does not change the fitted
+cross means or segregation variances. The automatic allocator compares
+the predicted gain from one additional individual in each family.
+
+<<eval=FALSE>>=
+progeny.order.allocation <- st.cross.allocate(
+    plan = diversity.plan,                     # Fixed parent pairs and constraints
+    scores = cross.scores,                     # Cross means and segregation variances
+    total.progeny = 1500,                      # Total produced progeny budget
+    n.selected = 10,                           # Retained descendants per family
+    min.progeny = 10,                          # Minimum produced count per family
+    max.progeny = 1500,                        # Maximum produced count per family
+    accuracy = 1,                              # Within-family ranking accuracy
+    selection.method = "order.statistics",     # Finite-normal selection expectation
+    control = list(                            # Allocation settings
+        algorithm = "auto"                     # Automatic discrete allocator
+    )
+)
+progeny.order.allocation
+@
+\begin{Verbatim}[frame=single,fontsize=\footnotesize,formatcom=\color{bl}]
+Fixed-pair progeny allocation
+Selection: finite normal order statistics; allocator: greedy
+Status: numerically.optimal
+Families: 15; produced: 1500; retained: 150
+Predicted retained mean: 2.652; response: 0.2817
+Estimated objective upper bound: 2.652; response gap: 4.841e-14
+Group relatedness, nominal retained: 0.01982; produced: 0.02027
+Family: parents; produced / retained; predicted retained mean
+1: 1 x 32; 106 / 10; 2.595
+2: 1 x 41; 94 / 10; 2.534
+3: 2 x 5; 106 / 10; 2.608
+4: 2 x 22; 83 / 10; 2.734
+5: 3 x 37; 98 / 10; 2.23
+6: 5 x 14; 96 / 10; 2.777
+7: 6 x 11; 85 / 10; 2.825
+8: 7 x 34; 113 / 10; 2.728
+9: 11 x 33; 94 / 10; 2.693
+10: 14 x 35; 102 / 10; 2.694
+11: 14 x 40; 126 / 10; 2.681
+12: 16 x 38; 100 / 10; 2.551
+13: 21 x 22; 99 / 10; 2.744
+14: 27 x 34; 94 / 10; 2.696
+15: 29 x 38; 104 / 10; 2.688
+\end{Verbatim}
+
+The selection-method and algorithm lines identify the scored objective
+and the allocator used. Produced counts again sum to 1,500 and each family
+retains ten individuals. All 15 produced counts equal those of the
+Burrows-based allocation above. The predicted retained mean now uses the
+expected mean of the ten greatest values in a finite normal sample.
+The status \cde{numerically.optimal} means that the estimated numerical gap
+meets the requested tolerance. Quadrature error estimates are not rigorous
+interval bounds. The mathematical integer optimum is conditional on fixed
+pairs, fixed retained counts and the stated normal model; it does not
+establish biological accuracy or a joint optimum over pairs and counts.
+
+A common population evaluation summarizes the same fixed family counts.
+The saved selection method and prediction accuracies are inherited from
+the allocation. The kinship reference remains the named matrix used in
+planning, and the inherited constraints are checked again from the supplied
+counts and parents. G1 denotes the selected DH descendants of the current
+crosses. G2 would follow an additional cycle of crossing selected DH lines,
+DH derivation and selection.
+
+<<eval=FALSE>>=
+cross.population <- st.cross.evaluate(
+    plan = progeny.order.allocation,           # Fixed families and produced counts
+    K = cross.K                                # Original named kinship reference
+)
+cross.population
+@
+\begin{Verbatim}[frame=single,fontsize=\footnotesize,formatcom=\color{bl}]
+Cross-plan population evaluation
+Status: evaluated; selection: order.statistics
+Produced: 1500 in 15 families; retained: 150 in 15 families
+G1 retained mean: 2.652; retained-weight baseline: 2.37; response: 0.2817
+Retained between-family variance: 0.01875; retained total variance:
+unavailable
+Produced marginal variance, within / between / total: 0.02753 / 0.0206 /
+0.04812
+Nominal relatedness, family / produced / retained: 0.01982 / 0.02027 /
+0.01982
+Selected genomic diversity and G2 forecast: unavailable without
+genetic.model
+Family: parents; produced / retained; predicted retained mean
+1: 1 x 32; 106 / 10; 2.595
+2: 1 x 41; 94 / 10; 2.534
+3: 2 x 5; 106 / 10; 2.608
+4: 2 x 22; 83 / 10; 2.734
+5: 3 x 37; 98 / 10; 2.23
+6: 5 x 14; 96 / 10; 2.777
+7: 6 x 11; 85 / 10; 2.825
+8: 7 x 34; 113 / 10; 2.728
+9: 11 x 33; 94 / 10; 2.693
+10: 14 x 35; 102 / 10; 2.694
+11: 14 x 40; 126 / 10; 2.681
+12: 16 x 38; 100 / 10; 2.551
+13: 21 x 22; 99 / 10; 2.744
+14: 27 x 34; 94 / 10; 2.696
+15: 29 x 38; 104 / 10; 2.688
+\end{Verbatim}
+
+The status \cde{evaluated} identifies completion of this population
+calculation. The produced marginal variance, 0.04812, describes the genetic value of a
+randomly sampled candidate from the mixture of families. It combines the
+within-family term 0.02753 and the between-family term 0.02060. The selected
+G1 mean, approximately 2.652, instead weights each family by its retained
+count. Its response, 0.2817, uses the unselected family means on these same
+retained-count weights as the baseline, approximately 2.370.
+
+The family, produced and retained contribution bases describe nominal
+parental shares. Equal retained counts make the family and retained
+relatedness equal here, approximately 0.01982, while the produced-count
+weights give 0.02027. These values use the original kinship matrix.
+Within-family selection can alter genomic ancestry even when the retained
+family counts remain fixed. The selected between-family term is 0.01875,
+but selected within-family and total variance require additional moment
+calculations. The genetic value and segregation variance after crossing
+the selected DH lines for a
+further breeding cycle remain unavailable. Evaluation checks the supplied
+population; it does not optimize the plan or alter its counts.
 
 \subsection{Comparison with simulated selected descendants}
 
 A separate repeated-simulation check uses the same 30 founders, 243 markers,
-fitted effects and fixed pairs as this allocation. Each of 200 paired cycles
+fitted effects and fixed pairs as \cde{progeny.allocation}. The table retains
+the Burrows-based predictions and allocation above, with equal families as
+the comparison. Each of 200 paired cycles
 produces 1,500 DH descendants under each allocation and retains the ten
-highest genetic values per family. The table reports the predicted selected
-mean, simulated mean across cycles, and Monte Carlo standard error (MCSE).
+highest genetic values per family. Each paired cycle uses the same seed
+under both allocations, with seeds 740001 through 740200. The table reports
+the predicted selected mean, simulated mean across cycles, and Monte Carlo
+standard error (MCSE).
 The difference uses the paired cycles.
 
-\begin{center}
-\begin{tabular}{lrrr}
-\hline
-Quantity & Predicted & Simulated & MCSE \\
-\hline
-Equal families & 2.659679 & 2.655875 & 0.000516 \\
-Allocated families & 2.660583 & 2.656752 & 0.000489 \\
-Allocation difference & 0.000904 & 0.000878 & 0.000453 \\
-\hline
-\end{tabular}
-\end{center}
+<<eval=FALSE>>=
+allocation.validation
+@
+\begin{Verbatim}[frame=single,fontsize=\footnotesize,formatcom=\color{bl}]
+               Quantity   Predicted    Simulated         MCSE
+1        Equal families 2.651319231 2.6477827455 0.0005485178
+2    Allocated families 2.651797776 2.6483499520 0.0005351892
+3 Allocation difference 0.000478545 0.0005672066 0.0003372739
+\end{Verbatim}
 
-The simulated allocation difference is positive, but its 95\% Monte Carlo
-interval, approximately $[-0.000009,\ 0.001765]$, includes zero. This run
-therefore does not establish a positive allocation benefit at that precision.
-Both simulated selected means are about 0.0038 below their normal/Burrows
-predictions. That discrepancy concerns the selection approximation for this
+The simulated allocation difference is positive. Its approximate 95\%
+Monte Carlo interval runs from $-0.000094$ to $0.001228$ and includes zero.
+This run therefore does not establish a positive allocation benefit at
+that precision.
+The equal-count and allocated simulated means are approximately 0.00354
+and 0.00345 below their Burrows predictions, respectively. That discrepancy
+concerns the selection approximation for this
 fitted-effect model, rather than a failure of the integer allocation optimum.
+Re-evaluation of these same equal and allocated counts with finite-normal
+order statistics increases their predicted means by approximately
+$0.0000317340$ and $0.0000317367$, respectively. These changes are much
+smaller than the discrepancy
+from simulation, whose explanation therefore remains open.
 The same marker effects score the predictions and simulations, so the
 comparison assesses model consistency and does not provide independent field
 validation. These repeated simulations are validation work, separate from
 the ordinary short companion example.
+
+
+\section{Reproductive roles and parent capacities}
+\label{sec:practical-constraints}
+
+The same maize markers and fitted effects also support a smaller example
+with the first six parents of the crossing panel. Marker-data-set copying
+and restriction keep the scores specific to those six candidates. The
+kinship submatrix retains the scale of the original 30-parent reference;
+its allele-frequency reference is not re-estimated after subsetting.
+
+<<eval=FALSE>>=
+practical.ids <- names(cross.merit)[1:6]
+practical.K <- cross.K[practical.ids, practical.ids]
+st.copy.marker.data(
+    "practical.parents",                       # Six-parent copy for this policy
+    "cross.parents"                            # Existing real marker panel
+)
+st.restrict.marker.data(
+    ind.list = practical.ids,                  # Six parents from the real panel
+    data.set = "practical.parents"             # Six-parent marker data set
+)
+gs.set.effects(
+    cross.effects,                             # Fitted effects for the same markers
+    data.set = "practical.parents"             # Six-parent marker data set
+)
+gs.cross.eval.mu(
+    data.set = "practical.parents"             # Recomputed cross means
+)
+gs.cross.eval.va(
+    pop.type = "DH",                           # Segregation among derived DH lines
+    data.set = "practical.parents"             # Six-parent marker data set
+)
+gs.cross.eval.es(
+    N = 2,                                     # Retained individuals per family
+    G = 20,                                    # Produced individuals per family
+    data.set = "practical.parents"             # Six-parent marker data set
+)
+practical.scores <- gs.cross.info(
+    data.set = "practical.parents"             # Scores for exactly the six parents
+)
+@
+
+The first three candidates form an operational seed-parent pool, and the
+other three form an operational pollen-parent pool. These imposed crossing
+roles are management choices for this example, rather than biological sex
+categories. The requested plan uses exactly five parents: two seed parents
+and three pollen parents. Equal family use applies to the selected seed
+parents, without requiring all eligible seed parents to be selected.
+
+<<eval=FALSE>>=
+practical.parents <- data.frame(
+    parent = practical.ids,                    # Actual parent identifiers
+    pool = rep(c("seed", "pollen"), each=3),   # Operational parent groups
+    seed = rep(c(TRUE, FALSE), each=3),        # First group eligible as seed parent
+    pollen = rep(c(FALSE, TRUE), each=3)       # Second group eligible as pollen parent
+)
+practical.limits <- data.frame(
+    parent = NA_character_,                    # Group-level parent counts
+    pool = c(NA, "seed", "pollen"),            # All parents or the named group
+    role = c("all", "seed", "pollen"),         # Count parents in the stated role
+    basis = "family.slots",                    # Distinct-family participation
+    measure = "parents",                       # Number of distinct used parents
+    lower = c(5, 2, 3),                        # Exact total, seed and pollen counts
+    upper = c(5, 2, 3)                         # Equal lower and upper bounds
+)
+practical.equal.use <- data.frame(
+    pool = "seed",                             # Seed-parent group
+    role = "seed",                             # Seed use only
+    basis = "family.slots"                     # Equal integer family use
+)
+@
+
+The following search considers four distinct families with twenty produced
+descendants each. The existing usefulness scores correspond to retaining
+two descendants per family. The relatedness ceiling is nonrestrictive here,
+so the example emphasizes the explicitly declared practical restrictions.
+
+<<eval=FALSE>>=
+practical.plan <- st.cross.plan(
+    merit = cross.merit[practical.ids],        # Merits of the six eligible parents
+    K = practical.K,                           # Original-scale kinship submatrix
+    n.crosses = 4,                             # Four distinct biological families
+    n.progeny = 20,                            # Equal produced count at this stage
+    theta = max(diag(practical.K)),            # Nonrestrictive relatedness ceiling
+    scores = practical.scores,                 # Scores for the six-parent panel
+    criterion = "usefulness",                  # Expected selected-family performance
+    constraints = list(                        # Intersecting practical restrictions
+        parents = practical.parents,           # Pool labels and role eligibility
+        limits = practical.limits,             # Exact used-parent counts
+        equal.use = practical.equal.use        # Equal use among selected seed parents
+    ),
+    control = list(                            # Search settings
+        method = "exact"                       # Bounded exhaustive cross search
+    )
+)
+practical.plan
+@
+
+\begin{Verbatim}[frame=single,fontsize=\footnotesize,formatcom=\color{bl}]
+Optimum cross selection (usefulness)
+Criterion: maximum predicted usefulness
+Status: optimal
+Practical constraints: feasible
+Checks: 10 pass; 0 fail; 0 unresolved; 0 unavailable
+Seed/pollen directions: 4
+Families: 4; progeny per family: 20; total progeny: 80
+Expected mean: 2.3390
+Expected usefulness: 2.5743; accuracy: 1.0000
+Group relatedness: 0.1785; requested limit: 1.0405
+Average within-cross relatedness: -0.0544
+Objective bound: 2.5743; optimality gap: <0.0001
+Maximum constraint residual: 0.0000
+
+Chosen crosses
+  Family  Parent 1  Parent 2  Progeny    Mean  Kinship  Usefulness
+       1  1         5              20  2.2508  -0.0689      2.4556
+       2  1         6              20  2.4093  -0.1318      2.6332
+       3  2         4              20  2.2375   0.0140      2.5376
+       4  2         6              20  2.4583  -0.0311      2.6710
+\end{Verbatim}
+
+All ten practical checks pass. The selected seed parents 1 and 2 each
+occur in two families, and the pollen parents 4, 5 and 6 cover the four
+families. The exact five-parent total includes two seed and three pollen
+parents; parent 3 remains eligible but unused. The saved direction map
+identifies reproductive roles independently of the canonical order of the
+unordered biological parent pair. Status \cde{optimal} qualifies the
+completed exact search for this declared model and its supplied scores.
+
+The next allocation adds a produced-capacity limit of thirty descendant
+slots for each pollen parent. Produced counts remain variable while the
+four chosen families, reproductive directions and two retained individuals
+per family remain fixed. A produced slot counts one descendant receiving
+that parent's pollen contribution; it does not count laboratory crossing
+operations.
+
+<<eval=FALSE>>=
+practical.capacity <- data.frame(
+    parent = practical.ids[4:6],               # Individual pollen parents
+    pool = NA_character_,                      # Individual selectors need no pool filter
+    role = "pollen",                           # Pollen contribution only
+    basis = "produced",                        # Produced descendant slots
+    measure = "uses",                          # Integer incidences before division
+    lower = 0,                                 # No minimum produced pollen use
+    upper = 30                                 # At most thirty slots per pollen parent
+)
+practical.allocation <- st.cross.allocate(
+    plan = practical.plan,                     # Fixed families and declared directions
+    scores = practical.scores,                 # Cross means and segregation variances
+    total.progeny = 80,                        # Total produced descendant budget
+    n.selected = 2,                            # Retained descendants per family
+    min.progeny = 2,                           # Minimum produced count per family
+    max.progeny = 40,                          # Maximum produced count per family
+    accuracy = 1,                              # Within-family ranking accuracy
+    selection.method = "order.statistics",     # Finite-normal selection expectation
+    constraints = list(                        # Additional produced-capacity restriction
+        limits = practical.capacity            # Individual pollen-parent capacities
+    )
+)
+practical.allocation
+@
+
+\begin{Verbatim}[frame=single,fontsize=\footnotesize,formatcom=\color{bl}]
+Fixed-pair progeny allocation
+Selection: finite normal order statistics; allocator:
+constrained.enumeration
+Status: numerically.optimal
+Families: 4; produced: 80; retained: 8
+Predicted retained mean: 2.574; response: 0.2352
+Estimated objective upper bound: 2.574; response gap: 4.408e-14
+Group relatedness, nominal retained: 0.1785; produced: 0.1744
+Practical checks: feasible; pass 13, fail 0, unresolved 0, unavailable 0
+Family: parents; produced / retained; predicted retained mean
+1: 1 x 5; 21 / 2; 2.459
+2: 1 x 6; 15 / 2; 2.614
+3: 2 x 4; 29 / 2; 2.571
+4: 2 x 6; 15 / 2; 2.653
+\end{Verbatim}
+
+The produced family counts 21, 15, 29 and 15 sum to eighty; two individuals
+per family give eight retained descendants. Pollen parent 6 contributes
+to the second and fourth families, using $15+15=30$ produced slots and
+exactly reaching its capacity. Pollen parents 4 and 5 use 29 and 21 slots,
+respectively. All thirteen practical checks pass.
+
+With twenty descendants per family, pollen parent 6 would have forty
+produced uses, exceeding the new capacity. The earlier plan with equal
+family sizes therefore has a different feasible set; a difference in its
+predicted selected mean is not a gain comparison against a feasible
+baseline under the new restriction.
+
+This produced-capacity constraint couples family sizes. The reported
+allocator is \cde{constrained.\allowbreak enumeration}; the independent family-increment
+theorem in the appendix does not certify this constrained allocation.
+Status \cde{numerically.optimal} uses the estimated objective bound, with
+response gap approximately $4.4\times10^{-14}$ here. The qualification
+applies to the stated fixed-pair problem. Parent-count and equal-family-use
+restrictions inherited from the crossing plan remain in force alongside
+the new produced-capacity rows.
+
+<<eval=FALSE>>=
+practical.population <- st.cross.evaluate(
+    plan = practical.allocation                # Independent inherited-constraint check
+)
+practical.population
+@
+
+\begin{Verbatim}[frame=single,fontsize=\footnotesize,formatcom=\color{bl}]
+Cross-plan population evaluation
+Status: evaluated; selection: order.statistics
+Produced: 80 in 4 families; retained: 8 in 4 families
+G1 retained mean: 2.574; retained-weight baseline: 2.339; response: 0.2352
+Retained between-family variance: 0.005243; retained total variance:
+unavailable
+Produced marginal variance, within / between / total: 0.02308 / 0.008781 /
+0.03186
+Nominal relatedness, family / produced / retained: 0.1785 / 0.1744 / 0.1785
+Practical checks: feasible; pass 13, fail 0, unresolved 0, unavailable 0
+Selected genomic diversity and G2 forecast: unavailable without
+genetic.model
+Family: parents; produced / retained; predicted retained mean
+1: 1 x 5; 21 / 2; 2.459
+2: 1 x 6; 15 / 2; 2.614
+3: 2 x 4; 29 / 2; 2.571
+4: 2 x 6; 15 / 2; 2.653
+\end{Verbatim}
+
+The evaluation recomputes all thirteen inherited and additional practical
+checks from the actual family counts and declared directions; all pass.
+This feasibility result is separate from the optimizer's source status.
+The G1 retained mean is approximately 2.574, with response 0.2352 above
+the retained-weight baseline of approximately 2.339.
+
+The produced marginal variance is 0.03186. The retained between-family
+term, 0.005243, is not a retained total variance; that total remains
+unavailable. Nominal role, family, produced and retained shares retain
+their declared denominators. They do not predict genomic ancestry after
+selection; selected genomic diversity and the additional G2 breeding-cycle
+forecast remain unavailable.
+
+\section{Joint choice of crosses and family sizes}
+\label{sec:joint-progeny}
+
+The preceding allocation changes produced counts for a fixed set of
+families. The \cde{progeny} argument of \cde{st.cross.plan} allows the
+chosen biological families and their produced counts to vary together.
+The retained count remains four per active family here. Selection acts
+within each family, so all three families contribute equally to the
+selected G1 mean even when their produced counts differ.
+
+This comparison uses the same six maize founders and their fifteen
+unordered candidate pairs, with ninety produced DH descendants and
+twelve retained descendants. Every calculation uses the same cross means,
+segregation variances, finite-normal selection expectation, accuracy and
+original kinship reference. The seed and pollen policy from
+Section~\ref{sec:practical-constraints} is not imposed in this separate
+example. Thus the candidate graph is identical across the three designs.
+The stored \cde{es} column was computed for another family size; the new
+\cde{progeny} branch recomputes selection response from \cde{mu},
+\cde{va} and the actual counts instead of using that column.
+
+The equal-family baseline chooses three pairs with thirty produced
+descendants each. The fixed-pair calculation then redistributes the same
+ninety produced descendants over those pairs, within bounds four to fifty.
+The joint calculation allows the pairs and counts to vary under those
+same bounds. The equal-family design is feasible for both broader
+problems, and the fixed-pair allocation is supplied as a checked starting
+incumbent for the joint search. The production bounds declared by the
+standalone allocator replace the source design's equal-size bounds;
+inherited parental, pairing and practical restrictions still apply.
+
+<<eval=FALSE>>=
+joint.equal.time <- system.time({
+    joint.equal <- st.cross.plan(
+        merit = cross.merit[practical.ids],    # Merits of the same six founders
+        K = practical.K,                       # Original-scale named kinship reference
+        n.crosses = 3,                         # Three distinct biological families
+        theta = max(diag(practical.K)),        # Nonrestrictive family-slot ceiling
+        scores = practical.scores,             # Means and variances for all fifteen pairs
+        criterion = "usefulness",              # Expected selected G1 mean
+        accuracy = 1,                          # Within-family ranking accuracy
+        progeny = list(                        # Explicit common production contract
+            total.progeny = 90,                # Total produced DH descendants
+            n.selected = 4,                    # Retained descendants per active family
+            min.progeny = 30,                  # Equal families in this baseline
+            max.progeny = 30,                  # Exactly thirty produced per family
+            selection.method =                 # Finite-normal selection expectation
+                "order.statistics",
+            control = list(                    # Shared allocation settings
+                algorithm = "auto"             # Qualified automatic integer allocator
+            )
+        ),
+        control = list(                        # Family-set search settings
+            method = "exact"                   # Bounded exhaustive family-set search
+        )
+    )
+})
+joint.equal
+@
+
+\begin{Verbatim}[frame=single,fontsize=\footnotesize,formatcom=\color{bl}]
+Joint cross and progeny allocation
+Criterion: usefulness; status: numerically.optimal
+Families: 3.0000; produced: 90.0000; retained per family: 4.0000
+Selection: order.statistics; produced bounds per active family: 30.0000 to
+  30.0000
+Baseline mean: 2.4146; selected response: 0.2112; selected mean: 2.6258
+Group relatedness (family slots): 0.2940; limit: 1.0405
+Objective upper bound: 2.6258; centered criterion gap: <0.0001
+Solver: exact; evaluated family/direction sets: 1.0000
+Cumulative allocation work: 0.0000; ceiling: 100000000.0000
+Original-input feasibility: passed
+Finite-normal integration errors and objective bounds are estimated, not
+  rigorous interval certificates.
+
+Chosen crosses and actual counts
+  Family  Parent 1  Parent 2  Produced  Retained  Selected mean  Response
+       1  1         6               30         4         2.6219    0.2126
+       2  2         6               30         4         2.6603    0.2019
+       3  5         6               30         4         2.5954    0.2191
+\end{Verbatim}
+
+The three selected pairs are $1\times6$, $2\times6$ and $5\times6$.
+Each produces thirty descendants and retains four, giving the stated
+budgets of ninety and twelve. The retained-weight baseline is approximately
+2.414646; selection increases it to approximately 2.625834. The family-slot
+relatedness, 0.2940, is below the original-scale ceiling 1.0405, and all
+original-input checks pass.
+
+Status \cde{numerically.optimal} qualifies the completed search and its
+estimated finite-normal errors. The evaluated-set count records actual
+inner allocation solves; valid bounds can exclude other family-search
+branches. It is not the size of the allowed candidate graph.
+
+<<eval=FALSE>>=
+joint.fixed.time <- system.time({
+    joint.fixed <- st.cross.allocate(
+        plan = joint.equal,                    # The three baseline families remain fixed
+        scores = practical.scores,             # Identical means and segregation variances
+        total.progeny = 90,                    # Identical total production budget
+        n.selected = 4,                        # Identical retention per family
+        min.progeny = 4,                       # Every retained line has a produced line
+        max.progeny = 50,                      # At most fifty produced per family
+        accuracy = 1,                          # Identical ranking accuracy
+        selection.method = "order.statistics", # Identical finite-normal scoring
+        control = list(                        # Fixed-family allocation settings
+            algorithm = "auto"                 # Qualified automatic integer allocator
+        )
+    )
+})
+joint.fixed
+@
+
+\begin{Verbatim}[frame=single,fontsize=\footnotesize,formatcom=\color{bl}]
+Fixed-pair progeny allocation
+Selection: finite normal order statistics; allocator: greedy
+Status: numerically.optimal
+Families: 3; produced: 90; retained: 12
+Predicted retained mean: 2.626; response: 0.2112
+Estimated objective upper bound: 2.626; response gap: 5.695e-14
+Group relatedness, nominal retained: 0.294; produced: 0.2951
+Family: parents; produced / retained; predicted retained mean
+1: 1 x 6; 30 / 4; 2.622
+2: 2 x 6; 29 / 4; 2.658
+3: 5 x 6; 31 / 4; 2.598
+\end{Verbatim}
+
+The fixed-pair allocator changes the produced counts to thirty, twenty-nine
+and thirty-one. It moves one produced descendant from $2\times6$, the pair
+with the smallest segregation variance of these three, to $5\times6$, the
+pair with the largest. All three families still retain four descendants.
+Their retained weights and baseline therefore remain unchanged. Only the
+within-family response changes in this comparison.
+
+The nominal retained relatedness remains 0.2940, while the produced-count
+value becomes approximately 0.2951. These are different incidence bases,
+not predictions of genomic diversity after selection. The estimated
+response gap qualifies the fixed-family count solution; it does not by
+itself qualify the choice of those families.
+
+<<eval=FALSE>>=
+joint.plan.time <- system.time({
+    joint.plan <- st.cross.plan(
+        merit = cross.merit[practical.ids],    # The same six eligible founders
+        K = practical.K,                       # The same kinship reference and scale
+        n.crosses = 3,                         # Identical number of active families
+        theta = max(diag(practical.K)),        # Identical family-slot relatedness ceiling
+        scores = practical.scores,             # The same fifteen candidate families
+        criterion = "usefulness",              # Expected selected G1 mean
+        accuracy = 1,                          # Identical ranking accuracy
+        progeny = list(                        # Joint pair and production decisions
+            total.progeny = 90,                # Identical total production budget
+            n.selected = 4,                    # Identical retention per active family
+            min.progeny = 4,                   # Lower produced count per family
+            max.progeny = 50,                  # Upper produced count per family
+            selection.method =                 # Identical finite-normal scoring
+                "order.statistics",
+            control = list(                    # Shared allocation settings
+                algorithm = "auto"             # Qualified automatic integer allocator
+            )
+        ),
+        control = list(                        # Family-set search settings
+            method = "exact",                  # Bounded exhaustive family-set search
+            start = joint.fixed                # Checked feasible allocation as incumbent
+        )
+    )
+})
+joint.plan
+@
+
+\begin{Verbatim}[frame=single,fontsize=\footnotesize,formatcom=\color{bl}]
+Joint cross and progeny allocation
+Criterion: usefulness; status: numerically.optimal
+Families: 3.0000; produced: 90.0000; retained per family: 4.0000
+Selection: order.statistics; produced bounds per active family: 4.0000 to
+  50.0000
+Baseline mean: 2.4146; selected response: 0.2112; selected mean: 2.6259
+Group relatedness (family slots): 0.2940; limit: 1.0405
+Objective upper bound: 2.6259; centered criterion gap: <0.0001
+Solver: exact; evaluated family/direction sets: 20.0000
+Cumulative allocation work: 1560.0000; ceiling: 100000000.0000
+Original-input feasibility: passed
+Finite-normal integration errors and objective bounds are estimated, not
+  rigorous interval certificates.
+
+Chosen crosses and actual counts
+  Family  Parent 1  Parent 2  Produced  Retained  Selected mean  Response
+       1  1         6               30         4         2.6219    0.2126
+       2  2         6               29         4         2.6580    0.1997
+       3  5         6               31         4         2.5977    0.2214
+\end{Verbatim}
+
+The joint search returns the same three pairs and the same counts
+$(30,29,31)$. This example therefore has no additional predicted gain from
+changing the pairs after fixed-pair allocation. The exact outer search
+confirms that allocation within the full fifteen-pair candidate graph,
+subject to the stated numerical qualification. All original-input checks
+pass. The cumulative work is shared across the evaluated family sets,
+rather than reset for each proposal.
+
+The following comparison uses \cde{st.cross.evaluate} to recompute the
+three population summaries from their actual counts and stored scoring
+method. Its additional digits make the small predicted allocation
+difference visible.
+
+<<eval=FALSE>>=
+joint.equal.eval <- st.cross.evaluate(
+    plan = joint.equal                         # Recomputed equal-family population
+)
+joint.fixed.eval <- st.cross.evaluate(
+    plan = joint.fixed                         # Recomputed fixed-pair population
+)
+joint.plan.eval <- st.cross.evaluate(
+    plan = joint.plan                          # Recomputed joint population
+)
+joint.metrics <- c("retained.baseline", "response", "retained.mean")
+joint.comparison <- rbind(
+    Equal = unlist(joint.equal.eval$population[joint.metrics]),
+    Fixed = unlist(joint.fixed.eval$population[joint.metrics]),
+    Joint = unlist(joint.plan.eval$population[joint.metrics])
+)
+colnames(joint.comparison) <- c("Baseline", "Response", "Selected")
+joint.comparison <- cbind(
+    joint.comparison,
+    Seconds = c(joint.equal.time["elapsed"], joint.fixed.time["elapsed"],
+                joint.plan.time["elapsed"])
+)
+joint.comparison
+@
+
+\begin{Verbatim}[frame=single,fontsize=\footnotesize,formatcom=\color{bl}]
+      Baseline  Response Selected Seconds
+Equal 2.414646 0.2111881 2.625834   0.003
+Fixed 2.414646 0.2112196 2.625866   0.038
+Joint 2.414646 0.2112196 2.625866   0.061
+\end{Verbatim}
+
+All three designs use ninety produced and twelve retained descendants,
+with the same fitted moments, ranking accuracy and allowed graph. Moving
+from equal counts to optimized counts increases the predicted selected
+mean by approximately $3.1411\times10^{-5}$; the joint result matches the
+fixed-pair result here. The improvement is wholly in the within-family
+response because the pairs and retained weights remain the same.
+
+The seconds column records one elapsed-time observation for each optimizer
+call, excluding the shared data preparation and subsequent evaluation.
+The values describe this small example. The genetic gain is a prediction
+under the supplied finite-normal model; the simulation checks above and
+the later selected-genomic and G2 models address separate biological
+questions. The joint planner at this stage optimizes G1 with a fixed
+retained count per active family.
+
+\section{Allocation of produced and retained descendants}
+\label{sec:retained-allocation}
+
+The preceding joint planner retains four descendants from each selected
+family. The \cde{total.selected} option instead fixes the total retained
+population and allows its distribution across families to vary. Production
+remains fixed at ninety descendants, and retention remains fixed at twelve.
+Selection still acts within each family. A pooled selection of the twelve
+highest scores across all ninety produced descendants is a different rule.
+
+The comparison uses the same six maize founders, fifteen candidate pairs,
+cross moments, ranking accuracy, finite-normal scoring and original kinship
+reference as Section~\ref{sec:joint-progeny}. Each active family produces
+between four and fifty descendants. Every family retains at least one
+descendant, with the additional constraint that retention cannot exceed its
+own production. The fixed-retention solution therefore remains feasible and
+supplies a checked starting plan, including its actual produced and retained
+counts. The family-slot parental and relatedness restrictions retain their
+original meanings; no reproductive-role policy is added here.
+
+The selected-individual weights are now $r_e/12$. A change in retention can
+therefore change the retained-weight baseline as well as the within-family
+selection response. The nominal retained founder shares can also differ
+from family-slot shares. These differences are reported separately from
+selected genomic ancestry, which requires the later selection-aware model.
+
+The search below has explicit work limits. Its result may be a checked best
+found plan with a remaining gap; the broader two-budget problem is not
+qualified by the earlier fixed-retention optimum.
+
+<<eval=FALSE>>=
+retention.time <- system.time({
+    retention.plan <- st.cross.plan(
+        merit = cross.merit[practical.ids],    # The same six eligible maize founders
+        K = practical.K,                       # Original-scale named kinship reference
+        n.crosses = 3,                         # Three distinct produced families
+        theta = max(diag(practical.K)),        # The same family-slot relatedness ceiling
+        upper = 0.5,                           # The same family-slot parental bound
+        scores = practical.scores,             # The same fifteen cross means and variances
+        criterion = "usefulness",              # Retained-individual G1 mean
+        accuracy = 1,                          # Identical within-family ranking accuracy
+        progeny = list(                        # Fixed production and retention totals
+            total.progeny = 90,                # Ninety produced DH descendants
+            total.selected = 12,               # Twelve retained DH descendants
+            min.progeny = 4,                   # Lower produced count for each active pair
+            max.progeny = 50,                  # Upper produced count for each active pair
+            min.selected = 1,                  # At least one retained from each family
+            max.selected = 12,                 # Retained upper bound before r <= n
+            selection.method =                 # Identical finite-normal scoring
+                "order.statistics",
+            control = list(                    # Cumulative allocation settings
+                algorithm = "auto",            # Supported bounded integer allocation
+                max.transitions = 1e7          # Shared work ceiling for the whole call
+            )
+        ),
+        control = list(                        # Reproducible bounded family search
+            method = "heuristic",              # Best-found search over family choices
+            start = joint.plan,                # Actual produced and retained counts
+            seed = 1,                          # Local search seed
+            starts = 1,                        # One start from the checked incumbent
+            maxit = 2000                       # Ceiling on outer search iterations
+        )
+    )
+})
+retention.plan
+@
+
+\begin{Verbatim}[frame=single,fontsize=\footnotesize,formatcom=\color{bl}]
+Joint production and retention planning
+Criterion: usefulness; status: best.found
+Produced families: 3.0000; produced descendants: 90.0000; retained
+  descendants: 12.0000
+Families with retained descendants: 3.0000; selection: order.statistics
+Default produced bounds: 4.0000 to 50.0000; retained bounds: 1.0000 to
+  12.0000
+Baseline mean: 2.4392; selected response: 0.2046; selected mean: 2.6439
+Family-slot relatedness: 0.2940; family-slot limit: 1.0405
+Actual produced / retained relatedness: 0.2957 / 0.3162
+Objective upper bound: 2.7513; centered criterion gap: 0.1074
+Solver: heuristic; evaluated family/direction sets: 267.0000
+Cumulative allocation work: 10000000.0000; ceiling: 10000000.0000
+Original-input feasibility: passed
+Finite-normal integration and weighted objective bounds are estimated, not
+  rigorous interval certificates.
+
+Produced families and actual n / r
+  Family  Parent 1  Parent 2  Produced  Retained  Selected mean  Response
+       1  1         6               30         3         2.6389    0.2296
+       2  2         6               50         8         2.6520    0.1937
+       3  5         6               10         1         2.5937    0.2174
+\end{Verbatim}
+
+The selected pairs remain $1\times6$, $2\times6$ and $5\times6$, with
+produced counts $(30,50,10)$ and retained counts $(3,8,1)$. Both budgets
+and all original-input checks pass. The $2\times6$ family reaches the
+produced upper bound of fifty and supplies eight of the twelve retained
+descendants; $5\times6$ supplies one. The printed means therefore receive
+weights $3/12$, $8/12$ and $1/12$, rather than equal family weights.
+
+The retained-weight baseline increases to approximately 2.439239 while the
+within-family response decreases to approximately 0.204619. Their sum,
+approximately 2.643859, is greater than the fixed-retention prediction.
+The higher baseline more than offsets the lower response; variable
+retention does not improve the result merely by increasing every family's
+selection intensity.
+
+Status \cde{best.found} remains the optimizer's qualification. The
+cumulative ten-million work ceiling is reached, and the reported global
+upper bound leaves a gap of approximately 0.1074. This is the optimizer's
+remaining estimated bound gap, not a measured biological prediction error.
+The checked feasible incumbent is retained when that work limit stops
+the search.
+
+<<eval=FALSE>>=
+retention.population <- st.cross.evaluate(
+    plan = retention.plan                      # Independent actual-count population check
+)
+retention.population
+@
+
+\begin{Verbatim}[frame=single,fontsize=\footnotesize,formatcom=\color{bl}]
+Cross-plan population evaluation
+Status: evaluated; selection: order.statistics
+Produced: 90 in 3 families; retained: 12 in 3 families
+G1 retained mean: 2.644; retained-weight baseline: 2.439; response: 0.2046
+Retained between-family variance: 0.0002599; retained total variance:
+unavailable
+Produced marginal variance, within / between / total: 0.01791 / 0.0009007 /
+0.01881
+Nominal relatedness, family / produced / retained: 0.294 / 0.2957 / 0.3162
+Selected genomic diversity and G2 forecast: unavailable without
+genetic.model
+Family: parents; produced / retained; predicted retained mean
+1: 1 x 6; 30 / 3; 2.639
+2: 2 x 6; 50 / 8; 2.652
+3: 5 x 6; 10 / 1; 2.594
+\end{Verbatim}
+
+The independent evaluation reproduces the G1 mean and confirms ninety
+produced and twelve retained descendants in three families. Family-slot
+relatedness remains approximately 0.2940 because the three pairs are
+unchanged. Nominal retained relatedness instead increases to approximately
+0.3162, and produced relatedness is approximately 0.2957. The original
+family-slot ceiling is still checked on its stated basis.
+
+The actual retained counts give nominal gene shares $1/8$, $1/3$, $1/24$
+and $1/2$ for parents 1, 2, 5 and 6, respectively. Family-slot shares for
+parents 1, 2 and 5 are each $1/6$, while parent 6 occurs in every family
+and has share $1/2$. These differences describe the declared allocation.
+They do not predict the marker-level ancestry of the selected DH lines.
+Selected genomic diversity, selected total variance and the additional
+G2 cycle therefore retain their separate unavailable status here.
+
+<<eval=FALSE>>=
+retention.comparison <- rbind(
+    Fixed = c(
+        unlist(joint.plan.eval$population[joint.metrics]),
+        joint.plan.eval$relatedness$family.slots,
+        joint.plan.eval$relatedness$retained,
+        unname(joint.plan.time["elapsed"])
+    ),
+    Variable = c(
+        unlist(retention.population$population[joint.metrics]),
+        retention.population$relatedness$family.slots,
+        retention.population$relatedness$retained,
+        unname(retention.time["elapsed"])
+    )
+)
+colnames(retention.comparison) <- c(
+    "Baseline", "Response", "Selected", "Family.q", "Retained.q", "Seconds"
+)
+retention.comparison
+@
+
+\begin{Verbatim}[frame=single,fontsize=\footnotesize,formatcom=\color{bl}]
+         Baseline  Response Selected  Family.q Retained.q Seconds
+Fixed    2.414646 0.2112196 2.625866 0.2939532  0.2939532   0.061
+Variable 2.439239 0.2046192 2.643859 0.2939532  0.3161700   0.565
+\end{Verbatim}
+
+Allowing variable retention increases the predicted selected mean by
+approximately 0.017993 under the same total resources. The baseline rises
+by approximately 0.024593 while the response falls by approximately
+0.006600. The family-slot metric stays unchanged, whereas the nominal
+retained metric reflects the unequal retained weights.
+
+An independent numerical reference enumerated 455 family sets and
+83,950 admissible two-budget assignments per set, or 38,197,250 candidates.
+It matches this selected plan and objective. This additional validation
+does not change the optimizer's printed \cde{best.found} status or its
+own bound gap. Agreement concerns the numerical objective under the supplied normal
+model and fitted marker effects.
+
+The seconds column contains one elapsed-time observation for each optimizer
+call. It excludes the common data preparation and subsequent evaluation.
+The variable-retention implementation uses the equivalent small-count
+normal integrals and shared cache described in the appendix; its work
+ceiling and requested objective remain explicit.
+
+\section{Selection-aware contributions and selected DH genotypes}
+\label{sec:selected-genotypes}
+
+Unequal retained counts change the nominal parental shares shown above.
+Selection within each family can also change which parent's chromosome
+segments occur in its retained descendants. The optional
+\cde{genetic.model} combines the fitted additive effects, effect-allele
+coding, marker map and a declared within-family ranking law. It supports
+an analytic contribution prediction and an explicit assessment of actual
+DH origin paths under that same fixed genetic model.
+
+The example uses the same six candidate founders, fifteen allowed pairs
+and production and retention budgets as
+Section~\ref{sec:retained-allocation}. The marker data set
+\cde{cross.parents} supplies the 243 complete model markers and all thirty
+rows for the fixed genomic-reference frequencies. Only the six eligible
+founders become candidate parents. Uniform weights describe origin
+averaged over all 243 markers, including the 109 markers with identical
+alleles across those six founders. They do not identify unobserved physical
+genome lengths.
+
+The declared population is an immediate DH generation from the F1, with
+a cM Haldane map and no additional intermating. The index model combines
+standardized genetic value with independent normal noise at the requested
+accuracy. Here accuracy one ranks the fitted genetic values directly,
+with neutral random resolution of ties. The original supplied kinship
+matrix retains its scale and reference.
+
+The first calculation reports selected contributions without adding a
+contribution cap. Its count-search problem and settings match the preceding
+calculation. The requested genotype scenarios run once after the final
+plan is accepted; they do not run for every candidate allocation.
+
+<<eval=FALSE>>=
+genetic.time <- system.time({
+    genetic.plan <- st.cross.plan(
+        merit = cross.merit[practical.ids],    # The same six candidate founders
+        K = practical.K,                       # The original named kinship reference
+        n.crosses = 3,                         # Three produced biological families
+        theta = max(diag(practical.K)),        # The original family-slot ceiling
+        upper = 0.5,                           # The original family-slot parent bound
+        scores = practical.scores,             # The same precise cross means and variances
+        criterion = "usefulness",              # Expected selected G1 mean
+        accuracy = 1,                          # Ranking by the fitted genetic value
+        progeny = list(                        # The same production and retention budgets
+            total.progeny = 90,                # Produced DH descendants
+            total.selected = 12,               # Retained DH descendants
+            min.progeny = 4,                   # Minimum produced from each active pair
+            max.progeny = 50,                  # Maximum produced from each active pair
+            min.selected = 1,                  # At least one retained from each family
+            max.selected = 12,                 # Retention also remains below production
+            selection.method =                 # Finite-normal selection prediction
+                "order.statistics",
+            control = list(                    # Cumulative count-search settings
+                algorithm = "auto",            # Supported bounded integer search
+                max.transitions = 1e7          # Shared count-work ceiling
+            )
+        ),
+        genetic.model = list(                  # Optional additive genotype model
+            data.set = "cross.parents",        # Thirty-row fixed genomic reference
+            population = "DH",                 # Immediate F1-derived DH descendants
+            t = 0,                             # No additional intermating generation
+            map.function = "Haldane",          # cM map with independent crossovers
+            index.model =                      # Declared independent-noise index law
+                "trait.independent.noise",
+            marker.weights = NULL,             # Uniform weights on all model markers
+            selected.founder.theta = NULL,     # Contributions reported without a new cap
+            scenarios = list(                  # Final genotype assessment only
+                replicates = 250,              # Independent retained-population replicates
+                seed = 12052026                # Reproducible private scenario bank
+            ),
+            control = list(                    # Whole-call genetic resource settings
+                max.cells = 1e7,               # Genetic workspace and snapshot budget
+                max.work = 1e8                 # Cumulative genetic-work ceiling
+            )
+        ),
+        control = list(                        # The same reproducible family search
+            method = "heuristic",              # Bounded best-found family search
+            start = joint.plan,                # The same actual starting counts
+            seed = 1,                          # The same local optimizer seed
+            starts = 1,                        # One checked starting plan
+            maxit = 2000                       # The same outer iteration ceiling
+        )
+    )
+})
+genetic.plan
+@
+
+\begin{Verbatim}[frame=single,fontsize=\footnotesize,formatcom=\color{bl}]
+Joint production and retention planning
+Criterion: usefulness; status: best.found
+Produced families: 3.0000; produced descendants: 90.0000; retained
+  descendants: 12.0000
+Families with retained descendants: 3.0000; selection: order.statistics
+Default produced bounds: 4.0000 to 50.0000; retained bounds: 1.0000 to
+  12.0000
+Baseline mean: 2.4392; selected response: 0.2046; selected mean: 2.6439
+Family-slot relatedness: 0.2940; family-slot limit: 1.0405
+Actual produced / retained relatedness: 0.2957 / 0.3162
+Objective upper bound: 2.7513; centered criterion gap: 0.1074
+Solver: heuristic; evaluated family/direction sets: 267.0000
+Cumulative allocation work: 10000000.0000; ceiling: 10000000.0000
+Original-input feasibility: passed
+Selected-founder proxy (UCPC): 0.3398; cap: NA; qualified
+Actual-genotype scenarios: 250.0000 of 250.0000 completed; complete
+Finite-normal integration and weighted objective bounds are estimated, not
+  rigorous interval certificates.
+
+Produced families and actual n / r
+  Family  Parent 1  Parent 2  Produced  Retained  Selected mean  Response
+       1  1         6               30         3         2.6389    0.2296
+       2  2         6               50         8         2.6520    0.1937
+       3  5         6               10         1         2.5937    0.2174
+\end{Verbatim}
+
+The report-only model returns the same families, produced counts
+$(30,50,10)$ and retained counts $(3,8,1)$ as the preceding calculation.
+Its optimization status and estimated gap remain \cde{best.found} and
+approximately 0.1074. All original-input checks pass.
+
+The selected-founder proxy is approximately 0.3398. The printed missing cap
+means no additional contribution ceiling was requested; the proxy is a
+qualified available approximation here. It differs from the nominal
+retained relatedness, approximately 0.3162, because the analytic model
+predicts shifts within families as well as unequal retained weights.
+All 250 requested genotype replicates complete. Their estimates remain
+separate from the analytic search criterion and its bound.
+
+<<eval=FALSE>>=
+genetic.population <- st.cross.evaluate(
+    plan = genetic.plan                        # Frozen core inherited; no scenario request
+)
+genetic.population
+@
+
+\begin{Verbatim}[frame=single,fontsize=\footnotesize,formatcom=\color{bl}]
+Cross-plan population evaluation
+Status: evaluated; selection: order.statistics
+Produced: 90 in 3 families; retained: 12 in 3 families
+G1 retained mean: 2.644; retained-weight baseline: 2.439; response: 0.2046
+Retained between-family variance: 0.0002599; retained total variance:
+unavailable
+Produced marginal variance, within / between / total: 0.01791 / 0.0009007 /
+0.01881
+Nominal relatedness, family / produced / retained: 0.294 / 0.2957 / 0.3162
+Selected founder proxy: 0.3398; state 1;
+joint.normal.regression.approximation
+G2 forecast: unavailable without genetic.model$future
+Family: parents; produced / retained; predicted retained mean
+1: 1 x 6; 30 / 3; 2.639
+2: 2 x 6; 50 / 8; 2.652
+3: 5 x 6; 10 / 1; 2.594
+\end{Verbatim}
+
+The evaluator inherits the frozen marker/effect/map core and recomputes
+the analytic summaries for the actual current counts. Its selected-founder
+proxy agrees with the plan. This call makes no scenario request, so it
+does not rerun the source's 250 replicates. The missing analytic selected
+variance is distinct from the finite-genotype variance estimates in the
+explicit scenario group shown next. G2 still requires a further declared
+breeding cycle.
+
+<<eval=FALSE>>=
+genetic.actual <- genetic.plan$scenarios$population[
+    , c("metric", "estimate", "SE")
+]
+genetic.actual
+@
+
+\begin{Verbatim}[frame=single,fontsize=\footnotesize,formatcom=\color{bl}]
+                 metric    estimate           SE
+1              response 0.205584555 0.0014418686
+2         selected.mean 2.644824036 0.0014418686
+3 finite.panel.variance 0.003403229 0.0001184327
+4       sample.variance 0.003712614 0.0001291993
+5     marginal.variance 0.003922976           NA
+6             genomic.q 0.412149773 0.0018921202
+7        gene.diversity 0.129969593 0.0004966000
+\end{Verbatim}
+
+The scenarios estimate a selected mean of approximately 2.64482 with
+MCSE 0.001442. Its difference from the normal prediction, approximately
+2.64386, is about 0.67 MCSE in this bank. The response row uses the same
+retained-weight baseline as the analytic calculation.
+
+The expected finite-panel variance is approximately 0.003403; the
+expected empirical sample variance, with divisor eleven, is approximately
+0.003713. The marginal one-member variance is approximately 0.003923,
+including variation between replicate means. Its SE is unavailable in
+this implementation, rather than zero.
+
+The actual allele-based \cde{genomic.q} estimate is approximately 0.4121
+with MCSE 0.001892. It uses all retained pairs including diagonals and
+the fixed thirty-row reference. The founder proxy uses mean marker-origin
+fractions with the supplied founder matrix. Those definitions explain why
+its value, approximately 0.3398, is a separate quantity. Population gene
+diversity is approximately 0.12997 with MCSE 0.000497; each individual DH
+remains homozygous.
+
+<<eval=FALSE>>=
+origin.prediction <- genetic.plan$selected.contributions$families[
+    , c("P1Name", "P2Name", "P1")
+]
+origin.scenario <- genetic.plan$scenarios$families[
+    genetic.plan$scenarios$families$metric == "P1.origin",
+    c("P1Name", "P2Name", "estimate", "SE")
+]
+origin.comparison <- merge(
+    origin.prediction,
+    origin.scenario,
+    by = c("P1Name", "P2Name")
+)
+names(origin.comparison) <- c(
+    "Parent1", "Parent2", "Predicted", "Simulated", "SE"
+)
+origin.comparison$Difference <- origin.comparison$Simulated -
+                                origin.comparison$Predicted
+origin.comparison
+@
+
+\begin{Verbatim}[frame=single,fontsize=\footnotesize,formatcom=\color{bl}]
+  Parent1 Parent2 Predicted Simulated          SE    Difference
+1       1       6 0.4534461 0.4537888 0.003469925  0.0003426681
+2       2       6 0.4517716 0.4530556 0.002221298  0.0012839967
+3       5       6 0.4705766 0.4587819 0.006522184 -0.0117947327
+\end{Verbatim}
+
+The comparison joins the analytic and scenario parent-1 origins by the
+actual unordered family identifiers. Selection favors parent 6 in all
+three families under the analytic model. The three observed discrepancies
+are within approximately 1.9 MCSE in this bank. This is agreement for these
+counts and fitted model, while the UCPC formula retains its regression
+qualification. Values inside $[0,1]$ alone do not establish exact ancestry
+prediction; the appendix identifies the approximation and its references.
+Uniform weights describe the declared marker panel.
+
+The selected-founder ceiling adds a constraint on the analytic
+\cde{ucpc.founder.proxy}. The intermediate fixed-retention allocation
+inherits the frozen core while declaring its own count domain. Its
+actual pair/count table supplies a feasible start for the new capped
+joint problem. Source scenario results do not become a new execution
+request. The original family-slot and practical restrictions remain.
+
+<<eval=FALSE>>=
+genetic.fixed <- st.cross.allocate(
+    plan = genetic.plan,                       # Inherited frozen model for these pairs
+    scores = practical.scores,                 # The same precise family moments
+    total.progeny = 90,                        # The same total production budget
+    n.selected = 4,                            # A fixed-retention feasible comparator
+    min.progeny = 4,                           # The same produced lower bound
+    max.progeny = 50,                          # The same produced upper bound
+    accuracy = 1,                              # The same ranking accuracy
+    selection.method = "order.statistics"      # The same finite-normal prediction
+)
+genetic.cap <- 0.33
+genetic.feasible.start <- genetic.fixed$crosses
+
+genetic.cap.time <- system.time({
+    genetic.capped.plan <- st.cross.plan(
+        merit = cross.merit[practical.ids],    # The same six candidate founders
+        K = practical.K,                       # The original named kinship reference
+        n.crosses = 3,                         # Three produced biological families
+        theta = max(diag(practical.K)),        # The original family-slot ceiling
+        upper = 0.5,                           # The original family-slot parent bound
+        scores = practical.scores,             # The same precise cross means and variances
+        criterion = "usefulness",              # Expected selected G1 mean
+        accuracy = 1,                          # Ranking by the fitted genetic value
+        progeny = list(                        # The same production and retention budgets
+            total.progeny = 90,                # Produced DH descendants
+            total.selected = 12,               # Retained DH descendants
+            min.progeny = 4,                   # Minimum produced from each active pair
+            max.progeny = 50,                  # Maximum produced from each active pair
+            min.selected = 1,                  # At least one retained from each family
+            max.selected = 12,                 # Retention also remains below production
+            selection.method =                 # Finite-normal selection prediction
+                "order.statistics",
+            control = list(                    # Cumulative count-search settings
+                algorithm = "auto",            # Supported bounded integer search
+                max.transitions = 1e7          # Shared count-work ceiling
+            )
+        ),
+        genetic.model = list(                  # Optional additive genotype model
+            data.set = "cross.parents",        # Thirty-row fixed genomic reference
+            population = "DH",                 # Immediate F1-derived DH descendants
+            t = 0,                             # No additional intermating generation
+            map.function = "Haldane",          # cM map with independent crossovers
+            index.model =                      # Declared independent-noise index law
+                "trait.independent.noise",
+            marker.weights = NULL,             # Uniform weights on all model markers
+            selected.founder.theta =           # Verified real-data proxy ceiling
+                genetic.cap,
+            scenarios = NULL,                  # No genotype sampling during this call
+            control = list(                    # Whole-call genetic resource settings
+                max.cells = 1e7,               # Genetic workspace and snapshot budget
+                max.work = 1e8                 # Cumulative genetic-work ceiling
+            )
+        ),
+        control = list(                        # The same reproducible family search
+            method = "heuristic",              # Bounded best-found family search
+            start = genetic.feasible.start,    # Independently checked feasible cap incumbent
+            seed = 1,                          # The same local optimizer seed
+            starts = 1,                        # One checked starting plan
+            maxit = 2000                       # The same outer iteration ceiling
+        )
+    )
+})
+genetic.capped.plan
+@
+
+\begin{Verbatim}[frame=single,fontsize=\footnotesize,formatcom=\color{bl}]
+Joint production and retention planning
+Criterion: usefulness; status: best.found
+Produced families: 3.0000; produced descendants: 90.0000; retained
+  descendants: 12.0000
+Families with retained descendants: 3.0000; selection: order.statistics
+Default produced bounds: 4.0000 to 50.0000; retained bounds: 1.0000 to
+  12.0000
+Baseline mean: 2.4352; selected response: 0.2070; selected mean: 2.6422
+Family-slot relatedness: 0.2940; family-slot limit: 1.0405
+Actual produced / retained relatedness: 0.2953 / 0.2993
+Objective upper bound: 2.7513; centered criterion gap: 0.1090
+Solver: heuristic; evaluated family/direction sets: 275.0000
+Cumulative allocation work: 10000000.0000; ceiling: 10000000.0000
+Original-input feasibility: passed
+Selected-founder proxy (UCPC): 0.3250; cap: 0.3300; qualified
+Finite-normal integration and weighted objective bounds are estimated, not
+  rigorous interval certificates.
+
+Produced families and actual n / r
+  Family  Parent 1  Parent 2  Produced  Retained  Selected mean  Response
+       1  1         6               32         4         2.6264    0.2171
+       2  2         6               50         7         2.6605    0.2022
+       3  5         6                8         1         2.5774    0.2011
+\end{Verbatim}
+
+The fixed-retention comparator has proxy approximately 0.3225, below 0.33;
+the uncapped variable-retention result above has proxy approximately 0.3398.
+The capped search returns produced counts $(32,50,8)$ and retained counts
+$(4,7,1)$, with proxy approximately0.3250 and selected mean approximately
+2.6422. Its actual-count and proxy checks pass. The result remains
+\cde{best.found}, with its printed remaining gap.
+
+The ceiling changes the feasible set and its predicted-mean tradeoff.
+Its metric is the analytic founder proxy on the original supplied $K$;
+the allele-based scenario metric retains its own definition. The model
+and cap remain attached for subsequent source evaluation or allocation,
+where current counts receive a new assessment.
+
+\subsection*{A further crossing and selection cycle}
+
+The next breeding cycle begins with the actual selected DH lines, rather
+than only their predicted means or average founder contributions. Twelve
+selected G1 lines form six random disjoint pairs. Every line is used once,
+and each new F1 produces twenty G2 DH candidates from which two are
+retained. Thus the second cycle produces 120 DH lines and retains twelve.
+Distinct lines remain distinct possible mates even when their genotypes
+coincide or they come from the same original family.
+
+The current decision retains the same six eligible founders, fifteen
+allowed pairs, three produced families, ninety produced descendants and
+twelve retained descendants. The original named kinship reference,
+family-slot ceiling and parental bounds remain. As in the preceding
+joint examples, the separate seed/pollen policy is not imposed on this
+undirected founder graph. Such original-founder rules would describe G1
+operations and would not silently define roles for the new DH lines.
+All three designs have these same aggregate resources and restrictions.
+The equal-count reference has thirty produced and four retained per family;
+the G1-focused and future-focused searches use the common variable-count
+bounds. The latter two have the same decision domain.
+
+The \cde{future} criterion targets the selected G2 mean on a fixed
+training bank of actual genotype paths. The current G1 usefulness remains
+an analytic quantity with its existing finite-normal definition. The
+declared index law ranks actual fitted genetic values at accuracy one
+in both cycles. New F1s between the selected DH mosaics supply G2
+segregation; a homozygous DH itself has no segregation variance.
+
+<<eval=FALSE>>=
+future.equal <- st.cross.allocate(
+    plan = joint.equal,                        # Actual equal-production baseline pairs
+    scores = practical.scores,                 # The same precise cross means and variances
+    total.progeny = 90,                        # Identical total produced descendants
+    n.selected = 4,                            # Explicit retained count in each family
+    min.progeny = 30,                          # Equal production in all three families
+    max.progeny = 30,                          # Exactly thirty candidates per family
+    accuracy = 1,                              # The same current ranking accuracy
+    selection.method = "order.statistics"      # The same analytic G1 selection method
+)
+future.progeny <- list(
+    total.progeny = 90,                        # Current produced DH descendants
+    total.selected = 12,                       # Current retained DH descendants
+    min.progeny = 4,                           # Minimum produced per active family
+    max.progeny = 50,                          # Maximum produced per active family
+    min.selected = 1,                          # At least one current retained line
+    max.selected = 12,                         # Retention also stays below production
+    selection.method = "order.statistics",     # Analytic G1 selection expectation
+    control = list(                            # Current integer-count settings
+        algorithm = "auto",                    # Supported bounded count search
+        max.transitions = 1e7                  # Cumulative count-work ceiling
+    )
+)
+future.policy <- list(
+    policy = "random.disjoint",                # Every retained G1 line is mated once
+    n.progeny = 20,                            # Produced DHs from each new G2 F1
+    n.selected = 2,                            # Retained DHs from each G2 family
+    accuracy = 1,                              # G2 ranking by fitted genetic value
+    training = list(                           # Fixed bank used by future search
+        replicates = 32,                       # Complete replicates per candidate
+        seed = 0                               # Reproducible private training seed
+    ),
+    evaluation = list(                         # Separate held-out assessment bank
+        replicates = 256,                      # Requested whole common replicates
+        seed = 1                               # Role-separated evaluation seed
+    ),
+    comparators = list(                        # Actual equal-resource designs
+        Equal = future.equal,                  # Evaluated actual n=30/r=4 reference
+        G1 = genetic.plan                      # Existing G1-focused actual plan
+    )
+)
+future.model <- list(
+    data.set = "cross.parents",                # Original thirty-row genomic reference
+    population = "DH",                         # Immediate F1-derived DH candidates
+    t = 0,                                     # No extra intermating generation
+    map.function = "Haldane",                  # cM map and independent crossovers
+    index.model =                              # Independent-noise ranking law
+        "trait.independent.noise",
+    marker.weights = NULL,                     # Uniform weights on all 243 markers
+    selected.founder.theta = NULL,             # No additional G1 founder-proxy cap
+    scenarios = NULL,                          # No separate single-cycle scenario bank
+    future = future.policy,                    # Actual two-cycle request declared above
+    control = list(                            # Whole-call genetic resource settings
+        max.cells = 1e7,                       # Shared genetic workspace ceiling
+        max.work = 2e8                         # Search and final assessment together
+    )
+)
+future.time <- system.time({
+    future.plan <- st.cross.plan(
+        merit = cross.merit[practical.ids],    # The same six candidate founders
+        K = practical.K,                       # The original named kinship reference
+        n.crosses = 3,                         # Current produced biological families
+        theta = max(diag(practical.K)),        # The original family-slot ceiling
+        upper = 0.5,                           # The original parental family-slot bound
+        scores = practical.scores,             # Precise scores for all fifteen pairs
+        criterion = "future",                  # Actual selected G2 mean on training bank
+        accuracy = 1,                          # Current within-family ranking accuracy
+        progeny = future.progeny,              # Current production and retention budgets
+        genetic.model = future.model,          # Explicit core and next-cycle request
+        control = list(                        # Bounded joint family and count search
+            method = "heuristic",              # Best-found finite-bank search
+            start = genetic.plan,              # Actual checked G1 pairs and n/r counts
+            seed = 1,                          # Reproducible search seed
+            starts = 1,                        # Requested starting schedule
+            maxit = 2000                       # Current outer iteration ceiling
+        )
+    )
+})
+future.plan
+@
+
+\begin{Verbatim}[frame=single,fontsize=\footnotesize,formatcom=\color{bl}]
+Joint planning for selected G2 descendants
+Criterion: future; horizon: 2; status: best.found
+G1 families / produced / retained: 3.0000 / 90.0000 / 12.0000
+G2 families / produced / retained: 6.0000 / 120.0000 / 12.0000
+Analytic G1 baseline / selected mean: 2.4392 / 2.6427
+Training G1 selected mean / additional G2 response / G2 mean: 2.6457 /
+  0.1535 / 2.7992
+Training bank: complete; 32.0000 of 32.0000 complete
+Held-out bank: complete; 256.0000 of 256.0000 complete
+Held-out G2 selected mean / SE: 2.7926 / 0.0017
+Actual held-out G2 genomic q / gene diversity: 0.4648 / 0.1156
+Family-slot relatedness / limit: 0.2940 / 1.0405
+Original-input G1 feasibility: passed
+Selected-founder proxy (UCPC): 0.3398; cap: NA; qualified
+Training-bank bound / gap: NA / NA
+
+Chosen G1 crosses and actual counts
+  Family  Parent 1  Parent 2  Produced  Retained
+       1  1         6               34         3
+       2  2         6               50         8
+       3  5         6                6         1
+
+Paired held-out contrasts (selected minus comparator)
+  Comparator    Metric            Difference      SE  Reason   
+  G1.reference  G1.selected.mean     -0.0004  0.0004  available
+  G1.reference  G2.selected.mean     -0.0004  0.0006  available
+  G1.reference  G2.response         >-0.0001  0.0005  available
+  Equal         G1.selected.mean      0.0195  0.0012  available
+  Equal         G2.selected.mean      0.0057  0.0020  available
+  Equal         G2.response          -0.0138  0.0016  available
+  G1            G1.selected.mean     -0.0004  0.0004  available
+  G1            G2.selected.mean     -0.0004  0.0006  available
+  G1            G2.response         >-0.0001  0.0005  available
+\end{Verbatim}
+
+% INTERPRETATION: future-plan
+The printed objective concerns the complete training bank and horizon two.
+Its unselected G1 baseline, actual G1 response and additional G2 response
+have the component identity given in the appendix. Existing G1 gain and
+usefulness fields retain their analytic meaning. The returned search
+status and unknown expectation gap remain part of the result.
+
+In the printed family order, produced counts are $(34,50,6)$ and retained
+counts are $(3,8,1)$. All 32 training replicates and 256 evaluation
+replicates complete. The search reaches its training-work allowance and
+retains \cde{best.found} status. Completion of the evaluation bank does
+not close the optimization gap.
+
+The separate evaluation bank compares the chosen design with the actual
+equal-count and G1-focused designs. Its whole common replicates generate
+both generations for every qualified comparator. This assessment does
+not reuse the earlier single-cycle scenario numbers or rank training
+proposals by held-out performance.
+
+<<eval=FALSE>>=
+future.comparison <- future.plan$future$population[
+    future.plan$future$population$design %in% c("Equal", "G1", "selected") &
+        future.plan$future$population$metric == "selected.mean",
+    c("design", "generation", "estimate", "SE")
+]
+future.comparison
+@
+
+\begin{Verbatim}[frame=single,fontsize=\footnotesize,formatcom=\color{bl}]
+     design generation estimate          SE
+2  selected         G1 2.640892 0.001405756
+9  selected         G2 2.792630 0.001744427
+30    Equal         G1 2.621357 0.001376855
+37    Equal         G2 2.786932 0.001768145
+44       G1         G1 2.641251 0.001403634
+51       G1         G2 2.793023 0.001823118
+\end{Verbatim}
+
+% INTERPRETATION: future-comparison
+The rows compare selected G1 and selected G2 means under the same fitted
+model and declared next-cycle policy. Their SEs describe Monte Carlo
+precision across whole evaluation replicates. The analytic G1 prediction
+and these actual-genotype estimates remain separate quantities.
+
+The future-focused design has G1 mean approximately 2.64089 and G2 mean
+2.79263. The G1-focused design has corresponding means 2.64125 and
+2.79302; the equal-count reference has means 2.62136 and 2.78693.
+Each design uses the same 256 held-out replicates.
+
+<<eval=FALSE>>=
+future.differences <- future.plan$future$contrasts[
+    future.plan$future$contrasts$comparator %in% c("Equal", "G1"),
+    c("comparator", "metric", "estimate", "SE")
+]
+future.differences
+@
+
+\begin{Verbatim}[frame=single,fontsize=\footnotesize,formatcom=\color{bl}]
+  comparator           metric      estimate           SE
+4      Equal G1.selected.mean  1.953539e-02 0.0012363589
+5      Equal G2.selected.mean  5.698354e-03 0.0020294291
+6      Equal      G2.response -1.383703e-02 0.0016101313
+7         G1 G1.selected.mean -3.593500e-04 0.0003930399
+8         G1 G2.selected.mean -3.930633e-04 0.0005759057
+9         G1      G2.response -3.371328e-05 0.0004931103
+\end{Verbatim}
+
+% INTERPRETATION: future-differences
+Every difference is the future-focused plan minus the named comparator.
+The SE comes from the corresponding difference inside each common
+replicate, rather than combining unrelated aggregate SEs. The additional
+G2 response is the selected G2 mean minus the selected G1 mean for that
+same design. Interpretation of an advantage follows the actual paired
+estimate and its precision; a training winner need not improve the
+held-out expectation estimate.
+
+Relative to the G1-focused design, current selected mean falls by
+approximately 0.000359 and the additional G2 response falls by 0.000034.
+The net G2 difference is $-0.000393$ with MCSE 0.000576, approximately
+0.68 MCSE below the G1-focused comparator. The held-out assessment
+therefore provides no demonstrated advantage over the G1-focused design.
+The difference from equal counts is $+0.005698$ with MCSE 0.002029,
+approximately 2.8 MCSE above zero under this fitted model and declared
+simulation policy.
+
+The training score is approximately 2.7992, while the held-out mean is
+2.79263. This illustrates the risk of overfitting a small fixed training
+bank. The search optimizes its sampled objective; its selected design
+and numerical status do not certify the optimum of the unknown
+expectation. The seeds, requested bank sizes and constraints remain
+those declared before this comparison.
+
+<<eval=FALSE>>=
+future.pair.moments <- future.plan$future$pair.moments[
+    future.plan$future$pair.moments$design %in% c("Equal", "G1", "selected"),
+    c("design", "metric", "estimate", "SE")
+]
+future.pair.moments
+@
+
+\begin{Verbatim}[frame=single,fontsize=\footnotesize,formatcom=\color{bl}]
+    design             metric    estimate           SE
+1 selected      mean.variance 0.009226384 9.840492e-05
+2 selected mean.sqrt.variance 0.093664940 5.049969e-04
+5    Equal      mean.variance 0.010722676 1.150516e-04
+6    Equal mean.sqrt.variance 0.101411655 5.589114e-04
+7       G1      mean.variance 0.009218595 9.610039e-05
+8       G1 mean.sqrt.variance 0.093710904 4.959518e-04
+\end{Verbatim}
+
+% INTERPRETATION: future-pair-moments
+The variance is conditional on each actual selected-DH pair and describes
+the DH progeny of its new F1. Mean conditional variance and mean
+conditional SD summarize different aspects of that next-cycle
+segregation. The square root of mean variance does not replace mean SD
+or the actual G2 calculation.
+
+For the selected design, mean conditional variance is approximately
+0.009226 and mean conditional SD is 0.093665. The square root of the
+first number is approximately 0.09605, showing the distinction in this
+actual example.
+
+<<eval=FALSE>>=
+future.genomics <- future.plan$future$population[
+    future.plan$future$population$design %in% c("Equal", "G1", "selected") &
+        future.plan$future$population$generation == "G2" &
+        future.plan$future$population$metric %in% c("genomic.q", "gene.diversity"),
+    c("design", "metric", "estimate", "SE")
+]
+future.genomics
+@
+
+\begin{Verbatim}[frame=single,fontsize=\footnotesize,formatcom=\color{bl}]
+     design         metric  estimate           SE
+13 selected      genomic.q 0.4648129 0.0020094849
+14 selected gene.diversity 0.1156186 0.0005125546
+41    Equal      genomic.q 0.4462531 0.0021661623
+42    Equal gene.diversity 0.1226934 0.0005404730
+55       G1      genomic.q 0.4639611 0.0020087833
+56       G1 gene.diversity 0.1160426 0.0004912943
+\end{Verbatim}
+
+% INTERPRETATION: future-genomics
+The G2 genomic quantities use realized selected allele frequencies and
+the original thirty-row reference. They are evaluated within each finite
+replicate before averaging. Population gene diversity remains distinct
+from individual DH heterozygosity, which is zero. Neither metric is a
+guaranteed consequence of a current founder-contribution prediction.
+
+The future-focused G2 panel has estimated genomic coancestry 0.46481
+and gene diversity 0.11562. The G1-focused panel gives 0.46396 and
+0.11604. These are fixed-reference finite-panel estimates; the objective
+and current constraints do not impose a hard G2 genomic ceiling.
+
+The same future objective can be assessed at declared G1 family-slot
+relatedness limits. Each frontier point replaces \cde{theta} while
+retaining the other current constraints and budgets. Independent starts
+use the recorded standalone starting rules. One cumulative genetic-work
+budget covers the entire call, including every point's final assessment.
+
+<<eval=FALSE>>=
+future.theta.limits <- c(0.25, 0.30, 0.35)
+future.frontier.model <- future.model
+future.frontier.model$future$comparators <- NULL
+future.frontier.time <- system.time({
+    future.frontier <- st.cross.frontier(
+        merit = cross.merit[practical.ids],    # The same six candidate founders
+        K = practical.K,                       # Original-scale fixed kinship reference
+        n.crosses = 3,                         # Three current produced families
+        theta = max(diag(practical.K)),        # Replaced by each declared theta limit
+        upper = 0.5,                           # The same parental family-slot bound
+        scores = practical.scores,             # The same fifteen actual candidate pairs
+        criterion = "future",                  # Actual selected G2 training objective
+        accuracy = 1,                          # The same current ranking accuracy
+        progeny = future.progeny,              # The same current count domain and totals
+        genetic.model = future.frontier.model, # Same core and banks; no extra comparators
+        limits = future.theta.limits,          # Ordered G1 family-slot theta ceilings
+        metric = "theta",                      # Axis concerns nominal G1 family slots
+        warmstart = FALSE,                     # Each point keeps its standalone start
+        control = list(                        # The same declared search schedule
+            method = "heuristic",              # Bounded finite-bank search at each cap
+            seed = 1,                          # The same recorded search seed
+            starts = 1,                        # The same requested starting schedule
+            maxit = 2000                       # Per-point outer iteration ceiling
+        )
+    )
+})
+future.frontier
+@
+
+\begin{Verbatim}[frame=single,fontsize=\footnotesize,formatcom=\color{bl}]
+Gain-diversity frontier
+Criterion: future; horizon: 2.0000; limit metric: theta
+Points: 3; recorded search status applies to each point
+  Point   Limit  Status      Feasible  Training G2  Held-out G2      SE
+      1  0.2500  best.found  TRUE           2.7919       2.7893  0.0018
+      2  0.3000  best.found  TRUE           2.7963       2.7930  0.0018
+      3  0.3500  best.found  TRUE           2.7992       2.7926  0.0017
+
+Actual held-out G2 metrics and bank completion
+  Point  G2 genomic q  G2 gene diversity  Completed  Requested
+      1        0.4478             0.1199   256.0000   256.0000
+      2        0.4640             0.1160   256.0000   256.0000
+      3        0.4648             0.1156   256.0000   256.0000
+\end{Verbatim}
+
+% INTERPRETATION: future-frontier
+The horizontal limit concerns nominal G1 family-slot relatedness on the
+original supplied kinship matrix. Actual selected G2 genomic coancestry
+and gene diversity retain their separate estimates. An alternative
+\cde{selected.founder.theta} axis would concern the qualified G1 UCPC
+founder proxy and would also require that explicit label. Neither axis
+is a hard bound on actual G2 genomic coancestry. Infeasible, unavailable
+and work-limited points remain explicit; bounded-search and sample-based
+points need not form a smooth or monotone tradeoff curve.
+
+All three points complete their 256 held-out replicates, while all
+retain \cde{best.found} and a training-limit reason. Their held-out
+means are approximately 2.7893, 2.7930 and 2.7926 in the declared limit
+order. The estimates are not monotone in the cap. Their individual SEs
+do not supply a paired cross-point contrast or identify an optimum
+between the displayed limits. The first and last points have estimated
+G2 genomic coancestry approximately 0.4478 and 0.4648, respectively.
+
+The immutable genetic core can be inherited for a new explicit future
+assessment. Execution banks, comparator commands and historical G2
+results are request-specific. Ordinary source evaluation without a new
+future request executes no future bank and copies no stale assessment.
+Planner starts supply counts and pairs rather than an implicit genetic
+model. The forecast remains conditional on fitted marker effects and one
+declared additional cycle; Monte Carlo precision does not establish field
+performance or quantify marker-effect estimation uncertainty.
 
 \appendix
 \section{Mathematical definitions and implemented algorithms}
@@ -1971,8 +3525,1108 @@ nominal vector predicts the genomic ancestry of selected descendants.
 The optimum is conditional on the supplied pairs and retained counts,
 rather than a joint global optimum over pairs and progeny resources.
 
+\subsection{Finite-normal order statistics and discrete allocation}
+
+For independent standard-normal observations, $Z_{(r:g)}$ denotes the
+$r$th smallest value in a sample of size $g$. The optional
+\cde{selection.method="order.statistics"} replaces $i_B(R,g)$ by
+\[
+ A(g,R)=\frac1R\sum_{r=g-R+1}^{g}E\{Z_{(r:g)}\},\qquad A(R,R)=0.
+\]
+Writing $\phi$ and $\Phi$ for the standard-normal density and distribution
+function, respectively, the expectations are
+\[
+ E\{Z_{(r:g)}\}=\frac{g!}{(r-1)!(g-r)!}
+ \int_{-\infty}^{\infty}z\phi(z)
+       \Phi(z)^{r-1}\{1-\Phi(z)\}^{g-r}\,dz.
+\]
+These are the finite-normal order-statistic and selected-mean definitions
+in Okoye et al.\ (2026), Equations~(4)--(8). With fixed selected counts,
+the implemented objective is
+\[
+ \overline U_{\mathrm{normal}}(G)=
+ \sum_e\frac{R_e}{R_+}
+       \{\mu_e+a_e\sqrt{v_e}\,A(G_e,R_e)\}.
+\]
+The factor $a_e$ is the within-family selection accuracy. For phenotypic
+selection with heritability $H_e^2$, it equals $H_e$. The expectation is
+exact for the stated independent normal-sampling model; numerical
+integration and a finite-locus genetic population remain separate
+qualifications.
+
+The integer allocator uses the actual finite increment
+\[
+ \Delta_e(g)=\frac{R_e}{R_+}a_e\sqrt{v_e}
+             \{A(g+1,R_e)-A(g,R_e)\}.
+\]
+$T_g$ denotes the $R$th greatest observation among the original $g$ draws,
+and $X$ is an independent additional draw. The increase in the sum of the
+$R$ greatest observations is $(X-T_g)_+$. Under a coupling that preserves
+the original observations, $T_{g+1}\geq T_g$, so its expected positive
+increment is nonnegative and decreases as $g$ increases. Equivalently,
+with $Q(z)=1-\Phi(z)$,
+\[
+ A(g+1,R)-A(g,R)=\frac1R\int_{-\infty}^{\infty}
+ Q(z)\Pr\{\operatorname{Bin}(g,Q(z))\leq R-1\}\,dz.
+\]
+This is the discrete diminishing-return property underlying the
+monotonicity argument of Okoye et al.\ (2026), Appendix~2,
+Equations~(10)--(20). Starting from each lower bound $L_e$, selection of
+the greatest available $\Delta_e(g)$ gives a global optimum of this
+separable integer allocation problem: each family's decreasing increment
+sequence is selected in order, with upper bounds truncating the sequence.
+Ties can yield several optimal allocations. Continuous derivatives of an
+extension of $A(g,R)$ are not generally equal to these one-individual
+increments; the implementation ranks finite increments.
+
+The fixed-retention C evaluator uses beta-quantile transformations of these integrals and
+adaptive quadrature split at the midpoint of the unit interval. For $g>R$,
+the nonnegative score representation is
+\[
+ A(g,R)=\frac{g}{R}
+ E_{B\sim\operatorname{Beta}(R,g-R)}
+     [\phi\{\Phi^{-1}(B)\}].
+\]
+Normal symmetry gives
+$A(g,R)=(g-R)A(g,g-R)/R$, reducing near-full-retention calculations to
+the smaller selected count. Direct finite-increment evaluation avoids
+subtracting nearly equal selected means. A maximum heap retains the
+currently greatest family increment, and cached evaluations serve repeated
+count and retained-count combinations.
+The \cde{greedy} allocator uses this discrete rule and \cde{dp} uses the
+same normal-scoring objective in the budget recurrence above.
+The \cde{auto} option starts with greedy allocation and can use the same
+objective in dynamic programming when the estimated gap remains unresolved
+and the resource limits permit it. Normal integrals and tail calculations
+are evaluated numerically. Their error estimates and floating-point uncertainty
+qualify the reported gap. Status \cde{numerically.optimal} identifies an
+estimated gap meeting tolerance, rather than an interval-certified bound
+for the exact normal integrals. Otherwise the result reports
+\cde{numerically.unresolved} or \cde{resource.limit}, as appropriate.
+An order-statistic request never changes silently to Burrows scoring.
+The discrete theorem requires fixed pairs, fixed retained counts, equal
+cost per produced individual and separable count bounds. It does not
+extend automatically to coupled produced-share constraints or joint
+optimization of pairs and resources.
+
+\subsection{Common population evaluation}
+
+The evaluator pools repeated unordered parent pairs before scoring their
+produced counts $G_e$ and retained counts $R_e$. Stored or explicitly
+supplied means, variances and accuracies must agree within a pooled family.
+The totals are $T=\sum_eG_e$ and $R_+=\sum_eR_e$. A family with $R_e=0$ has no
+weight in the selected summaries and no selection intensity is evaluated
+for it. With $T>0$, the produced-family weights and marginal moments are
+\[
+ p_e=\frac{G_e}{T},\qquad M_0=\sum_ep_e\mu_e,\qquad
+ W_0=\sum_ep_ev_e,
+\]
+\[
+ B_0=\sum_ep_e(\mu_e-M_0)^2,\qquad V_0=W_0+B_0.
+\]
+This law-of-total-variance decomposition describes the genetic value of
+one uniformly sampled produced individual under the supplied family
+moments. It is not the expected empirical variance of all produced
+individuals or a segregation variance for an additional breeding cycle.
+
+With $R_+>0$, the retained-count baseline and G1 mean are
+\[
+ M_{1,\mathrm{base}}=\sum_e\frac{R_e}{R_+}\mu_e,\qquad
+ J_1=\sum_{e:R_e>0}\frac{R_e}{R_+}U_e,
+ \qquad R_1=J_1-M_{1,\mathrm{base}},
+\]
+where $U_e$ uses the explicitly resolved Burrows or finite-normal method.
+Thus $R_1$ retains the same family weights in the selected mean and its
+baseline. A difference from $M_0$, whose weights are $G_e/T$, is a separate
+contrast. The available selected between-family term is
+\[
+ B_1=\sum_{e:R_e>0}\frac{R_e}{R_+}(U_e-J_1)^2.
+\]
+The analytic evaluator leaves selected within-family and total marginal
+variance unavailable. Explicit genotype scenarios in
+Section~\ref{sec:selected-genotypes} estimate separately defined finite-genotype
+quantities under the declared model. They require second moments of the selected normal
+order statistics and a declared joint genetic-value/selection-score model.
+The expected empirical variance of the finite retained set further
+requires covariances among selected individuals. For $R_+>1$ its identity
+would be
+\[
+ E(S_1^2)=\frac{R_+}{R_+-1}
+       \{V_{1,\mathrm{marginal}}-\operatorname{Var}(\overline G_1)\}.
+\]
+The currently unavailable covariance terms are not replaced by an
+independence assumption. For $R_+=1$ sample variance is undefined.
+Zero total production or retention similarly yields unavailable summaries
+with an explicit reason rather than an assumed zero genetic value.
+
+For $C$ distinct produced families, the additional family-based nominal
+share is
+\[
+ c_i^{\mathrm{family}}=\frac1{2C}
+    \sum_{e:G_e>0}\{\mathbf1(i_e=i)+\mathbf1(j_e=i)\}.
+\]
+The produced and retained shares remain as defined above. Each reported
+relatedness is $c'Kc$ for its stated basis on the complete original named
+reference, with zero shares for unused reference parents. Missing kinship
+input leaves relatedness unavailable. Inherited constraints retain their
+declared basis; family-slot diversity retains the complete supplied
+reference and its parental-occurrence convention.
+
+Normalization, numerical scoring and centered accumulation of the mixture
+moments are C-owned. The evaluator independently recomputes supported
+budget, bound, contribution, relatedness and diversity residuals from the
+input plan. Evaluation status describes those checks and is separate from
+the source optimizer's convergence or optimality status. Counts are not
+repaired during evaluation.
+
+Future-oriented allocation across breeding cycles, as investigated through
+simulation by Hamazaki and Iwata (2024), requires a further declared mating
+and selection policy. Here G2 means crosses between selected G1 DH lines
+followed by new DH derivation and selection. Current family means,
+segregation variances and parental kinship alone do not identify the
+selected genomic state needed for this forecast. Selected genomic ancestry,
+selected genomic diversity and G2 merit therefore remain unavailable in
+the initial evaluator.
+
+\subsection{Reproductive roles and practical constraints}
+
+Parent-count limits, role-specific restrictions, equal parental use and
+contribution capacities are established mate-selection choices; examples
+are described by Gorjanc and Hickey (2018). The associated
+\href{https://github.com/AlphaGenes/AlphaMate/blob/main/doc/AlphaMate.txt}{manual}
+groups them under ``Mating/Crossing constraints''.
+Its parent-count sections are ``NumberOfParents'', ``NumberOfMaleParents''
+and ``NumberOfFemaleParents''. Equal use is described in
+``EqualizeContributions'', while ``LimitContributionsMin'' and
+``LimitContributionsMax'' specify contribution bounds.
+These manual sections have no numbered formulas. The equations below
+specify the incidence bases, pooling conventions and C search implemented
+in SelectionTools.
+
+The biological response key remains an unordered nonself parent pair
+$e=\{i,j\}$. An identified directed record $a=(i_{\mathrm{seed}},
+j_{\mathrm{pollen}})$ additionally records its reproductive roles.
+Equivalent reciprocal records pool their produced and retained counts
+before selection response is evaluated. Different directions do not
+create independent selection opportunities within the same biological
+family under this direction-neutral score model. The equal-family planner
+chooses at most one eligible direction for each selected biological pair.
+Explicit eligibility and allowed-pair restrictions intersect.
+
+For basis $b$ equal to produced, retained or operations, $w_a^b$ is
+the produced count, retained count or explicitly supplied operation count,
+respectively. With $T_b=\sum_aw_a^b$, the role-specific incidences are
+\[
+ S_i^b=\sum_{a:\mathrm{seed}(a)=i}w_a^b,\qquad
+ L_i^b=\sum_{a:\mathrm{pollen}(a)=i}w_a^b,\qquad
+ D_i^b=S_i^b+L_i^b.
+\]
+The overall and role-normalized nominal shares have different denominators:
+\[
+ c_i^b=\frac{D_i^b}{2T_b},\qquad
+ h_i^{b,\mathrm{seed}}=\frac{S_i^b}{T_b},\qquad
+ h_i^{b,\mathrm{pollen}}=\frac{L_i^b}{T_b}.
+\]
+Each role share sums to one. Pool shares sum these values over the pool
+without re-normalizing within that pool. A produced-use limit counts
+descendant slots, while operations count only explicitly recorded crossing
+events. Operation counts are not inferred from produced counts. A zero
+basis total leaves its shares and relatedness unavailable.
+
+For family slots, each distinct produced biological family contributes
+one parental incidence at each end. Its overall denominator is twice the
+number of those families. Role-specific family slots require a single
+unambiguous direction per family. A pooled family with multiple directions
+instead needs identified produced, retained or operation accounting for
+a role-specific restriction.
+
+For a selector of pool $\mathcal P$ and role $t$, $Q_i^{b,t}$ equals
+$D_i^b$, $S_i^b$ or $L_i^b$ for all, seed or pollen use. Distinct used
+parents, aggregate uses and aggregate shares are, respectively,
+\[
+ N_{\mathcal P,t}^b=\sum_{i\in\mathcal P}\mathbf1(Q_i^{b,t}>0),\qquad
+ U_{\mathcal P,t}^b=\sum_{i\in\mathcal P}Q_i^{b,t},\qquad
+ H_{\mathcal P,t}^b=\sum_{i\in\mathcal P}v_i^{b,t},
+\]
+where $v=c$ for all roles and $v=h$ for a specific role. Each limits row
+places inclusive lower and upper bounds on one of these quantities.
+Equal use requires the positive $Q_i^{b,t}$ values in the selected subset
+to be identical integers. It does not force every eligible parent to be
+used. Exact parent counts use equal lower and upper integer bounds.
+
+Count accumulation and feasibility comparisons use checked 64-bit integer
+arithmetic. Diagnostic decimal strings retain exact achieved counts and
+residuals; numeric fields become unavailable when such integers exceed
+the exact binary64 reporting range. A share constraint compares an integer
+numerator $q$ with the actual represented numeric bound on denominator $d$:
+\[
+ \lceil\ell d\rceil\leq q\leq\lfloor u d\rfloor.
+\]
+The product boundaries use portable two-limb integer arithmetic, preserving
+the represented binary64 bounds rather than their rounded printed values.
+Integer equality has no floating-point tolerance. Relatedness calculations
+retain their separate numerical uncertainty.
+
+Inherited and explicit requests remain separate intersecting restrictions.
+The direction map is joined to the actual current family rows and their
+counts, so saved counts do not override an edited plan. The common checker
+recomputes every supported request from these inputs. A failed check is
+reported without repairing the plan; unavailable or unresolved checks do
+not count as passes.
+
+Role-aware exact cross selection extends the bounded family search with
+eligible direction choices and biological-pair exclusivity. A fixed-pair
+allocation with coupled produced-use, share, relatedness or diversity
+constraints requires the constrained integer path. Separable increments
+can bound its objective, but their unconstrained optimum is not a
+certificate for the constrained feasible set. A completed search, valid
+bounds and qualified numerical comparisons determine the optimum claim.
+Exhausted work limits retain an honestly qualified result rather than a
+capacity-violating fallback or a false infeasibility proof.
+
+The family-based nominal PropSD sample is \cde{family.\allowbreak slots}.
+Produced counts define \cde{produced.\allowbreak founder.\allowbreak slots},
+while retained counts define
+\cde{retained.\allowbreak founder.\allowbreak slots}.
+All three retain the complete named reference matrix and literal integer parental
+multiplicities. Produced and retained founder-slot totals are $2T$ and
+$2R_+$, respectively, within the supported literal-count domain. Each
+strict computed loss limit intersects any inherited family-slot limit.
+These nominal founder samples do not identify selected-DH genomic
+diversity or ancestry.
+
+\subsection{Joint family activation and produced counts}
+
+For allowed unordered biological families $e$, activation $y_e\in\{0,1\}$
+and nonnegative integer produced count $n_e$ satisfy
+\[
+ \sum_e y_e=C,\qquad \sum_e n_e=P,\qquad
+ L y_e\le n_e\le U y_e,\qquad r_e=r y_e,\quad L\ge r>0.
+\]
+Consequently the retained budget is $R=Cr$. With reproductive roles,
+exactly one eligible directed alternative is chosen for each active
+biological family. Reciprocal alternatives retain the same biological
+mean and variance and do not create another selection opportunity.
+For selection intensity $a(n,r)$ defined above, the two supported
+criteria are
+\[
+ J_{\mathrm{mean}}=\frac1C\sum_e y_e\mu_e,\qquad
+ J_{G1}=\frac1C\sum_{e:y_e=1}
+       \{\mu_e+\rho\sqrt{v_e}\,a(n_e,r)\}.
+\]
+These are retained-count weights $r/R$, rather than produced-count
+weights $n_e/P$. The finite-family response follows the formulas and
+qualification in the preceding order-statistic subsection; the joint
+activation, resource constraints and search described here specify the
+SelectionTools implementation. The future-oriented progeny-allocation
+topic is also investigated by Hamazaki and Iwata (2024), whose
+simulation-based methodology does not define this G1 search.
+
+The planner's parental contribution limits and $c'Kc\le\theta$ continue
+to use $c_i=d_i/(2C)$, where $d_i$ is the number of active families
+containing parent $i$. They are independent of $n_e$. Additional practical
+constraints retain their explicitly declared family, produced or retained
+basis and the complete original relationship reference. Common retained
+counts make family and retained shares coincide here; their provenance
+remains separate. Operation counts are not inferred from descendant
+production.
+
+
+The exact C search branches over biological family choices and eligible
+directions, with the original parental and practical constraints. A
+fixed-family subproblem allocates the produced budget. Its separable
+finite-normal path uses the discrete increments above; the Burrows path
+uses the corresponding bounded dynamic program. Coupled produced-use,
+share or diversity restrictions require their checked constrained search.
+The branch-and-bound principle follows Land and Doig (1960); the particular
+family graph, resource model, bounds and numerical qualification are the
+implementation described here. An exact fixed-family allocation does not
+establish an optimum over family choices by itself.
+
+The family-search bound permits each candidate its greatest supported
+response independently, relaxing the shared production budget and
+practical restrictions. The finite-normal bound uses its qualified
+monotone count endpoint and estimated numerical error. A Burrows bound
+uses an enumerated count range; if no justified finite bound is available,
+the upper bound remains unknown. This relaxation can be loose, but it
+does not replace the actual-count objective or make a failed constraint
+feasible. Completed branch exclusion and estimated numerical comparisons
+determine the reported gap.
+
+For larger searches, multiple starts and one-family, two-family and
+direction changes seek a better feasible plan, with a new bounded
+allocation for each proposed family set. Their result remains best found
+unless a global bound independently closes the gap. One call-owned C cache
+shares finite-normal intensities and direct marginals across all proposals.
+Its keys retain the actual counts, scoring method and numerical refinement.
+The allocation work ceiling is cumulative across the complete joint call;
+cached values reduce repeated integration but do not erase search work.
+An unfinished allocation leaves a family set unresolved instead of
+proving it infeasible. A feasible supplied incumbent remains available
+when a work limit stops the search.
+
+The common evaluator recomputes final budget, bound and practical checks
+from the actual pairs, directions and counts. The printout distinguishes
+baseline, response and selected mean, as well as the objective bound and
+its numerical qualification. A finite-normal gap is based on estimated
+quadrature and rounding uncertainty and is not an interval certificate
+for the exact integrals or a validation of the finite-locus prediction.
+
+\subsection{Two-budget allocation of produced and retained descendants}
+
+For each allowed biological family, $y_e\in\{0,1\}$ indicates produced
+activation, and $n_e,r_e$ are nonnegative integer produced and retained
+counts. The constraints are
+\[
+ \sum_e y_e=C,\qquad\sum_e n_e=P,\qquad\sum_e r_e=R>0,
+\]
+\[
+ L_ey_e\le n_e\le U_ey_e,\qquad
+ l_ey_e\le r_e\le u_ey_e,\qquad r_e\le n_e,\qquad L_e\ge1.
+\]
+An inactive family has zero produced and retained counts. An active family
+with $r_e=0$ still consumes production and a family slot; its retained
+weight is zero. Such families require an explicit zero retained lower
+bound. The example above instead has $l_e=1$ for every candidate.
+The optional bounds table joins these limits by unordered parent-pair keys,
+including candidates unused in the returned plan. Its specified cells
+replace common scalar limits. Directions share the biological bounds.
+
+With the intensity $a(n,r)$ defined above and common accuracy $\rho$, the
+selected G1 mean and its two components are
+\[
+ M_{1,\mathrm{base}}=\sum_e\frac{r_e}{R}\mu_e,\qquad
+ \Delta_1=\sum_{e:r_e>0}\frac{r_e}{R}\rho\sqrt{v_e}\,a(n_e,r_e),
+\]
+\[
+ J_{G1}=M_{1,\mathrm{base}}+\Delta_1.
+\]
+The mean criterion uses only $M_{1,\mathrm{base}}$ in optimization.
+The usefulness formula combines the earlier family prediction with actual
+retained-individual weights. The finite-normal intensity is the selected
+order-statistic mean of Okoye et al.\ (2026), Equations~(4)--(8); the
+Burrows alternative retains its preceding definition. The two-budget
+activation, weighting and constraints define the present implementation.
+No intensity or selected family mean is evaluated for $r_e=0$. Its global
+utility contribution is exactly zero, while full retention has
+$a(n_e,n_e)=0$.
+
+One original-score anchor $\mu_0$ permits utilities in mean units:
+\[
+ b_e(n,r)=\frac rR(\mu_e-\mu_0),\qquad
+ d_e(n,r)=\frac rR\rho\sqrt{v_e}\,a(n,r),
+ \qquad J_{G1}=\mu_0+\sum_e\{b_e+d_e\}.
+\]
+The C calculations retain baseline and response components separately and
+form their differences before comparison. They avoid unnormalized
+$r\mu_e$ intermediates and reconstruct the common anchor once, using the
+integer identity $\sum_er_e=R$. This preserves the intended scale when
+large shared merits coexist with a small selection response.
+
+For fixed families and separable restrictions, the recurrence follows
+the dynamic programming principle of Bellman (1954):
+\[
+ D_e(p,s)=\max_{(n,r)\in\mathcal A_e}
+ \{D_{e-1}(p-n,s-r)+b_e(n,r)+d_e(n,r)\},
+\]
+where $\mathcal A_e$ is the family-specific admissible integer domain,
+$D_0(0,0)=0$, and impossible states are excluded. Traceback recovers both
+count vectors. The mean criterion omits $d_e$ from its comparisons.
+Coupled produced or retained practical constraints need their original-input
+checks; a relaxed dynamic-programming solution is not automatically feasible.
+
+
+The planner's parental limits and original relatedness ceiling still use
+family-slot shares $c_i^F=d_i/(2C)$. Actual retained shares instead use
+\[
+ c_i^R=\frac1{2R}\sum_{e:i\in e}r_e,
+ \qquad q_R=(c^R)'Kc^R.
+\]
+The complete original reference is common to $q_R$ and the family-slot
+value $q_F$. Their difference reflects nominal representation under the
+declared counts; it does not describe marker-level selection within a
+family. Retained-basis practical limits, equal use, parent counts and
+diversity checks are recomputed with the actual $r_e$, while family-slot
+restrictions retain their original incidence basis.
+
+A bound based on the unweighted average of family scores does not bound
+the variable-weight criterion. For the finite-normal calculation, a
+positive-retention family upper uses
+$a(U_e,\max(1,l_e))$: intensity increases with production at fixed
+retention and decreases with retention at fixed production. The maximum
+of such individual selected-mean uppers is a valid weak population upper
+because the positive retained weights sum to one. Numerical uncertainty
+remains included. A stronger retained-capacity relaxation is possible only
+on distinct biological families. Burrows bounds instead require the
+admissible count grid or a separately justified bound; finite-normal
+monotonicity is not silently transferred to that approximation.
+
+The search shares a call-owned count-pair cache across all family sets.
+One cumulative work allowance includes tested count alternatives,
+dynamic-programming transitions and unsuccessful proposals. Cached
+intensities reduce repeated integration but do not remove executed search
+work from that allowance. A stopped family-set allocation stays unresolved
+unless a valid bound excludes it; failure to find an incumbent does not
+prove infeasibility.
+
+For small family sets, the implementation can enumerate precomputed local
+utilities with the last family's counts forced by both remaining budgets.
+Conservative work and workspace estimates precede that path. Other supported
+separable cases use the two-budget dynamic program. Coupled constraints use
+their original-input callback; an unconstrained relaxed solution remains a
+bound until those checks pass. A bounded larger path alternates production
+improvements at fixed retention, retention improvements at fixed production,
+and two-family count blocks preserving both totals. Family and direction
+exchanges use the same bounded inner solver. These searches preserve a
+checked supplied incumbent but do not certify the global family-choice
+problem through local improvement alone.
+
+The variable-retention normal kernel also uses equivalent integrals in the
+normal variate for counts up to 256, away from its exact boundary cases. Here
+$b_{a,b}(p)$ is the beta density, $Q(z)=1-\Phi(z)$ and
+$H(z)=\phi(z)-zQ(z)$. A change of variable $p=\Phi(z)$ in the preceding
+beta-expectation identity gives, for $1\le r<n$,
+\[
+ a(n,r)=\frac nr\int_{-\infty}^{\infty}
+ \phi(z)^2 b_{r,n-r}\{\Phi(z)\}\,dz.
+\]
+The positive direct increment, for $1\le r\le n$, is equivalently
+\[
+ a(n+1,r)-a(n,r)=\frac1r\int_{-\infty}^{\infty}
+ H(z)\phi(z)b_{r,n-r+1}\{Q(z)\}\,dz.
+\]
+The latter follows by substituting $q=Q(z)$ in the threshold stop-loss
+beta expectation. These changes of variable give equivalent representations of the normal
+order-statistic objective and direct increment defined above.
+
+The C quadrature integrates the two intervals $[-12,0]$ and $[0,12]$ using
+log densities and the stable normal stop-loss calculation. For integer beta
+shapes, the density is at most one less than their sum, by its binomial
+probability representation. At a cutoff $T>0$, the omitted tails are bounded
+respectively by
+\[
+ \frac{n(n-1)}r\frac{\phi(T)^2}{T},\qquad
+ \frac nr\left\{\phi(T)+\frac{\phi(T)^2}{T}\right\}.
+\]
+For $T=12$ and $n\le256$, the implementation adds a conservative absolute
+allowance of $10^{-27}$. This bounds truncation, while adaptive quadrature
+and arithmetic errors remain estimated. Larger counts or an unqualified
+density integration use the preceding beta-quantile calculation. The
+existing fixed-retention route keeps its original integration path.
+
+Cache entries retain count pair, method, direct-increment type, refinement
+and numerical uncertainty. Successful cache hits avoid separate timing
+calls; their counts remain recorded, and total inner time still includes
+cache work. Small-family enumeration can reject a candidate whose coarse
+outward binary64 upper is strictly below a checked incumbent's lower.
+Near ties, cancellation and uncertain cases retain the full compensated
+component comparison, and final winning counts are rescored. This shortcut
+does not remove any charged count-search work or turn estimated normal
+errors into rigorous interval certificates.
+
+\subsection{Exact DH moments and selection-aware founder contributions}
+
+For marker $j$, $x_{pj}\in\{0,1\}$ identifies the effect allele in
+homozygous founder $p$, and $u_j$ is the complete stored dosage
+coefficient. Thus the founder prediction and family contrast are
+\[
+ g_p=u_0+2\sum_ju_jx_{pj},\qquad
+ \mu_{ab}=\frac{g_a+g_b}{2},\qquad
+ d_j=u_j(x_{aj}-x_{bj}).
+\]
+The factor two comes from the difference between homozygous dosages zero
+and two. The precise stored effects define these moments; rounded exported
+parental predictions do not replace them.
+
+$S_j=1$ denotes origin from parent $a$ and $S_j=-1$ origin from $b$.
+For an immediate F1-derived DH, $E(S)=0$. Its origin correlation matrix
+$\Omega$ has diagonal one, zero between chromosomes, and
+\[
+ \Omega_{jk}=\exp\{-2|p_j-p_k|/100\}
+\]
+within a chromosome when map positions $p$ are in cM. With fixed
+nonnegative marker weights $w_j$ summing to one,
+\[
+ G=\mu_{ab}+d'S,\qquad V=d'\Omega d,\qquad
+ C_a=\frac{1+w'S}{2},\qquad C_b=1-C_a,
+\]
+\[
+ \operatorname{Var}(C_a)=\frac14w'\Omega w,\qquad
+ h_{ab}=\operatorname{Cov}(C_a,G)=\frac12w'\Omega d.
+\]
+These unselected identities are exact under the declared map and fixed
+additive effects. The covariance contractions specialize Allier et al.\
+(2019a), Equations~(2) and~(4a,b), and Allier et al.\ (2019b),
+Equations~(4b) and~(5). The DH origin correlation follows the preceding
+Osthushenrich et al.\ (2017) formulas. Origins remain labelled where the
+observed parental alleles coincide.
+
+The implementation privately sorts markers within chromosomes. Exponential
+forward and backward recurrences calculate $\Omega w$ and the origin
+variance in linear time. Prepared founder sums
+$T_p=\sum_j(\Omega w)_ju_jx_{pj}$ give
+$h_{ab}=(T_a-T_b)/2$; a compensated direct contrast sum is used when that
+subtraction loses material precision. The trait variance uses a positive
+linear-time recurrence. Within a chromosome, with adjacent decay
+$q_j=\exp(-2\Delta_j)$ in Morgans,
+\[
+ F_1=d_1,\qquad F_j=d_j+q_jF_{j-1},\qquad
+ V_{\mathrm{chr}}=F_m^2+\sum_{j<m}(1-q_{j+1}^2)F_j^2.
+\]
+Innovation weights use \cde{expm1} to preserve small distances. Chromosome
+resets and equal positions retain the same origin law. A fixed founder
+anchor and direct contrasts protect genetic deviations and covariances
+from a large common intercept. Family moments are cached independently
+of produced counts, retained counts and the selection method.
+
+For positive variance, the declared ranking score is
+\[
+ I=\rho\frac{G-\mu}{\sqrt V}+\sqrt{1-\rho^2}\,\varepsilon,
+ \qquad \varepsilon\sim N(0,1),
+\]
+with independent noise. A joint-normal regression approximation gives
+\[
+ c_{a,e}^*=\frac12+\rho\,a(n_e,r_e)\frac{h_e}{\sqrt{V_e}},
+ \qquad c_{b,e}^*=1-c_{a,e}^*,\quad r_e>0.
+\]
+The contribution regression follows Allier et al.\ (2019a),
+Equations~(5) and~(6a--c), and Allier et al.\ (2019b), Equation~(7).
+The latter is written for accuracy one. Its use with the declared
+independent-noise accuracy factor and the finite-family intensity
+$a(n,r)$ is the present adaptation. The normal intensity is the
+order-statistic mean cited from Okoye et al.\ (2026), Equations~(4)--(8);
+the Burrows option keeps its preceding definition. The approximation
+concerns the conditional distribution of bounded origin variables, even
+when the normal integral is evaluated accurately.
+
+Full retention, accuracy zero or constant genetic values give exactly
+one-half expected parental origin under neutral ranking. A zero retained
+count has no conditional selected summary and contributes zero population
+weight. Finite raw estimates outside $[0,1]$ remain visible. Their qualified
+contribution and proxy are unavailable with a stated approximation reason;
+values within that interval can still be biased.
+
+\subsection{Founder proxy, constraints and actual genomic metrics}
+
+With $R=\sum_er_e>0$, the analytic aggregate contribution is
+\[
+ c_p^*=\sum_{e:r_e>0}\frac{r_e}{R}
+ \{\mathbf1(p=a_e)c_{a,e}^*+\mathbf1(p=b_e)c_{b,e}^*\},
+ \qquad Q_{\mathrm{proxy}}=(c^*)'Kc^*.
+\]
+This is the separately named \cde{ucpc.founder.proxy} on the complete
+original supplied reference. Unused reference parents have zero
+contribution. Allier et al.\ (2019b), Equations~(8)--(10), motivate the
+selected-population objective and diversity constraint; the current
+retained-count weighting and supplied-$K$ convention are explicit here.
+An arbitrary supplied genomic matrix does not make $1-Q_{\mathrm{proxy}}$
+a gene-diversity value.
+
+For a finite realized origin vector $c_{\mathrm{real}}$, the quadratic
+expectation identity is
+\[
+ E(c_{\mathrm{real}}'Kc_{\mathrm{real}})
+ =E(c_{\mathrm{real}})'KE(c_{\mathrm{real}})
+  +\operatorname{tr}\{K\operatorname{Var}(c_{\mathrm{real}})\}.
+\]
+The mean-contribution proxy omits the covariance term. It also averages
+origins over markers before using the supplied founder matrix. The
+discussion ``Predicting the Next-Generation Diversity'' in Allier et al.\
+(2019b) identifies the consequences of replacing locus-specific ancestry
+by genome-average contributions.
+
+Without \cde{selected.founder.theta}, these predictions are report-only
+and leave the optimization problem unchanged. An active cap imposes
+$Q_{\mathrm{proxy}}\le\theta_{\mathrm{selected}}$ in addition to the
+original family-slot and practical restrictions. It couples the actual
+produced and retained counts. Qualified analytic passes accept a candidate;
+an unavailable approximation or unresolved comparison cannot prove
+infeasibility. The same actual-count callback checks fixed-retention and
+variable-retention solves. Numerical intensity errors propagate through
+the contribution and quadratic calculations, with estimated arithmetic
+uncertainty. They do not bound the regression approximation bias.
+Fractional contributions do not become literal PropSD multiplicities.
+
+For the scenario allele metric, source reference dosages give fixed
+frequencies $p_{0j}$ and $D=\sum_jw_jp_{0j}(1-p_{0j})$. With
+$X=Z-2p_0$, the weighted construction is
+\[
+ A_w=\frac{X\operatorname{diag}(w)X'}{2D},\qquad
+ K_{\mathrm{genomic}}=A_w/2.
+\]
+This is the weighted extension of the first method in VanRaden (2008,
+p.~4416; unnumbered formula). For one retained DH panel with allele
+frequencies $p_{sj}$, the all-pairs mean including diagonals is
+\[
+ Q_s=\frac{\sum_jw_j(p_{sj}-p_{0j})^2}{D},\qquad
+ H_s=2\sum_jw_jp_{sj}(1-p_{sj}).
+\]
+The metric name is
+\cde{weighted.\allowbreak vanraden.\allowbreak A.\allowbreak over.\allowbreak 2.\allowbreak fixed.\allowbreak reference}.
+It uses the fixed source reference and sampling with replacement over
+retained pairs; it is not re-centered on the selected lines. A zero
+reference denominator leaves $Q_s$ unavailable. Population gene diversity
+$H_s$ remains distinct from individual DH heterozygosity, which is zero.
+Nonlinear $Q_s$ and $H_s$ are calculated inside each replicate and then
+averaged, preserving their finite-panel estimands.
+
+\subsection{Actual-genotype scenarios, variance and inheritance}
+
+Each chromosome starts at either founder with equal probability and
+switches parental origin over adjacent distance $\Delta$ Morgans with
+probability $(1-\exp(-2\Delta))/2$. The scenario algorithm streams
+candidate genetic deviations and rank priorities into a top-$r$ heap,
+then regenerates the selected origin paths. It uses theoretical family
+variance in the ranking law, with neutral independent priorities for
+ties. Actual origin labels remain available at identical alleles.
+Genotypes are generated only for the requested final assessment.
+
+The private bank records its protocol, core model, seed and replicate.
+Primitive candidate keys use the unordered biological family, candidate,
+chromosome and separate origin, noise and tie domains. Produced and
+retained counts, accuracy and display order are excluded from those
+primitive keys. Larger produced counts reuse candidate prefixes, and
+changed retention or accuracy reuses the same genetic paths and priorities.
+Streaming regeneration avoids a full produced-genotype tensor. Caller
+RNGs, population identities and marker-data state remain independent of
+this private assessment.
+
+For replicate $s$ with $R$ selected genetic values, $\overline G_s$
+is their mean and
+\[
+ V_s=\frac1R\sum_{i=1}^R(G_{si}-\overline G_s)^2.
+\]
+The expected finite-panel variance is $E(V_s)$. Expected empirical sample
+variance uses $R V_s/(R-1)$ for $R>1$. The variance of a randomly chosen
+selected individual is
+\[
+ V_{\mathrm{marginal}}=E(V_s)+\operatorname{Var}(\overline G_s).
+\]
+Its estimate combines the mean panel variance with the unbiased sample
+variance of replicate panel means, requiring multiple replicates. At
+$R=1$, panel variance is zero, empirical sample variance is undefined,
+and marginal variance may remain positive. The same distinctions apply
+within each family. Centered accumulation preserves small genetic
+variation in the presence of a large shared intercept.
+
+Ordinary metric SE uses the sample standard deviation of independent
+whole-replicate values divided by the square root of the completed
+replicate count. One replicate has no such SE. The marginal-variance SE
+is explicitly unavailable in the present implementation. A work-limited
+bank reports completed whole replicates and its partial status; no
+partial current replicate contributes to the published estimates.
+Analytic proxy feasibility and scenario completion retain separate states.
+
+The normalized model stores an immutable versioned snapshot of candidate
+alleles, effects, map, weights and fixed reference information. Canonical
+linkage-group keys use the smallest marker identifier in each group.
+Evaluation and allocation inherit that core and its original cap; live
+dataset changes do not rebind it. Current actual counts and the current
+selection method determine a new analytic assessment. Scenario execution
+requires an explicit current request, so inherited historical scenario
+results do not become predictions for changed counts. This model describes
+the selected G1 DH panel; a further crossing and DH cycle requires the
+separate future-population policy.
+
+\subsection{Actual selected DH lines and a second crossing cycle}
+
+The current design $p$ contains the active founder pairs and their produced
+and retained counts $(n_{1e},r_{1e})$. Its fixed totals are $C_1$, $P_1$
+and $R_1=\sum_e r_{1e}$. Actual F1-derived DH candidates follow the
+preceding additive Haldane model and the declared independent-noise index.
+The selected logical lines retain their original family and candidate
+identities, including distinct lines with identical observed genotypes.
+
+For even $R_1\geq2$, a uniform permutation of all selected lines is split
+into adjacent pairs. This gives a uniform disjoint matching and uses every
+line once. The next cycle has $C_2=R_1/2$ pairs, with uniform produced count
+$n_2$, retained count $r_2$ and accuracy $\rho_2$; hence
+$P_2=C_2n_2$ and $R_2=C_2r_2$. The policy permits two distinct selected
+lines from the same original family. It does not choose the future mates
+adaptively or reuse a selected parent.
+
+For actual homozygous G1 allele vectors $x$ and $y$, the new F1 has
+\[
+ \mu_{xy}=\frac{G(x)+G(y)}2,\qquad
+ d_j=u_j(x_j-y_j),\qquad V_{xy}=d'\Omega d.
+\]
+Here $u_j$, $G$ and $\Omega$ have the preceding dosage and Haldane
+definitions. A new G2 DH has genetic value $\mu_{xy}+d'S$ from an actual
+origin path $S$. The already homozygous DH parents themselves have zero
+segregation; variation arises after their new cross. Conditional variance
+uses the positive linear-time recurrence stated above, not a kinship or
+mean-ancestry replacement. The reported pair diagnostics
+$E(V_{xy})$ and $E(\sqrt{V_{xy}})$ are distinct. In general,
+$E(\sqrt{V_{xy}})\ne\sqrt{E(V_{xy})}$, and neither diagnostic replaces
+the actual two-cycle calculation.
+
+The target is the expected selected G2 mean under this declared policy,
+\[
+ J_2(p)=E_p\!\left(\overline G_{2,\mathrm{selected}}\right).
+\]
+Each realized matching has average unselected G2 family mean equal to
+its selected G1 mean: every G1 line appears once and every G2 pair has
+the same retained weight. With
+\[
+ B_1(p)=\frac{\sum_e r_{1e}\mu_e}{R_1},\qquad
+ \Delta_{1s}=\overline G_{1s}-B_1(p),\qquad
+ \Delta_{2s}=\overline G_{2s}-\overline G_{1s},
+\]
+the component identity is
+\[
+ J_2(p)=B_1(p)+E_p(\Delta_1)+E_p(\Delta_2).
+\]
+The two responses in this identity arise from actual sampled genotypes.
+The earlier normal-model G1 usefulness and its analytic response retain
+their separate definitions. Neutral G2 selection or full retention gives
+$E_p(\Delta_2)=0$; a finite realized bank can have a nonzero response.
+
+Niehoff et al.\ (2024), Equation~(2), decomposes gametic variance among
+selected offspring. Their Equation~(8) is an approximate two-generation
+selection criterion; it is not the actual matched-DH calculation above.
+Equation~(9) and Appendix~1 give mean offspring gametic sampling variance
+as $(\sigma_{DH}^2-\sigma_{FS}^2)/4$. The factor four converts their
+diploid-DH variance to a gametic scale. The directly computed $V_{xy}$
+above already describes diploid DH values and is not divided by four.
+The actual mating and two DH generations define the present adaptation.
+Future-oriented progeny allocation is also the topic of Hamazaki and
+Iwata (2024), Sections~1 and~2.1.
+
+\subsection{Finite-bank search and paired future assessment}
+
+A fixed training bank with $S_T$ complete replicates defines
+\[
+ \widehat J_{2,T}(p)=\frac1{S_T}\sum_{s=1}^{S_T}
+                          \overline G_{2s}(p).
+\]
+Every competing candidate uses this same complete bank. An interrupted
+partial training bank supplies no comparable candidate score. Existing
+G1 solvers supply checked seeds and feasibility repairs; their separable
+G1 bounds are not bounds for $J_2$. The joint search preserves current
+production and retention totals through count transfers, joint count
+blocks and family exchanges, subject to the actual current constraints.
+A best-found status describes the finite training search. Exhaustive
+small-domain completion can establish an optimum of that bank, while
+the gap to the unknown expectation optimum remains unavailable without
+a separate valid bound.
+
+Held-out evaluation uses a separate role domain. For two actual designs
+$p$ and $q$, the common evaluation bank gives paired differences
+\[
+ D_s=\overline G_{2s}(p)-\overline G_{2s}(q),\qquad
+ \widehat D=\frac1{S_E}\sum_{s=1}^{S_E}D_s,
+\]
+\[
+ \operatorname{MCSE}(\widehat D)=
+ \sqrt{\frac{\sum_s(D_s-\widehat D)^2}{S_E(S_E-1)}},
+ \qquad S_E>1.
+\]
+The same construction applies to G1 means and the additional G2
+response. Adding unrelated design-level SEs does not preserve this
+pairing. Held-out observations do not select a training incumbent,
+stopping rule or later frontier warm start.
+
+The private two-cycle bank separates core, role, stage, seed and replicate.
+G1 primitive keys use intrinsic original-family and candidate identities.
+Selected identities are sorted before the descending Fisher--Yates
+permutation of Durstenfeld (1964), Algorithm~235. Unbiased integer
+rejection supplies each permutation choice from the private bank.
+Realized unordered pairs are oriented by logical identity
+and sorted into matching slots. G2 path, index-noise and tie primitives
+use slot and candidate keys, with independent slots within a replicate.
+The same actual pair can occupy another slot in another design, so a
+cached pair response also depends on slot and path identity. This common
+bank preserves each design's marginal law without claiming identical
+trajectories for every pair across designs. It is separate from the
+preceding single-cycle scenario protocol.
+
+Signed trait sums use compensated accumulation following Neumaier
+(1974). For an accumulated main term $s$, residual $c$ and new summand
+$a$, the update has the form
+\[
+ t=s+a,\qquad s'=t,\qquad
+ c'=c+\begin{cases}
+       (s-t)+a,& |s|\geq|a|,\\
+       (a-t)+s,& |s|<|a|,
+      \end{cases}
+\]
+with the final sum represented by $s+c$. The implementation applies
+this protection to signed anchor, family-contrast and future-trait
+boundaries. Centered components preserve small responses beside a large
+common mean; scale-aware variance accumulation protects the corresponding
+second moments. These safeguards do not provide arbitrary precision.
+An unrepresentable required quantity has an explicit numerical-range
+status.
+
+Bounded reusable caches retain intrinsic candidate paths, selected
+mosaics, pair moments and slot-specific results. One cumulative cell and
+work budget covers all search candidates, frontier points and final
+assessment. Reserved final-assessment work remains inside that budget.
+Incomplete final banks report only jointly completed whole replicates
+and their completion status. Resource limits do not establish biological
+infeasibility, and a partial result does not become a full-bank certificate.
+
+Actual G1 and G2 genomic metrics use their realized finite panels, the
+unchanged fixed reference and the preceding $Q_s$, $H_s$ and variance
+definitions. Nonlinear metrics are averaged after calculation inside
+each replicate. Monte Carlo SE describes simulation precision under
+fixed fitted effects. The accuracy and shrinkage qualifications in
+Niehoff et al.\ (2025), Sections~4.1 and~4.4, remain relevant; this
+assessment adds no phenotypic information or effect-estimation uncertainty.
+
+\subsection{Labelled gain--diversity frontier}
+
+Each declared frontier limit replaces one named current G1 constraint:
+family-slot $\theta$ or the qualified selected-founder UCPC proxy cap.
+Other constraints and total resources remain fixed. Default independent
+starts retain the recorded standalone start and seed at every point;
+optional warm starts carry actual previous counts and pairs with an
+accepted or fallback status. Core data and private banks can be shared,
+while the work budget covers the whole frontier call.
+
+Every point retains its actual search, feasibility and assessment status.
+A complete declared schedule agrees with its corresponding standalone
+problem under the same recorded inputs and sufficient matching resources.
+A capped schedule remains explicitly incomplete. The horizontal metric
+describes a G1 constraint, whereas actual G2 genomic $Q$ and $H$ are
+additional estimates. The proxy cap is not a hard bound on actual G2
+genomic coancestry. Sample-based or bounded-search points need not be
+monotone and do not establish a smooth global tradeoff curve.
+
+\section{Cross selection from external diploid inputs}
+\label{app:external-diploid-crosses}
+
+We now select five crosses from externally supplied marker data and
+marker effects. The examples use the first ten fully homozygous diploid
+parents and first 100 markers for additive yield, a two-trait additive
+index, and the same index with dominance. The input file
+\cde{crossing-example-inputs.rds} is prepared separately and located in
+the working directory; no input data are included.
+
+The RDS object is a list with \cde{markers}, \cde{additive},
+\cde{dominance}, and \cde{weights}. The numeric marker matrix has parents
+in rows, markers in columns, unique row and column names, and at least
+ten rows and 100 columns. Dosages are 0 or 2 with no missing values.
+The additive and dominance components are named lists with \cde{YLD}
+and \cde{MAT} vectors named by marker. The numeric weights are named
+\cde{YLD} and \cde{MAT}. Effects and weights are finite and use compatible
+trait units and allele orientation; larger index values are preferred.
+
+\subsection{Family means and variances}
+
+All 45 unordered nonself crosses are evaluated with an independent-marker
+approximation that omits linkage covariance. For dosage $z$, a marker
+contributes $az+d\,1_{\{z=1\}}$, with dominance expressed as the
+heterozygote deviation from the additive midpoint and no fitted
+intercept. Three selfing cycles after $F_1$ give $F_4$ progeny and
+heterozygosity $h=1/8$ at loci where the parents differ. At these loci,
+the mean dominance contribution is $hd$ and the variance is
+$(1-h)a^2+h(1-h)d^2$. Equal parental loci have no segregation variance.
+Trait effects are weighted before the index moments are calculated,
+retaining covariance induced by effects at the same marker.
+
+The expected superior progeny score is $\mu+i\sigma$, where
+$i=\phi(\Phi^{-1}(1-5/10))/(5/10)$. This normal selection approximation
+represents retaining five of ten progeny, without a finite-population
+intensity correction.
+
+<<eval=FALSE>>=
+input <- readRDS("crossing-example-inputs.rds")
+cross.example.prepare <- function(input) {
+    X <- input$markers
+    stopifnot(is.matrix(X), is.numeric(X), nrow(X) >= 10,
+              ncol(X) >= 100)
+    X <- X[seq_len(10), seq_len(100), drop = FALSE]
+    stopifnot(!anyNA(X), all(X %in% c(0, 2)),
+              !is.null(rownames(X)), !is.null(colnames(X)),
+              !anyDuplicated(rownames(X)), !anyDuplicated(colnames(X)))
+    loci <- colnames(X)
+    effects <- function(x) {
+        stopifnot(is.numeric(x), !is.null(names(x)),
+                  !anyDuplicated(names(x)), all(loci %in% names(x)))
+        out <- unname(x[loci])
+        stopifnot(all(is.finite(out)))
+        out
+    }
+    a.yield <- effects(input$additive$YLD)
+    stopifnot(is.numeric(input$weights),
+              !anyDuplicated(names(input$weights)),
+              all(c("YLD", "MAT") %in% names(input$weights)))
+    weights <- input$weights[c("YLD", "MAT")]
+    stopifnot(all(is.finite(weights)))
+    a.index <- weights[1] * a.yield +
+               weights[2] * effects(input$additive$MAT)
+    d.index <- weights[1] * effects(input$dominance$YLD) +
+               weights[2] * effects(input$dominance$MAT)
+    centered <- sweep(X, 2, colMeans(X), "-")
+    p <- colMeans(X) / 2
+    scale <- 2 * sum(p * (1 - p))
+    stopifnot(is.finite(scale), scale > 0)
+    G <- tcrossprod(centered) / scale
+    dimnames(G) <- list(rownames(X), rownames(X))
+    pairs <- t(combn(rownames(X), 2))
+    h <- 2^(-3)
+    intensity <- dnorm(qnorm(1 - 5 / 10)) / (5 / 10)
+    score <- function(a, d = rep(0, ncol(X))) {
+        mu <- va <- numeric(nrow(pairs))
+        for (j in seq_len(nrow(pairs))) {
+            x1 <- X[pairs[j, 1], ]
+            x2 <- X[pairs[j, 2], ]
+            segregating <- x1 != x2
+            mu[j] <- sum((x1 + x2) * a / 2) +
+                     h * sum(d[segregating])
+            va[j] <- sum(((1 - h) * a^2 +
+                          h * (1 - h) * d^2)[segregating])
+        }
+        data.frame(P1Name = pairs[, 1], P2Name = pairs[, 2],
+                   mu = mu, va = va,
+                   es = mu + sqrt(va) * intensity)
+    }
+    list(markers = X, G = G, K = G / 2,
+         effects = list(yield = a.yield, index = a.index,
+                        dominance = a.index),
+         scores = list(yield = score(a.yield), index = score(a.index),
+                       dominance = score(a.index, d.index)),
+         accuracy = 0.5, loss.limit = 0.05,
+         n.crosses = 5L, n.progeny = 10L, n.selected = 5L)
+}
+example <- cross.example.prepare(input)
+@
+
+\subsection{Three crossing plans}
+
+Each plan contains five distinct nonself crosses, ten progeny per
+family and five retained per family: 50 produced and 25 retained. The
+planner selects the families with these fixed counts. Its accuracy
+of 0.5 adjusts the supplied within-family selection differential once,
+giving $\mu+0.5i\sigma$.
+
+Allele frequencies from the ten-parent panel define the marker
+relationship matrix and \cde{K=G/2}. The relatedness bound and maximum
+contribution of 0.5 are nonrestrictive here. The diversity constraint
+requires PropSD strictly below 0.05. Its sample comprises the ten
+parental occurrences in the selected families, including repeated
+occurrences of a parent used in several families. The full ten-parent
+matrix remains the reference. This covariance-based expected SD loss
+differs from realized variation among selected descendants.
+Appendix~\ref{app:cross-mathematics} gives its definition.
+
+The first plan uses additive yield effects.
+<<eval=FALSE>>=
+cross.example.plan <- function(example, scenario) {
+    merit <- setNames(drop(example$markers %*% example$effects[[scenario]]),
+                      rownames(example$markers))
+    SelectionTools::st.cross.plan(
+        merit = merit, K = example$K,
+        n.crosses = example$n.crosses, n.progeny = example$n.progeny,
+        theta = max(diag(example$K)), upper = 0.5,
+        scores = example$scores[[scenario]],
+        criterion = "usefulness", accuracy = example$accuracy,
+        diversity = list(G = example$G, max = example$loss.limit,
+                         sample = "family.slots"),
+        control = list(method = "exact", max.nodes = 3000000,
+                       starts = 4, maxit = 2500, seed = 1L)
+    )
+}
+yield.plan <- cross.example.plan(example, "yield")
+yield.plan
+@
+\begin{Soutput}
+Optimum cross selection (usefulness)
+Criterion: maximum predicted usefulness
+Status: optimal
+Families: 5; progeny per family: 10; total progeny: 50
+Expected mean: 4.5042
+Expected usefulness: 7.2786; accuracy: 0.5000
+Group relatedness: 0.1163; requested limit: 1.2632
+PropSD (family slots): 0.0447; strict upper limit: 0.0500
+Average within-cross relatedness: -0.2379
+Objective bound: 7.2786; optimality gap: <0.0001
+Maximum constraint residual: 0.0000
+
+Chosen crosses
+  Family  Parent 1  Parent 2  Progeny    Mean  Kinship  Usefulness
+       1  g1_2      g1_3           10  4.6854  -0.2789      7.4090
+       2  g1_2      g1_9           10  6.5700  -0.0684      9.3653
+       3  g1_3      g1_9           10  6.9320  -0.2000      9.5395
+       4  g1_4      g1_8           10  0.2173  -0.1737      2.8720
+       5  g1_8      g1_9           10  4.1162  -0.4684      7.2073
+\end{Soutput}
+
+The second plan uses the weighted additive yield and maturity index.
+<<eval=FALSE>>=
+index.plan <- cross.example.plan(example, "index")
+index.plan
+@
+\begin{Soutput}
+Optimum cross selection (usefulness)
+Criterion: maximum predicted usefulness
+Status: optimal
+Families: 5; progeny per family: 10; total progeny: 50
+Expected mean: 3.7261
+Expected usefulness: 6.2713; accuracy: 0.5000
+Group relatedness: 0.1295; requested limit: 1.2632
+PropSD (family slots): 0.0498; strict upper limit: 0.0500
+Average within-cross relatedness: -0.2000
+Objective bound: 6.2713; optimality gap: <0.0001
+Maximum constraint residual: 0.0000
+
+Chosen crosses
+  Family  Parent 1  Parent 2  Progeny    Mean  Kinship  Usefulness
+       1  g1_2      g1_4           10  3.3504  -0.0895      5.8141
+       2  g1_2      g1_9           10  4.7400  -0.0684      7.2237
+       3  g1_3      g1_9           10  4.5557  -0.2000      7.0925
+       4  g1_4      g1_8           10  2.2974  -0.1737      4.7305
+       5  g1_8      g1_9           10  3.6870  -0.4684      6.4955
+\end{Soutput}
+
+The third plan adds the weighted dominance effects to this index.
+<<eval=FALSE>>=
+dominance.plan <- cross.example.plan(example, "dominance")
+dominance.plan
+@
+\begin{Soutput}
+Optimum cross selection (usefulness)
+Criterion: maximum predicted usefulness
+Status: optimal
+Families: 5; progeny per family: 10; total progeny: 50
+Expected mean: 4.1876
+Expected usefulness: 6.8450; accuracy: 0.5000
+Group relatedness: 0.1295; requested limit: 1.2632
+PropSD (family slots): 0.0498; strict upper limit: 0.0500
+Average within-cross relatedness: -0.2000
+Objective bound: 6.8450; optimality gap: <0.0001
+Maximum constraint residual: 0.0000
+
+Chosen crosses
+  Family  Parent 1  Parent 2  Progeny    Mean  Kinship  Usefulness
+       1  g1_2      g1_4           10  3.8697  -0.0895      6.4536
+       2  g1_2      g1_9           10  5.8993  -0.0684      8.4953
+       3  g1_3      g1_9           10  4.6654  -0.2000      7.2996
+       4  g1_4      g1_8           10  2.3941  -0.1737      4.9261
+       5  g1_8      g1_9           10  4.1095  -0.4684      7.0503
+\end{Soutput}
+
+The displayed results are conditional on the external inputs used in
+this example. An \cde{optimal} status certifies the optimum for the
+supplied scores and constraints. Another panel can require more search
+or yield no feasible plan. Yield and index objectives retain their
+respective effect scales. The normal selection approximation and
+supplied marker effects remain assumptions even at an optimum.
+
 \section*{References}
 \parindent=2em
+
+\lit Allier A, Moreau L, Charcosset A, Teyss\`edre S, Lehermeier C (2019a)
+Usefulness Criterion and Post-selection Parental Contributions in
+Multi-parental Crosses: Application to Polygenic Trait Introgression.
+G3: Genes, Genomes, Genetics 9:1469--1479.
+\href{https://doi.org/10.1534/g3.119.400129}{doi:10.1534/g3.119.400129}
+
+\lit Allier A, Lehermeier C, Charcosset A, Moreau L, Teyss\`edre S (2019b)
+Improving Short- and Long-Term Genetic Gain by Accounting for Within-Family
+Variance in Optimal Cross-Selection. Frontiers in Genetics 10:1006.
+\href{https://doi.org/10.3389/fgene.2019.01006}{doi:10.3389/fgene.2019.01006}
 
 \lit Bellman R (1954) The theory of dynamic programming.
 Bulletin of the American Mathematical Society 60:503--515.
@@ -1991,6 +4645,10 @@ al. (2010) Prediction of genetic values of quantitative traits in
 plant breeding using pedigree and molecular markers.  Genetics
 186:713--724
 
+\lit Durstenfeld R (1964) Algorithm 235: Random permutation.
+Communications of the ACM 7:420.
+\href{https://doi.org/10.1145/364520.364540}{doi:10.1145/364520.364540}
+
 \lit
 Endelman JB (2025) Genomic prediction of heterosis, inbreeding control,
 and mate allocation in outbred diploid and tetraploid populations.
@@ -2001,9 +4659,19 @@ Fern\'andez-Gonz\'alez J, Metwally SM, Isidro y S\'anchez J (2026)
 MateR: a novel genomic mating framework. Genetics 232:iyag013.
 \href{https://doi.org/10.1093/genetics/iyag013}{doi:10.1093/genetics/iyag013}
 
+\lit Gorjanc G, Hickey JM (2018) AlphaMate: a program for optimizing
+selection, maintenance of diversity and mate allocation in breeding
+programs. Bioinformatics 34:3408--3411.
+\href{https://doi.org/10.1093/bioinformatics/bty375}{doi:10.1093/\allowbreak bioinformatics/\allowbreak bty375}
+
 \lit Haldane JBS (1919) The combination of linkage values, and the
 calculation of distances between the loci of linked factors.
 Journal of Genetics 8:299--309.
+
+\lit Hamazaki K, Iwata H (2024) AI-assisted selection of mating pairs
+through simulation-based optimized progeny allocation strategies in plant
+breeding. Frontiers in Plant Science 15:1361894.
+\href{https://doi.org/10.3389/fpls.2024.1361894}{doi:10.3389/fpls.2024.1361894}
 
 \lit Kosambi DD (1943) The estimation of map distances from recombination
 values. Annals of Eugenics 12:172--175.
@@ -2020,10 +4688,30 @@ point method. SIAM Journal on Optimization 2:575--601.
 \lit Meuwissen THE (1997) Maximizing the response of selection with a
 predefined rate of inbreeding. Journal of Animal Science 75:934--940.
 
+\lit Neumaier A (1974) Rundungsfehleranalyse einiger Verfahren zur
+Summation endlicher Summen. ZAMM 54:39--51.
+\href{https://doi.org/10.1002/zamm.19740540106}{doi:10.1002/\allowbreak zamm.\allowbreak 19740540106}
+
+\lit Niehoff TAM, ten Napel J, Bijma P, Pook T, Wientjes YCJ,
+Heged\H{u}s B, Calus MPL (2024) Improving selection decisions with mating
+information by accounting for Mendelian sampling variances looking two
+generations ahead. Genetics Selection Evolution 56:41.
+\href{https://doi.org/10.1186/s12711-024-00899-2}{doi:10.1186/s12711-024-00899-2}
+
+\lit Niehoff TAM, ten Napel J, Calus MPL (2025) Practical Considerations
+When Using Mendelian Sampling Variances for Selection Decisions in Genomic
+Selection Programs. Journal of Animal Breeding and Genetics 142:419--437.
+\href{https://doi.org/10.1111/jbg.12913}{doi:10.1111/jbg.12913}
+
 \lit NIST Digital Library of Mathematical Functions. Chapter 5, Gamma
 function, Equations 5.2.1 and 5.11.8. National Institute of Standards and
 Technology. \href{https://dlmf.nist.gov/5}{https://dlmf.nist.gov/5}
 (accessed 12 November 2026).
+
+\lit Okoye UJ, Frisch M, Herzog E (2026) Optimization of family sizes in
+sets of crosses with a greedy allocation strategy based on automatic
+differentiation. Frontiers in Plant Science 17:1727383.
+\href{https://doi.org/10.3389/fpls.2026.1727383}{doi:10.3389/fpls.2026.1727383}
 
 \lit Osthushenrich T, Frisch M, Herzog E (2017) Genomic selection of
 crossing partners on basis of the expected mean and variance of their

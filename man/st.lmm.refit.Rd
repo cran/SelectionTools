@@ -40,7 +40,7 @@ st.lmm.objective(object, parameters = NULL, method = NULL,
   by \code{st.lmm.objective(object)}.  \code{NULL} uses the fitted
   parameters.  If names are supplied, they must match the reported names
   and order exactly.}
-  \item{gradient}{Logical.  Include the gradient of minus twice the
+  \item{gradient}{Logical.  A value of \code{TRUE} includes the gradient of minus twice the
   log likelihood with respect to the reported parameters.}
 }
 \details{
@@ -152,7 +152,7 @@ refer to traits, not expanded trait-by-occasion coefficients. Warm starts
 transfer the complete physical product matrix; cold starts preserve the
 family and declared occasion grid. Missing trait cells and missing occasions
 are retained under the fitted missing-data rules. Explicit covariance
-constraints are not yet available for this US family.
+constraints are not available for this US family.
 }
 \seealso{\code{\link{st.lmm}}, \code{\link{st.lmm.components}},
 \code{\link{update}}, \code{\link{optim}}}

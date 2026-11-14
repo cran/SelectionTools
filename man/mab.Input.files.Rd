@@ -3,7 +3,7 @@
 
 
 \title{
-Structure of input files for the optimize-mab routines.
+Structure of input files for the optimize-mab routines
 }
 
 \description{

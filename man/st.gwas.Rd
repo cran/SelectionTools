@@ -184,7 +184,7 @@ function for complete biallelic genotypes. Known absolute \code{rcov}
 instead gives a one-df GLS Wald chi-squared test, without rescaling the
 entire covariance matrix.
 
-For omitted genotypes, the covariance is restricted to retained
+For omitted genotypes, the covariance is subset to retained
 observations and solved again. A principal submatrix of the original
 inverse is not substituted for this calculation. Thus missing-call
 results can differ from rrBLUP's P3D shortcut. Fixed-effect rank and
@@ -230,7 +230,7 @@ covariance shape is reused over that replicate's markers and each marker
 retains its residual-scale estimate. With \code{P3D = FALSE}, free
 covariance parameters are refitted per marker. Missing genotype calls
 are handled by the original \code{missing} setting, including the
-restricted-covariance solve for omitted observations.
+covariance solve on retained observations for omitted observations.
 
 With \code{method = "parametricFixedVC"}, the original fitted variance
 components are held fixed for every replicate and marker; no simulated
@@ -239,7 +239,7 @@ model undergoes variance-component estimation. This method requires
 mean-imputed marker information are reused. Fixed effects are projected
 out separately for each response, and each marker retains its
 response-specific residual-scale estimate for F tests. Omitted genotype
-calls use a restricted-covariance solve with the same original variance
+calls use a covariance solve on retained observations with the same original variance
 components. This is a faster conditional, plug-in calibration; it does
 not reproduce the variation from re-estimating variance components.
 Both methods generate Gaussian responses from the same original fitted

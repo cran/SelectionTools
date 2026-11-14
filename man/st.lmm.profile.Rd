@@ -69,7 +69,7 @@ use them.}
 }
 \details{
 Likelihood profiles for separable covariance products, including the
-legacy AR1 by AR1 family, and US trait-by-occasion products are not implemented. Such requests raise an
+established AR1 by AR1 family, and US trait-by-occasion products are not implemented. Such requests raise an
 explicit error; no unconstrained covariance model is substituted.
 
 Repeated fits run in the current R process. Numerical kernels use the

@@ -20,3 +20,9 @@ select.n.best.segments(newPop, oldPop, n=1, allele = 1, decreasing = FALSE)
 \value{
 On successful selection, returns the invisible implementation-level \code{list} produced by \code{population.divide()}; if the requested number cannot be selected, \code{NULL} is returned invisibly. The main effect is creation of \code{newPop} from individuals ranked by the number of genome segments.
 }
+
+\details{
+Each derived cache is complete for all individuals or absent throughout a
+population. A mixed source cache causes all marker-genotype, genetic-value and
+phenotype caches to be cleared silently in the source and result.
+}

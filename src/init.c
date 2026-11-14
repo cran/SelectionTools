@@ -8,220 +8,303 @@
 
 extern SEXP st_phase(SEXP, SEXP, SEXP, SEXP, SEXP);
 
-extern void allele_freq(void *, void *, void *, void *, void *, void *, void *,
-                        void *);
-extern void append_population(void *, void *);
-extern void concat_population(void *, void *);
-extern void copy_population(void *, void *, void *, void *);
-extern void correct_missing(void *, void *, void *, void *, void *, void *,
-                            void *, void *);
-extern void cross(void *, void *, void *, void *, void *, void *, void *,
-                  void *);
-extern void dh(void *, void *, void *, void *);
-extern void divide_population(void *, void *, void *);
-extern void effect_weight_set_all(void *);
-extern void effmap_remove(void *);
+extern void allele_freq(int *no_pop, int *no_ind, int *no_mar, int *no_all,
+                 int *no_ind_u, int *ind_u, double *data, double *freq);
+extern void append_population(char **NameP1, char **NameP2);
+extern void concat_population(char **NameP1, char **NameP2);
+extern void copy_population(char **NameP1, char **NameP2, char **cstart, char **cn);
+extern void correct_missing(int *no_pop, int *no_ind, int *no_mar, int *no_all,
+                     int *no_ind_u, int *ind_u, double *data, double *freq);
+extern void cross(char **NamePg, char **NameP1, char **NameP2, double *Self,
+           char **cNoPg, double *significant, int *mode, int *crossing_scheme);
+extern void dh(char **NamePg, char **NameP1, char **cNoPg, double *significant);
+extern void divide_population(char **NameP1, char **NameP2, char **cNoI);
+extern void effect_weight_set_all(double *weight);
+extern void effmap_remove(char **effectName);
 extern void effmap_remove_all(void);
-extern void evaluate_genome(void *, void *, void *, void *, void *, void *);
-extern void evaluate_genome_region(void *, void *, void *, void *, void *,
-                                   void *, void *, void *, void *);
-extern void evaluate_ld(void *, void *, void *, void *, void *);
-extern void evaluate_locus(void *, void *, void *, void *, void *);
-extern void evaluate_mdp(void *, void *, void *, void *);
-extern void evaluate_population(void *, void *);
-extern void st_r_info(void *, void *);
-extern void gen_dist(void *, void *, void *, void *, void *, void *, void *,
-                     void *, void *, void *, void *, void *, void *, void *,
-                     void *, void *, void *);
-extern void generate_effect_file(void *, void *);
-extern void generate_map_file(void *, void *, void *);
-extern void generate_population(void *, void *, void *, void *, void *, void *,
-                                void *, void *, void *, void *, void *, void *,
-                                void *, void *, void *, void *, void *);
-extern void genotype_population(void *);
-extern void get_allele_number(void *, void *);
-extern void get_allow_zeros(void *);
-extern void get_genome_par(void *, void *);
-extern void get_genome_par_b(void *);
-extern void get_info_level(void *);
-extern void get_map_a(void *, void *, void *, void *);
-extern void get_map_b(void *, void *, void *, void *);
-extern void get_mdp(void *);
-extern void get_population(void *, void *, void *, void *, void *, void *);
-extern void get_population_info(void *, void *, void *);
-extern void get_population_size(void *, void *, void *);
-extern void get_population_value(void *, void *, void *, void *, void *);
-extern void gs_build_V_01_GV(void *, void *, void *, void *);
-extern void gs_build_Z_01_GV(void *, void *, void *, void *);
-extern void gs_build_esvs_01_GV(void *, void *, void *, void *, void *, void *,
-                                void *, void *, void *, void *);
-extern void gs_calc_ld_01_GV(void *, void *, void *, void *, void *);
-extern void gs_calc_q_01_GV(void *, void *, void *, void *, void *, void *);
-extern void gs_calc_rf_01_GV(void *, void *, void *, void *, void *);
-extern void gs_check_pvals_01_GV(void *, void *);
-extern void gs_chrom_stats_01_GV(void *, void *, void *, void *);
-extern void gs_copy_marker_data_01_GV(void *, void *, void *);
-extern void gs_cross_eval_es_01_GV(void *, void *, void *);
-extern void gs_cross_eval_gd_01_GV(void *, void *, void *);
-extern void gs_cross_eval_gd_fct_01_GV(void *, void *, void *, void *);
-extern void gs_cross_eval_ma_01_GV(void *, void *);
-extern void gs_cross_eval_mi_01_GV(void *, void *);
-extern void gs_cross_eval_mu_01_GV(void *, void *);
-extern void gs_cross_eval_va_01_GV(void *, void *, void *, void *, void *);
-extern void gs_cross_info_01_GV(void *, void *, void *, void *, void *);
-extern void gs_cross_validation_02_GV(void *, void *, void *, void *, void *,
-                                      void *, void *, void *, void *, void *,
-                                      void *, void *);
-extern void gs_def_hblocks_01_GV(void *, void *, void *, void *, void *, void *,
-                                 void *, void *, void *, void *);
-extern void gs_esteff_lsq_01_GV(void *, void *, void *, void *);
-extern void gs_esteff_rmla_01_GV(void *, void *, void *, void *, void *, void *,
-                                 void *, void *);
-extern void gs_esteff_rmlc_01_GV(void *, void *, void *, void *, void *, void *,
-                                 void *);
-extern void gs_esteff_rmlr_01_GV(void *, void *, void *, void *, void *, void *,
-                                 void *);
-extern void gs_esteff_rmlv_01_GV(void *, void *, void *, void *, void *, void *,
-                                 void *);
-extern void gs_esteff_rr_01_GV(void *, void *, void *, void *, void *, void *,
-                               void *, void *, void *);
-extern void gs_estimate_bv_01_GV(void *, void *, void *, void *, void *);
-extern void gs_get_info_level_GV(void *, void *);
-extern void gs_get_map_01_GV(void *, void *, void *);
-extern void gs_get_num_threads(void *);
-extern void gs_lambda_aov_01_GV(void *, void *, void *, void *, void *, void *);
-extern void gs_lambda_const_01_GV(void *, void *, void *, void *, void *);
-extern void gs_lambda_const_02_GV(void *, void *, void *, void *, void *);
-extern void gs_lambda_emstep_01_GV(void *, void *, void *, void *, void *);
-extern void gs_lambda_reg_01_GV(void *, void *, void *, void *, void *);
-extern void gs_lambda_rmla_01_GV(void *, void *, void *, void *, void *, void *,
-                                 void *, void *);
-extern void gs_lambda_rmla_02_GV(void *, void *, void *, void *, void *, void *,
-                                 void *, void *);
-extern void gs_lambda_rmlc_01_GV(void *, void *, void *, void *, void *, void *,
-                                 void *);
-extern void gs_lambda_rmlr_01_GV(void *, void *, void *, void *, void *, void *,
-                                 void *);
-extern void gs_lambda_rrblup_01_GV(void *, void *, void *, void *, void *,
-                                   void *, void *);
-extern void gs_lambda_var_01_GV(void *, void *, void *, void *, void *, void *);
-extern void gs_marker_stats_01_GV(void *, void *, void *, void *, void *,
-                                  void *, void *, void *, void *);
-extern void gs_mme_coeff_01_GV(void *, void *, void *, void *);
-extern void gs_mme_restcoeff_01_GV(void *, void *, void *);
-extern void gs_mme_restrhs_01_GV(void *, void *, void *);
-extern void gs_mme_rhs_01_GV(void *, void *, void *, void *);
-extern void gs_mme_solve_01_GV(void *, void *, void *, void *);
-extern void gs_mmet_coeff_01_GV(void *, void *, void *, void *);
-extern void gs_mmet_rhs_01_GV(void *, void *, void *, void *);
-extern void gs_mmet_solve_01_GV(void *, void *, void *, void *);
-extern void gs_neg_effall_01_GV(void *, void *);
-extern void gs_pos_effall_01_GV(void *, void *);
-extern void gs_r_info(void *, void *);
-extern void gs_read_map_01_GV(void *, void *, void *, void *, void *, void *,
-                              void *, void *);
-extern void gs_read_marker_data_01_GV(void *, void *, void *, void *, void *,
-                                      void *, void *);
-extern void gs_read_marker_data_02_GV(void *, void *, void *, void *, void *,
-                                      void *, void *);
-extern void gs_read_marker_data_03_GV(void *, void *, void *, void *, void *,
-                                      void *, void *);
-extern void gs_read_marker_data_04_GV(void *, void *, void *, void *, void *,
-                                      void *, void *);
-extern void gs_read_performance_data_01_GV(void *, void *, void *, void *,
-                                           void *);
-extern void gs_recode_hbc_01_GV(void *, void *, void *);
-extern void gs_recode_hil_01_GV(void *, void *, void *, void *);
-extern void gs_recode_ref_01_GV(void *, void *, void *, void *);
-extern void gs_recode_ref_02_GV(void *, void *, void *, void *, void *);
-extern void gs_recode_ref_name_01_GV(void *, void *, void *, void *);
-extern void gs_restrict_marker_data_03_GV(void *, void *, void *, void *,
-                                          void *, void *, void *, void *);
-extern void gs_return_effects_01_GV(void *, void *, void *);
-extern void gs_return_performance_data_01_GV(void *, void *, void *, void *);
-extern void gs_return_pvals_01_GV(void *, void *, void *);
-extern void gs_set_all_info_levels(void *);
-extern void gs_set_allele_codes_01_GV(void *, void *, void *, void *, void *,
-                                      void *, void *);
-extern void gs_set_effects_01_GV(void *, void *, void *);
-extern void gs_set_hblocks_01_GV(void *, void *, void *, void *, void *, void *,
-                                 void *);
-extern void gs_set_info_level_GV(void *, void *);
-extern void gs_set_num_threads(void *);
-extern void gs_set_performance_data_01_GV(void *, void *, void *, void *);
-extern void gs_single_marker_aov_01_GV(void *, void *, void *, void *, void *);
-extern void gs_single_marker_reg_01_GV(void *, void *, void *, void *);
-extern void gs_testeff_lsq_01_GV(void *, void *, void *, void *, void *);
-extern void gs_testeff_rmlc_01_GV(void *, void *, void *, void *, void *,
-                                  void *, void *, void *);
-extern void gs_testeff_rmlv_01_GV(void *, void *, void *, void *, void *,
-                                  void *, void *, void *);
-extern void gs_vc_rrblup_01_GV(void *, void *, void *, void *, void *, void *,
-                               void *);
-extern void gs_w_aov_01_GV(void *, void *, void *, void *, void *);
-extern void gs_write_map_01_GV(void *, void *, void *);
-extern void gs_write_marker_data_02_GV(void *, void *, void *, void *, void *,
-                                       void *, void *, void *, void *, void *,
-                                       void *, void *, void *, void *);
-extern void haplotype_calc_d(void *, void *, void *);
+extern void evaluate_genome(char **PopName, int *all, double *ratio, double *length,
+                     double *total, int *blocks);
+extern void evaluate_genome_region(char **PopName, int *all, int *chrom, double *b,
+                            double *e, double *ratio, double *length,
+                            double *total, int *blocks);
+extern void evaluate_ld(char **PopName, int *all, int *chr, double *pos, double *ld);
+extern void evaluate_locus(char **PopName, char **Loci, int *_matrix, int *noLoci,
+                    int *bg);
+extern void evaluate_mdp(char **progeny, char **parent1, char **parent2,
+                  char **effectfile);
+extern void evaluate_population(char **PopNames, char **EffName);
+extern void st_r_info(int *level, char **message);
+extern void gen_dist(int *measure, int *no_pop, int *no_ind, int *no_mar, int *no_all,
+              int *no_pop_u, int *pop_u, int *no_ind_u, int *ind_u,
+              int *no_mar_u, int *mar_u, double *data, double *freq,
+              double *dist, int *s, double *sdev, char **par);
+extern void generate_effect_file(char **fName, char **Description);
+extern void generate_map_file(char **fName, char **Description, int *retval);
+extern void generate_population(int *no_pop, int *no_ind, int *no_mar, int *no_all,
+                         int *no_pop_u, int *pop_u, int *no_ind_u, int *ind_u,
+                         int *no_mar_u, int *mar_u, double *data, double *freq,
+                         char **pop_list, char **mar_list, int *al_list,
+                         int *bg, int *bc);
+extern void genotype_population(char **PopNames);
+extern void get_allele_number(char **Name, int *Count);
+extern void get_allow_zeros(int *allow);
+extern void get_genome_par(int *_NoChroms, int *_NoHoms);
+extern void get_genome_par_b(double *_ChromLen);
+extern void get_info_level(int *i);
+extern void get_map_a(int *_NoMappoints, int *_maxname, char **_classlgth,
+               char **_namelgth);
+extern void get_map_b(double *_chrom, double *_pos, char **_name, char **_class);
+extern void get_mdp(char **cmdp);
+extern void get_population(char **PopName, int *_Ind, int *_Chrom, int *_Hom,
+                    double *_Pos, int *_All);
+extern void get_population_info(char **PopName, char **_ind, char **_info);
+extern void get_population_size(char **PopNames, char **cNoInds, char **cNoIndsAlloc);
+extern void get_population_value(char **PopName, double *value, char **EffName,
+                          char **criterion_name, int *retval);
+extern void gs_build_V_01_GV(char **out_filename, int *auxfiles, int *retval,
+                      char **set_name);
+extern void gs_build_Z_01_GV(char **out_filename, int *auxfiles, int *retval,
+                      char **set_name);
+extern void gs_build_esvs_01_GV(int *n_estimation, char **base_set,
+                         char **estimation_set, char **validation_set,
+                         char **out_es_m, char **out_es_p, char **out_vs_m,
+                         char **out_vs_p, int *auxfiles, int *retval);
+extern void gs_calc_ld_01_GV(char **ld_measure, char **out_filename, int *auxfiles,
+                      int *retval, char **set_name);
+extern void gs_calc_q_01_GV(char **pop_type, int *t, char **out_filename,
+                     int *auxfiles, int *retval, char **set_name);
+extern void gs_calc_rf_01_GV(char **map_function, char **out_filename, int *auxfiles,
+                      int *retval, char **set_name);
+extern void gs_check_pvals_01_GV(int *retval, char **set_name);
+extern void gs_chrom_stats_01_GV(char **out_filename, int *auxfiles, int *retval,
+                          char **set_name);
+extern void gs_copy_marker_data_01_GV(int *retval, char **set_name_t,
+                               char **set_name_s);
+extern void gs_cross_eval_es_01_GV(double *i, int *retval, char **set_name);
+extern void gs_cross_eval_gd_01_GV(char **dist, int *retval, char **set_name);
+extern void gs_cross_eval_gd_fct_01_GV(char **dist, int *split, int *retval,
+                                char **set_name);
+extern void gs_cross_eval_ma_01_GV(int *retval, char **set_name);
+extern void gs_cross_eval_mi_01_GV(int *retval, char **set_name);
+extern void gs_cross_eval_mu_01_GV(int *retval, char **set_name);
+extern void gs_cross_eval_va_01_GV(char **pop_type, int *t, char **map_function,
+                            int *retval, char **set_name);
+extern void gs_cross_info_01_GV(int *bestn, char **sortby, char **out_filename,
+                         int *retval, char **set_name);
+extern void gs_cross_validation_02_GV(char **scheme, int *n_estimation, int *n_runs,
+                               double *hsq, double *alpha, int *maxiter,
+                               double *precision, char **out_filename_r,
+                               char **out_filename_u, int *auxfiles,
+                               int *retval, char **set_name);
+extern void gs_def_hblocks_01_GV(int *hap, int *hap_unit, double *ld_threshold,
+                          char **ld_criterion, int *tolerance,
+                          char **hap_symbol, char **out_filename, int *auxfiles,
+                          int *retval, char **set_name);
+extern void gs_esteff_lsq_01_GV(char **out_filename, int *auxfiles, int *retval,
+                         char **set_name);
+extern void gs_esteff_rmla_01_GV(double *alpha, int *maxiter, double *precision,
+                          double *hsq, char **out_filename, int *auxfiles,
+                          int *retval, char **set_name);
+extern void gs_esteff_rmlc_01_GV(int *maxiter, double *precision, double *hsq,
+                          char **out_filename, int *auxfiles, int *retval,
+                          char **set_name);
+extern void gs_esteff_rmlr_01_GV(int *maxiter, double *precision, double *hsq,
+                          char **out_filename, int *auxfiles, int *retval,
+                          char **set_name);
+extern void gs_esteff_rmlv_01_GV(int *maxiter, double *precision, double *hsq,
+                          char **out_filename, int *auxfiles, int *retval,
+                          char **set_name);
+extern void gs_esteff_rr_01_GV(char **methode, int *maxiter, double *precision,
+                        double *hsq, double *alpha, char **out_filename,
+                        int *auxfiles, int *retval, char **set_name);
+extern void gs_estimate_bv_01_GV(char **effect_set, char **marker_set,
+                          char **out_filename, int *auxfiles, int *retval);
+extern void gs_get_info_level_GV(int *level, char **set_name);
+extern void gs_get_map_01_GV(char **out_filename, int *retval, char **set_name);
+extern void gs_set_openblas_threads(int *activate);
+extern void gs_get_num_threads(int *activate);
+extern void gs_lambda_aov_01_GV(double *hsq, double *alpha, char **out_filename,
+                         int *auxfiles, int *retval, char **set_name);
+extern void gs_lambda_const_01_GV(double *lambda, char **out_filename, int *auxfiles,
+                           int *retval, char **set_name);
+extern void gs_lambda_const_02_GV(double *hsq, char **out_filename, int *auxfiles,
+                           int *retval, char **set_name);
+extern void gs_lambda_emstep_01_GV(int *constvar, char **out_filename, int *auxfiles,
+                            int *retval, char **set_name);
+extern void gs_lambda_reg_01_GV(double *hsq, char **out_filename, int *auxfiles,
+                         int *retval, char **set_name);
+extern void gs_lambda_rmla_01_GV(double *alpha, int *maxiter, double *precision,
+                          double *hsq, char **out_filename, int *auxfiles,
+                          int *retval, char **set_name);
+extern void gs_lambda_rmla_02_GV(double *alpha, int *maxiter, double *precision,
+                          double *hsq, char **out_filename, int *auxfiles,
+                          int *retval, char **set_name);
+extern void gs_lambda_rmlc_01_GV(int *maxiter, double *precision, double *hsq,
+                          char **out_filename, int *auxfiles, int *retval,
+                          char **set_name);
+extern void gs_lambda_rmlr_01_GV(int *maxiter, double *precision, double *hsq,
+                          char **out_filename, int *auxfiles, int *retval,
+                          char **set_name);
+extern void gs_lambda_rrblup_01_GV(int *maxiter, double *precision, double *hsq,
+                            char **out_filename, int *auxfiles, int *retval,
+                            char **set_name);
+extern void gs_lambda_var_01_GV(double *lambda, int *n, char **out_filename,
+                         int *auxfiles, int *retval, char **set_name);
+extern void gs_marker_stats_01_GV(char **ind_filename, char **mar_filename,
+                           char **gen_filename, int *ind, int *mar, int *gen,
+                           int *auxfiles, int *retval, char **set_name);
+extern void gs_mme_coeff_01_GV(char **out_filename, int *auxfiles, int *retval,
+                        char **set_name);
+extern void gs_mme_restcoeff_01_GV(char **out_filename, int *auxfiles, int *retval);
+extern void gs_mme_restrhs_01_GV(char **out_filename, int *auxfiles, int *retval);
+extern void gs_mme_rhs_01_GV(char **out_filename, int *auxfiles, int *retval,
+                      char **set_name);
+extern void gs_mme_solve_01_GV(char **out_filename, int *auxfiles, int *retval,
+                        char **set_name);
+extern void gs_mmet_coeff_01_GV(char **out_filename, int *auxfiles, int *retval,
+                         char **set_name);
+extern void gs_mmet_rhs_01_GV(char **out_filename, int *auxfiles, int *retval,
+                       char **set_name);
+extern void gs_mmet_solve_01_GV(char **out_filename, int *auxfiles, int *retval,
+                         char **set_name);
+extern void gs_neg_effall_01_GV(int *retval, char **set_name);
+extern void gs_pos_effall_01_GV(int *retval, char **set_name);
+extern void gs_r_info(int *level, char **message);
+extern void gs_read_map_01_GV(char **map_filename, int *skip, char **fmt,
+                       double *map_stretch, char **out_filename, int *auxfiles,
+                       int *retval, char **set_name);
+extern void gs_read_marker_data_01_GV(char **dta_filename, char **ind_filename,
+                               char **mar_filename, char **gen_filename,
+                               int *auxfiles, int *retval, char **set_name);
+extern void gs_read_marker_data_02_GV(char **dta_filename, char **ind_filename,
+                               char **mar_filename, char **gen_filename,
+                               int *auxfiles, int *retval, char **set_name);
+extern void gs_read_marker_data_03_GV(char **dta_filename, char **ind_filename,
+                               char **mar_filename, char **gen_filename,
+                               int *auxfiles, int *retval, char **set_name);
+extern void gs_read_marker_data_04_GV(char **dta_filename, char **ind_filename,
+                               char **mar_filename, char **gen_filename,
+                               int *auxfiles, int *retval, char **set_name);
+extern void gs_read_performance_data_01_GV(char **dta_filename, char **out_filename,
+                                    int *auxfiles, int *retval, char **set_name);
+extern void gs_recode_hbc_01_GV(int *reference, int *retval, char **set_name);
+extern void gs_recode_hil_01_GV(char **out_filename, int *auxfiles, int *retval,
+                         char **set_name);
+extern void gs_recode_ref_01_GV(int *reference, int *descending, int *retval,
+                         char **set_name);
+extern void gs_recode_ref_02_GV(int *r1, int *r2, int *descending, int *retval,
+                         char **set_name);
+extern void gs_recode_ref_name_01_GV(char **reference_name, int *descending,
+                              int *retval, char **set_name);
+extern void gs_restrict_marker_data_03_GV(char **ind_fname, char **mar_fname,
+                                   int *NoAllMAX, double *MaMisMAX,
+                                   double *ExHetMIN, double *InMisMAX,
+                                   int *retval, char **set_name);
+extern void gs_return_effects_01_GV(char **out_filename, int *retval, char **set_name);
+extern void gs_return_performance_data_01_GV(char **out_filename, int *auxfiles,
+                                      int *retval, char **set_name);
+extern void gs_return_pvals_01_GV(char **out_filename, int *retval, char **set_name);
+extern void gs_set_all_info_levels(int *level);
+extern void gs_set_allele_codes_01_GV(double *aa, double *aA, double *AA, double *an,
+                               double *nn, double *nA, char **set_name);
+extern void gs_set_effects_01_GV(char **filename, int *retval, char **set_name);
+extern void gs_set_hblocks_01_GV(int *n_hap, int *hap_list, char **hap_symbol,
+                          char **out_filename, int *auxfiles, int *retval,
+                          char **set_name);
+extern void gs_set_info_level_GV(int *level, char **set_name);
+extern void gs_set_num_threads(int *activate);
+extern void gs_set_performance_data_01_GV(int *n, double *y, int *retval,
+                                   char **set_name);
+extern void gs_single_marker_aov_01_GV(double *alpha, char **out_filename,
+                                int *auxfiles, int *retval, char **set_name);
+extern void gs_single_marker_reg_01_GV(char **out_filename, int *auxfiles, int *retval,
+                                char **set_name);
+extern void gs_testeff_lsq_01_GV(int *nperm, char **out_filename, int *auxfiles,
+                          int *retval, char **set_name);
+extern void gs_testeff_rmlc_01_GV(int *nperm, int *maxiter, double *precision,
+                           double *hsq, char **out_filename, int *auxfiles,
+                           int *retval, char **set_name);
+extern void gs_testeff_rmlv_01_GV(int *nperm, int *maxiter, double *precision,
+                           double *hsq, char **out_filename, int *auxfiles,
+                           int *retval, char **set_name);
+extern void gs_vc_rrblup_01_GV(int *maxiter, double *precision, double *hsq,
+                        char **out_filename, int *auxfiles, int *retval,
+                        char **set_name);
+extern void gs_w_aov_01_GV(double *alpha, char **out_filename, int *auxfiles,
+                    int *retval, char **set_name);
+extern void gs_write_map_01_GV(char **mmp_filename, int *retval, char **set_name);
+extern void gs_write_marker_data_02_GV(char **type, char **lpo_filename,
+                                char **mmp_filename, char **mpo_filename,
+                                char **ngp_filename, char **nmp_filename,
+                                char **npo_filename, char **ind_filename,
+                                int *f_ind, int *l_ind, char **add_inum,
+                                int *auxfiles, int *retval, char **set_name);
+extern void haplotype_calc_d(double *_dd, double *_rr, double *_dprime);
 extern void haplotype_free(void);
-extern void haplotype_init(void *, void *, void *, void *);
-extern void haplotype_next(void *, void *, void *, void *, void *, void *,
-                           void *);
-extern void il_eval_library_GV(void *, void *, void *, void *, void *, void *);
-extern void il_eval_lines_GV(void *, void *, void *, void *, void *, void *,
-                             void *, void *, void *, void *, void *);
-extern void il_get_population_size_GV(void *, void *);
-extern void init_population(void *, void *, void *, void *, void *, void *,
-                            void *);
-extern void linkage_map_load(void *, void *, void *, void *, void *);
-extern void list_eff(void *, void *);
-extern void list_eff_parameter(void *, void *);
-extern void list_populations(void *, void *);
-extern void list_populations_parameter(void *, void *);
-extern void load_effmap(void *, void *);
-extern void load_effmap_mod(void *, void *, void *);
-extern void optimize_population(void *);
-extern void phenotype_population(void *, void *, void *, void *);
-extern void print_version_2(void *);
-extern void r_info(void *, void *);
-extern void remove_evaluate_population(void *);
-extern void remove_genotype_population(void *);
+extern void haplotype_init(char **PopName, int *_missing, int *_doubleHetero, int *_bg);
+extern void haplotype_next(int *_locusA, int *_locusB, int *_noTI, int *_noI,
+                    int *_nodH, int *_dLocA, int *_dLocB);
+extern void il_eval_library_GV(double *cov, double *dep, double *seglib, int *allele,
+                        int *retval, char **set_name);
+extern void il_eval_lines_GV(int *allele, int *chrom, double *lower, double *upper,
+                      int *exclude, double *abs, double *tot, double *nseg,
+                      double *lseg, int *retval, char **set_name);
+extern void il_get_population_size_GV(int *NoLines, char **set_name);
+extern void init_population(char **Name, char **cCount, int *_Ind, int *_Chrom,
+                     int *_Hom, double *_Pos, int *_All);
+extern void linkage_map_load(char **fName, int *disperse, char **fNameDisperse,
+                      double *factor, int *retval);
+extern void list_eff(char **all_eff, double *weigth_eff);
+extern void list_eff_parameter(int *lEffName, int *nrEffects);
+extern void list_populations(char **all_pops, int *inds);
+extern void list_populations_parameter(int *lPopName, int *NoPops);
+extern void load_effmap(char **file, char **name);
+extern void load_effmap_mod(char **effectName, char **effectSpec, double *effectWeight);
+extern void optimize_population(char **PopNames);
+extern void phenotype_population(char **PopName, double *hsq, int *nhsq, int *retval);
+extern void print_version_2(char **message);
+extern void r_info(int *level, char **message);
+extern void remove_evaluate_population(char **PopNames);
+extern void remove_genotype_population(char **PopNames);
 extern void remove_map(void);
-extern void remove_population(void *);
-extern void rename_population(void *, void *);
+extern void remove_population(char **PopNames);
+extern void rename_population(char **OldName, char **NewName);
 extern void reset_mdp(void);
-extern void resize_population(void *, void *);
-extern void rng_choose(void *);
+extern void resize_population(char **PopName, char **cnewSize);
+extern void rng_choose(char **name);
 extern void rng_info(void);
 extern void rng_init(void);
-extern void rng_init_seed(int *, int *, int *);
+extern void rng_init_seed(int *seeds, int *nseeds, int *retval);
 extern void rng_list(void);
-extern void sample_population(void *, void *, void *, void *);
-extern void select_all_n_best(void *, void *, void *, void *, void *, void *,
-                              void *, void *);
-extern void set_allow_zeros(void *);
-extern void set_co_freq(void *);
-extern void set_eff_weight(void *, void *);
-extern void set_genome_par(void *, void *, void *);
-extern void set_info_level(void *);
-extern void set_mdp(void *);
-extern void set_nolociinit(void *);
-extern void set_population_gvalue(void *, void *, void *, void *);
-extern void set_population_info(void *, void *, void *);
-extern void sort_population(void *, void *, void *, void *, void *);
-extern void ssd_mating(void *, void *, void *, void *, void *);
-extern void st_get_info_level(void *);
-extern void st_get_simpop2_GV(void *, void *, void *, void *);
-extern void st_get_simpop_GV(void *, void *, void *, void *);
-extern void st_set_info_level(void *);
-extern void st_set_sim_ef(void *, void *, void *);
-extern void st_set_sim_gp(void *, void *);
-extern void st_set_sim_mp(void *, void *);
-extern void st_set_sim_pp(void *, void *, void *);
-extern void st_start_timer(void *, void *);
-extern void st_stop_timer(void *, void *);
-extern void swap_population_name(void *, void *);
+extern void sample_population(char **NameP1, char **NameP2, char **cNoI, int *rep);
+extern void select_all_n_best(char **NamePop, char **indexbest, int *n,
+                       double *minscore, double *maxscore,
+                       char **criterion_name, char **EffName, int *retval);
+extern void set_allow_zeros(int *allow);
+extern void set_co_freq(double *cofreq);
+extern void set_eff_weight(char **Name, double *weight);
+extern void set_genome_par(int *_NoChroms, int *_NoHoms, double *_ChromLen);
+extern void set_info_level(int *level);
+extern void set_mdp(char **cMDP);
+extern void set_nolociinit(int *NewLociInit);
+extern void set_population_gvalue(char **PopName, double *gvalue, int *ngvalue,
+                           int *retval);
+extern void set_population_info(char **PopName, char **_ind, char **_info);
+extern void sort_population(char **PopNames, int *decreasing, char **criterion_name,
+                     char **EffName, int *retval);
+extern void ssd_mating(char **NamePg, char **NameP1, char **cNoPg, int *maxcycles,
+                double *significant);
+extern void st_get_info_level(int *i);
+extern void st_get_simpop2_GV(char **pop_name, int *bg, int *retval, char **set_name);
+extern void st_get_simpop_GV(char **pop_name, int *bg, int *retval, char **set_name);
+extern void st_set_info_level(int *i);
+extern void st_set_sim_ef(int *retval, char **effect_name, char **set_name);
+extern void st_set_sim_gp(int *retval, char **set_name);
+extern void st_set_sim_mp(int *retval, char **set_name);
+extern void st_set_sim_pp(int *retval, char **pop_name, char **set_name);
+extern void st_start_timer(int *i, double *time);
+extern void st_stop_timer(int *i, double *time);
+extern void swap_population_name(char **NameP1, char **NameP2);
 
 extern SEXP st_lmm_frontend(SEXP);
 extern SEXP st_lmm_capture_body(SEXP);
@@ -234,6 +317,7 @@ extern SEXP st_simulation_identity(SEXP, SEXP, SEXP);
 extern SEXP st_population_marker_map(SEXP);
 extern SEXP st_extend_marker_map(SEXP);
 extern SEXP st_population_cross(SEXP, SEXP, SEXP, SEXP);
+extern SEXP st_population_select_n_best(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP allele_evaluate(SEXP, SEXP, SEXP, SEXP);
 extern SEXP define_effects_df(SEXP, SEXP);
 extern SEXP define_map_df(SEXP);
@@ -340,13 +424,6 @@ static void st_unavailable_gs_restrict_marker_data_01_GV(void *a1, void *a2,
     (void)a8;
     error("Native routine 'gs_restrict_marker_data_01_GV' is not implemented "
           "by this SelectionTools source tree");
-}
-
-static void st_unavailable_gs_set_openblas_threads(void *a1)
-{
-    (void)a1;
-    error("Native routine 'gs_set_openblas_threads' is not implemented by this "
-          "SelectionTools source tree");
 }
 
 static void st_unavailable_gs_test_mp(void *a1)
@@ -1737,15 +1814,15 @@ static void st_C_interface_gs_set_num_threads(void *a0)
     st_C_arguments args = {{a0}};
     st_work_native_interface(st_C_body_gs_set_num_threads, &args);
 }
-static void st_C_body_st_unavailable_gs_set_openblas_threads(void *payload)
+static void st_C_body_gs_set_openblas_threads(void *payload)
 {
     st_C_arguments *args = payload;
-    st_unavailable_gs_set_openblas_threads(args->value[0]);
+    gs_set_openblas_threads(args->value[0]);
 }
-static void st_C_interface_st_unavailable_gs_set_openblas_threads(void *a0)
+static void st_C_interface_gs_set_openblas_threads(void *a0)
 {
     st_C_arguments args = {{a0}};
-    st_work_native_interface(st_C_body_st_unavailable_gs_set_openblas_threads,
+    st_work_native_interface(st_C_body_gs_set_openblas_threads,
                              &args);
 }
 static void st_C_body_gs_set_performance_data_01_GV(void *payload)
@@ -3296,7 +3373,7 @@ void st_legacy_C_call(const char *name, void **value, int count)
     {
         if (count != 1)
             error("Invalid interface argument count");
-        st_C_body_st_unavailable_gs_set_openblas_threads(&args);
+        st_C_body_gs_set_openblas_threads(&args);
         return;
     }
     if (!strcmp(name, "gs_set_performance_data_01_GV"))
@@ -3928,7 +4005,7 @@ static const R_CMethodDef CEntries[] = {
     {"gs_set_info_level_GV", (DL_FUNC)(void (*)(void))&st_C_interface_gs_set_info_level_GV, 2, NULL},
     {"gs_set_num_threads", (DL_FUNC)(void (*)(void))&st_C_interface_gs_set_num_threads, 1, NULL},
     {"gs_set_openblas_threads",
-     (DL_FUNC)(void (*)(void))&st_C_interface_st_unavailable_gs_set_openblas_threads, 1, NULL},
+     (DL_FUNC)(void (*)(void))&st_C_interface_gs_set_openblas_threads, 1, NULL},
     {"gs_set_performance_data_01_GV",
      (DL_FUNC)(void (*)(void))&st_C_interface_gs_set_performance_data_01_GV, 4, NULL},
     {"gs_single_marker_aov_01_GV",
@@ -4081,6 +4158,20 @@ static SEXP st_interface_st_extend_marker_map(SEXP a0)
 {
     st_interface_arguments args = {{a0}};
     return st_work_interface(st_interface_body_st_extend_marker_map, &args);
+}
+static SEXP st_interface_body_st_population_select_n_best(void *payload)
+{
+    st_interface_arguments *args = payload;
+    return st_population_select_n_best(args->value[0], args->value[1], args->value[2],
+                                       args->value[3], args->value[4], args->value[5],
+                                       args->value[6]);
+}
+static SEXP st_interface_st_population_select_n_best(SEXP a0, SEXP a1, SEXP a2,
+                                                     SEXP a3, SEXP a4, SEXP a5,
+                                                     SEXP a6)
+{
+    st_interface_arguments args = {{a0, a1, a2, a3, a4, a5, a6}};
+    return st_work_interface(st_interface_body_st_population_select_n_best, &args);
 }
 static SEXP st_interface_body_st_population_cross(void *payload)
 {
@@ -4733,6 +4824,8 @@ static const R_CallMethodDef CallEntries[] = {
      (DL_FUNC)(void (*)(void))&st_interface_st_population_marker_map, 1},
     {"st_extend_marker_map", (DL_FUNC)(void (*)(void))&st_interface_st_extend_marker_map, 1},
     {"st_population_cross", (DL_FUNC)(void (*)(void))&st_interface_st_population_cross, 4},
+    {"st_population_select_n_best",
+     (DL_FUNC)(void (*)(void))&st_interface_st_population_select_n_best, 7},
     {"st_marker_phenotypes", (DL_FUNC)(void (*)(void))&st_interface_st_marker_phenotypes, 1},
     {"st_marker_predict", (DL_FUNC)(void (*)(void))&st_interface_st_marker_predict, 1},
     {"st_marker_results", (DL_FUNC)(void (*)(void))&st_interface_st_marker_results, 1},

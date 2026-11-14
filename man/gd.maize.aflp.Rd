@@ -4,13 +4,13 @@
 \alias{maize.aflp}
 \docType{data}
 
-\title{51 maize lines analyzed with 462 AFLP markers.}
+\title{51 maize lines analyzed with 462 AFLP markers}
 
 \description{
   This data set consists of AFLP data from 51 maize lines. 462 markers
   are used. This is dominant data. Each band is a marker, which has only
-  one allele. For analyzing this type of dominant marker use
-  \code{gd.allow.zero.frequencies(1)}
+  one allele. Analysis of these dominant markers uses
+  \code{gd.allow.zero.frequencies(1)}.
 }
 
 \usage{

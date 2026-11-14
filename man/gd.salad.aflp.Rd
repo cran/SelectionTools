@@ -3,13 +3,13 @@
 \alias{gd.salad.aflp}
 \docType{data}
 
-\title{Jasminas 44 salads analyzed with 108 AFLP markers.}
+\title{Jasminas 44 salads analyzed with 108 AFLP markers}
 
 \description{
   This data set consists of AFLP data from 44 salad lines. 108 markers
   are used. This is dominant data. Each band is a marker, which has only
-  one allele. For analyzing this type of dominant marker use
-  \code{gd.allow.zero.frequencies(1)}
+  one allele. Analysis of these dominant markers uses
+  \code{gd.allow.zero.frequencies(1)}.
 }
 
 \usage{

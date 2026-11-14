@@ -1,9 +1,9 @@
 \name{st.LDplot.ld}
 \alias{st.LDplot.ld}
-\title{Prepare linkage-disequilibrium information for plotting}
+\title{Linkage-disequilibrium information for plotting}
 
 \description{
-Prepare linkage-disequilibrium information for plotting.
+Prepares linkage-disequilibrium information for plotting.
 }
 
 \usage{

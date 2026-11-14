@@ -3,7 +3,7 @@
 %
 \name{get.population.gvalue}
 \alias{get.population.gvalue}
-\title{Get genetic values from a simulation population}
+\title{Returns genetic values from a simulation population}
 
 \description{
 Returns stored evaluated genetic values for the active individuals of a

@@ -14,7 +14,7 @@ transfer the population name must contain 2 to 255 ASCII letters or digits.}
 \item{data.set}{Character string naming the SelectionTools marker data set.}
 }
 \details{
-The transfer is restricted to diploid simulation data. Stable individual names and full simulated pedigrees are retained, using the same rules as \code{st.get.simpop()}. Duplicated individual IDs are rejected before replacing the destination. Population names must contain only ASCII letters and digits. Marker names follow the same identifier rules as the
+The transfer supports only diploid simulation data. Stable individual names and full simulated pedigrees are retained, using the same rules as \code{st.get.simpop()}. Duplicated individual IDs are rejected before replacing the destination. Population names must contain only ASCII letters and digits. Marker names follow the same identifier rules as the
 VCF interface: names must be non-empty, occupy fewer than 256 bytes, and
 contain no spaces or ASCII control characters. Punctuation such as hyphens,
 dots, and underscores is preserved. Invalid names are rejected rather than

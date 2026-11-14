@@ -1,9 +1,9 @@
 \name{gs.restrict.marker.data.01}
 \alias{gs.restrict.marker.data.01}
-\title{Restrict marker data using the package genomic-selection interface}
+\title{Restricts marker data using the package genomic-selection interface}
 
 \description{
-Restrict marker data using the package genomic-selection interface.
+Restricts marker data using the package genomic-selection interface.
 }
 
 \usage{

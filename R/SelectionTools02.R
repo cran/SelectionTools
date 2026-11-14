@@ -1,5 +1,5 @@
-# Interface to simulation routines of SelectionTools02.c
-# by Hans Peter Maurer and Matthias Frisch
+
+
 
 plabsim.R.version <- "19.3"
 plabsim.R.date    <- "2019/09/11"
@@ -260,10 +260,10 @@ evaluate.genome <- function(PopName, allele, chromosome=NULL, begin=NULL,
 
 "evaluate.hap.init" <-
   function(PopName, doubleHetero=0, missing=0){
-# doubleHetero 0: double heterozygotes are not removed
-# doubleHetero 1: double heterozygotes are removed
-# missing 0: missing alleles are removed
-# missing 1: missing alleles are not removed
+
+
+
+
     bg <- plabsim$allele.missing.indicator
     genotype.population(PopName);
     c <- .Call("st_legacy_marker", list(action="legacy.result",
@@ -467,18 +467,10 @@ plant <- function(genotype, NoInd=1)
     .Call("st_legacy_sim", list(action="plant", genotype=genotype, n=NoInd,
           constant=FALSE), PACKAGE="SelectionTools")
 
-"init.population" <- function(
-  name,
-  data,
-  delete=TRUE
-) {
-  if (5 != dim(data)[2]) stop("Wrong data format.")
-  if (delete == TRUE) {
-    population.remove(name)
-  }
-  c <- .Call("st_legacy_marker", list(action="legacy.result",
-        routine="init_population",
-        arguments=list(as.character(name), format(nrow(data),scientific=FALSE), as.integer(data$ind), as.integer(data$chrom), as.integer(data$hom), as.double(data$pos), as.integer(data$all))), PACKAGE="SelectionTools")
+"init.population" <- function(name, data, delete=TRUE) {
+  invisible(.Call("st_legacy_sim", list(action="population.init",
+      population=as.character(name), data=data, delete=delete),
+      PACKAGE="SelectionTools"))
 }
 
 "list.effects" <- function () 
@@ -564,35 +556,9 @@ plant <- function(genotype, NoInd=1)
   )
 }
 
-"population.individual.remove" <- function (
-  PopName,
-  IndPos
-) {
-  ## testen ob Population xxpop vorhanden? und loeschen der genotype info!!
-  PopSize <- population.size.get(PopName)$NoInds
-  if ((IndPos>=1)&&(IndPos<=PopSize)) {
-    if ((1 < PopSize)) {
-      if (1==IndPos) {
-        population.copy("xxPOP",PopName,2)
-        population.swap.name("xxPOP",PopName)
-        population.remove("xxPOP")
-      } else {
-        if (PopSize==IndPos) {
-          population.copy("xxPOP",PopName,1,PopSize-1)
-          population.swap.name("xxPOP",PopName)
-          population.remove("xxPOP")
-        } else {
-          population.copy("xxPOP",PopName,1,IndPos-1)
-          population.copy("xyPOP",PopName,IndPos+1)
-          population.swap.name("xxPOP",PopName)
-          population.remove("xxPOP")
-          concat.population(PopName,"xyPOP")
-        }
-      }
-    } else {
-      remove.population(PopName)
-    }
-  }
+"population.individual.remove" <- function(PopName, IndPos) {
+  invisible(.Call("st_legacy_sim", list(action="population.individual.remove",
+      population=as.character(PopName), position=IndPos), PACKAGE="SelectionTools"))
 }
 
 "effmap.remove" <-
@@ -760,49 +726,11 @@ plant <- function(genotype, NoInd=1)
   decreasing=TRUE,
   selection.criterion="G"
 ) {
-  selection.criterion <- match.arg(
-    selection.criterion,
-    c("G", "P")
-  )
-
-  popsize <- population.size.get(oldPop)$NoInds
-
-  if (0 == popsize) {
-    info(-2,paste("Population",oldPop,"is of size 0"))
-    return(invisible(NULL))
-  } else {
-    if (n > popsize) {
-      info(1,
-           paste("Population size: ",popsize,". Selection of ",
-                 n," individuals not possible.",sep="")
-           )
-    }
-  }
-
-  if ("G" == selection.criterion) {
-    genotype.population(oldPop)
-    evaluate.population(oldPop,effect)
-
-    c <- population.sort(
-      oldPop,
-      decreasing=decreasing,
-      selection.criterion="G"
-    )
-  } else {
-    c <- population.sort(
-      oldPop,
-      decreasing=decreasing,
-      selection.criterion="P",
-      effect=effect
-    )
-  }
-
-  if (is.null(c$retval) || 0L != c$retval)
-    return(invisible(c))
-
-  population.divide(newPop,oldPop,n)
+  selection.criterion <- match.arg(selection.criterion,c("G","P"))
+  invisible(.Call("st_population_select_n_best",enc2native(as.character(newPop)),
+      enc2native(as.character(oldPop)),as.character(effect),n,format(n,scientific=FALSE),
+      as.integer(decreasing),selection.criterion,PACKAGE="SelectionTools"))
 }
-
 
 "set.co.freq" <-
   function(cofreq=1){
@@ -979,8 +907,8 @@ data.params <- function(dta) gd.data.parameters(dta)
           dta.param$colhead[line,2]
         )
         line <- line + 1
-      } #i
-    } #p
+      } 
+    } 
   }
 }
 
@@ -1005,8 +933,8 @@ data.params <- function(dta) gd.data.parameters(dta)
                              sep=".")
                        )
       }
-      } #i
-    } #p
+      } 
+    } 
     colnames(dta) <- col.names
   }
 
@@ -1033,11 +961,11 @@ data.params <- function(dta) gd.data.parameters(dta)
     nrows        = dta.description[1,3]
   )
   dta.info <- as.character(dta.info[,3])
-  col.classes <- c("integer",      # 1
-                   "integer",      # 2
-                   "integer",      # 3
-                   "numeric",      # 4
-                   "integer")      #12
+  col.classes <- c("integer",      
+                   "integer",      
+                   "integer",      
+                   "numeric",      
+                   "integer")      
 
   dta <- utils::read.table(
     file,
@@ -1048,7 +976,7 @@ data.params <- function(dta) gd.data.parameters(dta)
   init.population(PopName,dta)
   for (ind in 1:dta.description[1,3]) {
     set.population.info(PopName,ind,dta.info[ind])
-  } #ind
+  } 
 }
 
 
@@ -1064,7 +992,7 @@ data.params <- function(dta) gd.data.parameters(dta)
       paste("# ",i," \"",population.info.get(PopName,i),"\"",sep=""),
       append = TRUE
     )
-  } #i
+  } 
   utils::write.table(
     file     = file,
     dta,
@@ -1075,11 +1003,11 @@ data.params <- function(dta) gd.data.parameters(dta)
   )
 }
 
-# Code from plabsim.R
-# End
 
-# Random numbers
-# Start
+
+
+
+
 
 "rng.choose" <-
   function(rngName="") {
@@ -1120,11 +1048,11 @@ data.params <- function(dta) gd.data.parameters(dta)
     invisible(result)
   }
 
-# Random numbers
-# End
 
-# Deprecated functions from Plabsim
-# Start
+
+
+
+
 
 "deprecated" <-  function(NameOld,NameNew) {}
 
@@ -1249,13 +1177,13 @@ data.params <- function(dta) gd.data.parameters(dta)
     population.info.set(PopName,ind,info)
   }
 
-# MF 2026-07-29 Old-style function name commented out for CRAN
-# "sort.population" <-
-#  function( PopNames,
-#            decreasing = TRUE ) {
-#    deprecated("sort.population()","population.sort()")
-#    population.sort(PopNames,decreasing)
-#  }
+
+
+
+
+
+
+
 
 "swap.population.name" <-
   function(NameP1,NameP2) {
@@ -1263,10 +1191,10 @@ data.params <- function(dta) gd.data.parameters(dta)
     population.swap.name(NameP1,NameP2)
   }
 
-# Code from plabsim.deprecated.R
-# End
 
-## Begin Code 2010
+
+
+
 
 genome.segments <- function(pops, allele, chromosome=NULL,
                             begin=NULL, end=NULL)
@@ -1289,12 +1217,12 @@ linkage.drag <- function(pops, allele, chrom, pos)
     allele = as.integer(allele), chromosome = as.integer(chrom), position = as.double(pos)), PACKAGE = "SelectionTools")
 
 
-## End Code 2010
 
 
-###############################################################################
-# Genetic Distances BEGIN
-###############################################################################
+
+
+
+
 
 "gd.allow.zero.frequencies" <-
   function(allow=0){
@@ -1416,15 +1344,15 @@ gd.mk.matr <- function(dta, distance)
     .Call("st_legacy_sim", list(action="pcoa", data=dta, k=k),
           PACKAGE="SelectionTools")
 
-###############################################################################
-# Genetic Distances End
-###############################################################################
+
+
+
 
 sdev <- function(x, na.rm=FALSE)
     .Call("st_legacy_sim", list(action="sdev", data=x, na.rm=na.rm),
           PACKAGE="SelectionTools")
 
-# Native identity, breeding-map and snapshot entry points.
+
 population.pedigree <- function(name, source=c("auto", "simulation", "marker"))
     .Call("st_population_pedigree", as.character(name), match.arg(source), PACKAGE="SelectionTools")
 
@@ -1435,6 +1363,6 @@ population.cross <- function(name, pool1, pool2, n)
 population.marker.map <- function(n.markers)
     invisible(.Call("st_population_marker_map", n.markers, PACKAGE="SelectionTools"))
 
-# Extend the active simulation map to this total marker count.
+
 extend.marker.map <- function(n.markers)
     invisible(.Call("st_extend_marker_map", n.markers, PACKAGE="SelectionTools"))

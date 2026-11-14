@@ -12,22 +12,25 @@ init.population(name, data, delete=TRUE)
 
 \arguments{
 \item{name}{Character string naming the simulation population to initialize.}
-   \item{data}{Data frame with five columns representing individual, chromosome, homologue, segment position, and allele.}
-   \item{delete}{Logical. TRUE removes an existing population with the same name before initialization.}
+   \item{data}{Data frame with five numeric columns named \code{ind}, \code{chrom},
+   \code{hom}, \code{pos}, and \code{all}, representing individual,
+   chromosome, homologue, segment position, and allele.}
+   \item{delete}{Logical. \code{TRUE} replaces an existing population with the same name
+   after the input data have passed validation.}
 }
 \value{
-The function initialises the named simulation population from the supplied data in the backend. 
-Returns list of name, total number of alleles and input data columns.
-The function is primarily called for its side effect of creating
-the simulation population.
+\code{NULL}, invisibly. The function initializes the named simulation
+population from the supplied chromosome-segment data.
 }
 
 \details{
-The input data frame must have exactly five columns named or interpretable as individual number, chromosome number, homologue number, position, and allele. Each row describes the start of a chromosome segment carrying the specified allele. The data must be ordered consistently with the simulation representation.
+The input data frame has exactly the five named numeric columns described above. Individual, chromosome and homologue numbers and allele codes are finite whole numbers; positions are finite and lie within the defined genome. Each row describes the start of a chromosome segment carrying the specified allele. The data must be ordered consistently with the simulation representation.
 
 The number of input rows must be positive. Chromosome and homologue identifiers must be compatible with the currently defined simulation genome. The routine constructs the raw chromosome representation; marker genotypes and evaluated genetic values are derived data and are not implied merely by initialization.
 
-When \code{delete=TRUE}, an existing population of the same name is removed before initialization. If creation fails while chromosome segments are being inserted, the incomplete new population is removed rather than retained.
+Malformed input is rejected before an existing population is changed. Once
+validation succeeds, \code{delete=TRUE} removes an existing population of
+the same name before initialization. If creation fails while chromosome segments are being inserted, the incomplete new population is removed rather than retained.
 
 Uses the currently defined genome and linkage map. Both must be defined before calling this function.
 }

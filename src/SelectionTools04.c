@@ -25,6 +25,10 @@
 
 #include <stddef.h>
 #include <stdio.h>
+#include <R_ext/Print.h>
+int st_text_write(char *, size_t, const char *, ...) R_PRINTF_FORMAT(3, 4);
+void st_text_message(char *, size_t, const char *);
+
 #include <errno.h>
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -236,12 +240,18 @@ static void mvm_product_scores(mvm_context *);
 static void mvm_product_whiten(mvm_context *, double *, int);
 static void mvm_product_rescale(mvm_context *, double);
 
-static void *mvm_alloc(size_t n, size_t size)
+static size_t mvm_size_product(size_t n, size_t size)
 {
     if (size && n > SIZE_MAX / size)
         error("st_mxd_mv: allocation overflow");
+    return n * size;
+}
+
+static void *mvm_alloc(size_t n, size_t size)
+{
+    size_t bytes = mvm_size_product(n ? n : 1, size);
     void *x = st_work_alloc(n ? n : 1, size);
-    memset(x, 0, (n ? n : 1) * size);
+    memset(x, 0, bytes);
     return x;
 }
 
@@ -1154,7 +1164,7 @@ static void mvm_family_start(mvm_context *c, mvm_block *b)
     memcpy(old, b->S, (size_t)d * d * sizeof(double));
     mvm_family_sigma(b, c->par + h);
     double largest = 0, error_max = 0;
-    for (int i = 0; i < d * d; i++)
+    for (size_t i = 0; i < (size_t)d * d; i++)
     {
         largest = fmax(largest, fabs(old[i]));
         error_max = fmax(error_max, fabs(old[i] - b->S[i]));
@@ -1273,7 +1283,7 @@ static int mvm_compact_qr(mvm_context *c, double *original, double tolerance)
         }
     }
     F77_CALL(dgeqp3)(&count, &p, qr, &count, pivot, tau, &query, &lwork, &info);
-    if (info || query > INT_MAX)
+    if (info || !R_FINITE(query) || query < 1 || query > INT_MAX)
     {
         st_work_reset(mark);
         return 0;
@@ -1342,7 +1352,7 @@ static void mvm_basis(mvm_context *c)
         int info, lwork = -1;
         double query;
         F77_CALL(dgeqp3)(&n, &p, qr, &n, c->pivot, tau, &query, &lwork, &info);
-        if (info || query > INT_MAX)
+        if (info || !R_FINITE(query) || query < 1 || query > INT_MAX)
             error("st_mxd_mv: fixed-effect QR failed");
         lwork = (int)query;
         double *work = mvm_alloc(lwork, sizeof(double));
@@ -1781,16 +1791,19 @@ static void mvm_read_block(mvm_context *c, mvm_block *b, SEXP s, int random,
     int product_parameters = 1;
     for (int a = 0; a < b->axis_count; a++)
         product_parameters += b->axis_parameter[a] != 0;
-    b->count = b->type == 8   ? b->trait_parameters + (b->occasion_type != 3)
-               : b->type == 7 ? product_parameters
+    uint64_t parameter_count =
+          b->type == 8   ? (uint64_t)b->trait_parameters + (b->occasion_type != 3)
+               : b->type == 7 ? (uint64_t)product_parameters
                : b->type == 6 ? 3
                : b->type == 2 ? 0
-               : b->type == 0 ? d
+               : b->type == 0 ? (uint64_t)d
                : b->type == 1
-                   ? d * (d + 1) / 2
-                   : mvm_family_scale_count(b) + (b->type != 3 && d > 1);
-    if (b->count > INT_MAX - c->np)
+                   ? (uint64_t)d * ((uint64_t)d + 1) / 2
+                   : (uint64_t)mvm_family_scale_count(b) +
+                         (b->type != 3 && d > 1);
+    if (parameter_count > (uint64_t)(INT_MAX - c->np))
         error("st_mxd_mv: too many parameters");
+    b->count = (int)parameter_count;
     c->np += b->count;
     if (b->type == 1)
     {
@@ -1875,7 +1888,7 @@ static const char *mvm_constraint_name(const char *prefix, const mvm_block *b,
 {
     size_t size = strlen(prefix) + strlen(b->name) + strlen(suffix) + 16;
     char *name = mvm_alloc(size, sizeof(char));
-    snprintf(name, size, "%s:%s:%s:%s", prefix,
+    st_text_write(name, size, "%s:%s:%s:%s", prefix,
              b->random ? "random" : "residual", b->name, suffix);
     return name;
 }
@@ -2051,7 +2064,7 @@ static void mvm_constraints_prepare(mvm_context *c)
         for (int j = 0; j < ns; j++)
         {
             char fallback[40];
-            snprintf(fallback, sizeof(fallback), "coefficient%d", j + 1);
+            st_text_write(fallback, sizeof(fallback), "coefficient%d", j + 1);
             int common = b->type >= 3 && b->homogeneous;
             const char *suffix = common ? "common"
                 : TYPEOF(b->basis_names) == STRSXP && j < LENGTH(b->basis_names)
@@ -2079,7 +2092,7 @@ static void mvm_constraints_prepare(mvm_context *c)
                             break;
                         }
                 }
-                snprintf(suffix, sizeof(suffix), "rho.%d", axis);
+                st_text_write(suffix, sizeof(suffix), "rho.%d", axis);
             }
             else
                 strcpy(suffix, "rho");
@@ -2309,8 +2322,11 @@ static SEXP mvm_constraint_export(mvm_context *c)
     SEXP free_parameters = PROTECT(allocVector(REALSXP, a->q)),
          free_gradient = PROTECT(allocVector(REALSXP, a->q)),
          free_coordinate = PROTECT(allocVector(STRSXP, a->q));
-    memcpy(REAL(free_parameters), a->x, (size_t)a->q * sizeof(double));
-    memcpy(REAL(free_gradient), a->gradient, (size_t)a->q * sizeof(double));
+    if (a->q > 0)
+    {
+        memcpy(REAL(free_parameters), a->x, (size_t)a->q * sizeof(double));
+        memcpy(REAL(free_gradient), a->gradient, (size_t)a->q * sizeof(double));
+    }
     for (int j = 0; j < a->q; j++)
         SET_STRING_ELT(free_coordinate, j,
                        mkChar(a->transform[j] == 1 ? "variance"
@@ -2464,8 +2480,11 @@ static void mvm_parse(mvm_context *c)
                                              : LENGTH(rr);
     if (c->kr < 0 || (!scalar && !block_source && c->kr > LENGTH(rr)))
         error("st_mxd_mv: invalid native random block selection");
-    c->k = c->kr + (block_source ? block_source[1].count
-                        : scalar || default_residual ? 1 : LENGTH(ee));
+    int residual_count = block_source ? block_source[1].count
+                         : scalar || default_residual ? 1 : LENGTH(ee);
+    if (residual_count < 0 || c->kr > INT_MAX - residual_count)
+        error("st_mxd_mv: too many covariance blocks");
+    c->k = c->kr + residual_count;
     if (c->k < 1)
         error("st_mxd_mv: no covariance blocks");
     c->block = mvm_alloc(c->k, sizeof(mvm_block));
@@ -2475,7 +2494,7 @@ static void mvm_parse(mvm_context *c)
         {
             char *name = mvm_alloc(40, sizeof(char));
             if (k < c->kr)
-                snprintf(name, 40, "random%d", k + 1);
+                st_text_write(name, 40, "random%d", k + 1);
             else
                 strcpy(name, "residual");
             mvm_read_block(c, c->block + k, R_NilValue, k < c->kr, name);
@@ -2509,7 +2528,7 @@ static void mvm_parse(mvm_context *c)
         else
         {
             char *buf = mvm_alloc(40, sizeof(char));
-            snprintf(buf, 40, "%s%d", k < c->kr ? "random" : "residual", j + 1);
+            st_text_write(buf, 40, "%s%d", k < c->kr ? "random" : "residual", j + 1);
             name = buf;
         }
         mvm_read_block(c, c->block + k, VECTOR_ELT(src, j), k < c->kr, name);
@@ -5225,8 +5244,9 @@ static int mvm_product_eigen(mvm_context *c, double *a, double *e, int n)
 
 static int mvm_product_eigen_cached(mvm_context *c, double *a, double *e, int n)
 {
-    size_t cells = (size_t)n * n, matrix_bytes = cells * sizeof(double),
-           value_bytes = (size_t)n * sizeof(double);
+    size_t cells = mvm_size_product((size_t)n, (size_t)n),
+           matrix_bytes = mvm_size_product(cells, sizeof(double)),
+           value_bytes = mvm_size_product((size_t)n, sizeof(double));
     if (!c->cache_eigen || matrix_bytes > (SIZE_MAX - value_bytes) / 2 ||
         2 * matrix_bytes + value_bytes > c->eigen_cache_limit)
     {
@@ -5809,7 +5829,8 @@ static void mvm_product_scores(mvm_context *c)
     mvm_product *s = c->product;
     int n = c->n, q = s->q, r = c->reml ? c->r : 0;
     void *mark = st_work_mark();
-    double *rot = mvm_alloc((size_t)n * (1 + 2 * r), sizeof(double));
+    double *rot = mvm_alloc(mvm_size_product((size_t)n, 1 + 2 * (size_t)r),
+                            sizeof(double));
     if (s->basis_valid)
     {
         memcpy(rot, s->basis_alpha, (size_t)n * sizeof(double));
@@ -7502,7 +7523,7 @@ static void mvm_dense_scalar_columns(mvm_context *c, mvm_block *b,
 static void mvm_dense_scalar_scores(mvm_context *c, mvm_block *b,
                                     double *half_quad)
 {
-    int n = c->n, tiles = (n + 31) / 32;
+    int n = c->n, tiles = n / 32 + (n % 32 != 0);
     b->G[0] = 0;
     if (half_quad)
         *half_quad = 0;
@@ -7521,9 +7542,7 @@ static void mvm_dense_scalar_scores(mvm_context *c, mvm_block *b,
 #endif
     for (int tile = 0; tile < tiles; tile++)
     {
-        int first = 32 * tile, last = first + 32;
-        if (last > n)
-            last = n;
+        int first = 32 * tile, last = n - first < 32 ? n : first + 32;
         mvm_dense_scalar_columns(
             c, b, partial + (size_t)tile * 8,
             half_quad ? partial + (size_t)tile * 8 + 1 : NULL, first, last);
@@ -7586,7 +7605,7 @@ static void mvm_dense_scores(mvm_context *c, mvm_block *b, double *half_quad)
         mvm_dense_scalar_scores(c, b, half_quad);
         return;
     }
-    int n = c->n, d = b->d, tiles = (n + 31) / 32;
+    int n = c->n, d = b->d, tiles = n / 32 + (n % 32 != 0);
     size_t width = (size_t)d * d;
     memset(b->G, 0, width * sizeof(double));
     if (half_quad)
@@ -7607,9 +7626,7 @@ static void mvm_dense_scores(mvm_context *c, mvm_block *b, double *half_quad)
 #endif
     for (int tile = 0; tile < tiles; tile++)
     {
-        int first = 32 * tile, last = first + 32;
-        if (last > n)
-            last = n;
+        int first = 32 * tile, last = n - first < 32 ? n : first + 32;
         mvm_dense_score_columns(c, b, partial + (size_t)tile * width,
                                 quadratic ? quadratic + tile : NULL, first,
                                 last);
@@ -7639,7 +7656,7 @@ static void mvm_score_gradient(mvm_context *c, const double *par)
             {
                 mvm_family_derivative(b, par + t, h, b->D);
                 double value = 0;
-                for (int a = 0; a < d * d; a++)
+                for (size_t a = 0; a < (size_t)d * d; a++)
                     value += b->G[a] * b->D[a];
                 c->grad[t + h] = value;
             }
@@ -8071,7 +8088,7 @@ static int mvm_scale_anchor(mvm_context *c)
         mvm_block *b = c->block + k;
         if (b->type == 2)
         {
-            for (int j = 0; j < b->d * b->d; j++)
+            for (size_t j = 0; j < (size_t)b->d * b->d; j++)
                 if (b->S[j] != 0)
                     return -1;
         }
@@ -8154,7 +8171,7 @@ static void mvm_residual_initial_scale(mvm_context *c)
         if (b->start_supplied)
             return;
         if (b->type == 2)
-            for (int j = 0; j < b->d * b->d; j++)
+            for (size_t j = 0; j < (size_t)b->d * b->d; j++)
                 if (b->S[j] != 0)
                     return;
     }
@@ -8793,7 +8810,7 @@ static double mvm_family_ray(mvm_block *b, double rho, int hetero, double *u,
     if (hetero)
         return mvm_positive_quadratic(M, d, u, certified);
     double value = 0;
-    for (int i = 0; i < d * d; i++)
+    for (size_t i = 0; i < (size_t)d * d; i++)
         value += M[i];
     *certified = 1;
     return value;
@@ -10175,14 +10192,16 @@ static void mvm_parameter_uncertainty_compute(mvm_context *c,
                                               mvm_parameter_uncertainty *out)
 {
     int np = c->np, r = c->r;
+    size_t jacobian_cells = mvm_size_product(
+        mvm_size_product((size_t)c->p, (size_t)c->p), (size_t)np);
     if (!out->information)
         out->information = mvm_alloc((size_t)np * np, sizeof(double));
     if (!out->covariance)
         out->covariance = mvm_alloc((size_t)np * np, sizeof(double));
     if (!out->jacobian)
-        out->jacobian = mvm_alloc((size_t)c->p * c->p * np, sizeof(double));
+        out->jacobian = mvm_alloc(jacobian_cells, sizeof(double));
     double *H = out->information, *Cp = out->covariance, *jac = out->jacobian;
-    for (R_xlen_t a = 0; a < (R_xlen_t)c->p * c->p * np; a++)
+    for (size_t a = 0; a < jacobian_cells; a++)
         jac[a] = NA_REAL;
     if (mvm_traitprod_boundary(c))
     {
@@ -10340,6 +10359,8 @@ static void mvm_joint_layout(mvm_context *c, mvm_joint_values *out)
 static void mvm_joint_compute(mvm_context *c, mvm_joint_values *out)
 {
     int n = c->n, r = c->r, q = out->q, dim = out->dim;
+    if (dim == 0)
+        return;
     int *offset = out->offset, *width = out->width;
     memset(out->values, 0, (size_t)dim * dim * sizeof(double));
     double *T = mvm_alloc((size_t)n * q, sizeof(double)),
@@ -10460,7 +10481,7 @@ static SEXP mvm_uncertainty_native(mvm_context *c, int joint_only, int joint)
              cols = PROTECT(allocVector(INTSXP, r)),
              offsets = PROTECT(allocVector(INTSXP, c->kr)),
              pev = PROTECT(allocVector(VECSXP, c->kr));
-        values.values = REAL(joint);
+        values.values = dim > 0 ? REAL(joint) : NULL;
         mvm_joint_compute(c, &values);
         for (int k = 0; k < c->kr; k++)
             INTEGER(offsets)[k] = r + offset[k] + 1;
@@ -10493,26 +10514,35 @@ static SEXP mvm_uncertainty_native(mvm_context *c, int joint_only, int joint)
         UNPROTECT(1);
         return ans;
     }
+    size_t jacobian_cells = mvm_size_product(
+        mvm_size_product((size_t)c->p, (size_t)c->p), (size_t)np);
+    if ((uintmax_t)jacobian_cells > (uintmax_t)R_XLEN_T_MAX)
+        error("st_mxd_mv: covariance derivative dimensions exceed R limits");
     SEXP H = PROTECT(allocMatrix(REALSXP, np, np)),
          Cp = PROTECT(allocMatrix(REALSXP, np, np)),
-         jac = PROTECT(allocVector(REALSXP, (R_xlen_t)c->p * c->p * np)),
+         jac = PROTECT(allocVector(REALSXP, (R_xlen_t)jacobian_cells)),
          pn = PROTECT(allocVector(STRSXP, np));
     SEXP jd = PROTECT(allocVector(INTSXP, 3));
     INTEGER(jd)[0] = INTEGER(jd)[1] = c->p;
     INTEGER(jd)[2] = np;
     setAttrib(jac, R_DimSymbol, jd);
     UNPROTECT(1);
-    mvm_parameter_uncertainty values = {REAL(H), REAL(Cp), REAL(jac), 0, NULL};
+    mvm_parameter_uncertainty values = {
+        np > 0 ? REAL(H) : NULL, np > 0 ? REAL(Cp) : NULL,
+        jacobian_cells > 0 ? REAL(jac) : NULL, 0, NULL};
     mvm_parameter_uncertainty_compute(c, &values);
     if (constrained)
     {
         int q = c->constraints->q;
         SEXP free_information = PROTECT(allocMatrix(REALSXP, q, q)),
              free_covariance = PROTECT(allocMatrix(REALSXP, q, q));
-        memcpy(REAL(free_information), c->constraints->information,
-               (size_t)q * q * sizeof(double));
-        memcpy(REAL(free_covariance), c->constraints->covariance,
-               (size_t)q * q * sizeof(double));
+        if (q > 0)
+        {
+            memcpy(REAL(free_information), c->constraints->information,
+                   (size_t)q * q * sizeof(double));
+            memcpy(REAL(free_covariance), c->constraints->covariance,
+                   (size_t)q * q * sizeof(double));
+        }
         SET_VECTOR_ELT(ans, 10, free_information);
         SET_VECTOR_ELT(ans, 11, free_covariance);
         UNPROTECT(2);
@@ -10525,7 +10555,7 @@ static SEXP mvm_uncertainty_native(mvm_context *c, int joint_only, int joint)
         if (b->type == 0)
             for (int a = 0; a < b->d; a++)
             {
-                snprintf(text, sizeof(text), "%s:%s[%d]", b->name,
+                st_text_write(text, sizeof(text), "%s:%s[%d]", b->name,
                          b->random ? "variance" : "log.variance", a + 1);
                 SET_STRING_ELT(pn, t++, mkChar(text));
             }
@@ -10534,14 +10564,14 @@ static SEXP mvm_uncertainty_native(mvm_context *c, int joint_only, int joint)
             for (int j = 0; j < b->trait_count; j++)
                 for (int i = j; i < b->trait_count; i++)
                 {
-                    snprintf(text, sizeof(text), "%s:trait.%s[%d,%d]", b->name,
+                    st_text_write(text, sizeof(text), "%s:trait.%s[%d,%d]", b->name,
                              i == j ? "log.sd" : "partial.correlation.z",
                              i + 1, j + 1);
                     SET_STRING_ELT(pn, t++, mkChar(text));
                 }
             if (b->count > b->trait_parameters)
             {
-                snprintf(text, sizeof(text), "%s:rho.occasion", b->name);
+                st_text_write(text, sizeof(text), "%s:rho.occasion", b->name);
                 SET_STRING_ELT(pn, t++, mkChar(text));
             }
         }
@@ -10550,7 +10580,7 @@ static SEXP mvm_uncertainty_native(mvm_context *c, int joint_only, int joint)
             int ns = mvm_family_scale_count(b);
             for (int j = 0; j < ns; j++)
             {
-                snprintf(text, sizeof(text), "%s:%s[%d]", b->name,
+                st_text_write(text, sizeof(text), "%s:%s[%d]", b->name,
                          b->type == 3 || b->homogeneous ? "common.variance"
                                                         : "sd",
                          j + 1);
@@ -10561,19 +10591,19 @@ static SEXP mvm_uncertainty_native(mvm_context *c, int joint_only, int joint)
                 for (int a = 0; a < b->axis_count; a++)
                     if (b->axis_parameter[a])
                     {
-                        snprintf(text, sizeof(text), "%s:rho.%d", b->name,
+                        st_text_write(text, sizeof(text), "%s:rho.%d", b->name,
                                  a + 1);
                         SET_STRING_ELT(pn, t++, mkChar(text));
                     }
             }
             else if (b->count > ns)
             {
-                snprintf(text, sizeof(text),
+                st_text_write(text, sizeof(text),
                          b->type == 6 ? "%s:rho.1" : "%s:rho", b->name);
                 SET_STRING_ELT(pn, t++, mkChar(text));
                 if (b->type == 6)
                 {
-                    snprintf(text, sizeof(text), "%s:rho.2", b->name);
+                    st_text_write(text, sizeof(text), "%s:rho.2", b->name);
                     SET_STRING_ELT(pn, t++, mkChar(text));
                 }
             }
@@ -10582,7 +10612,7 @@ static SEXP mvm_uncertainty_native(mvm_context *c, int joint_only, int joint)
             for (int j = 0; j < b->d; j++)
                 for (int i = j; i < b->d; i++)
                 {
-                    snprintf(text, sizeof(text), "%s:%s[%d,%d]", b->name,
+                    st_text_write(text, sizeof(text), "%s:%s[%d,%d]", b->name,
                              b->random ? "L"
                              : i == j  ? "log.sd"
                                        : "partial.correlation.z",
@@ -10624,14 +10654,69 @@ static SEXP mvm_uncertainty(mvm_context *c)
 
 static SEXP mvm_response(mvm_context *c)
 {
-    SEXP x = PROTECT(c->ymatrix ? allocMatrix(REALSXP, c->nr, c->nt)
-                                : allocVector(REALSXP, c->total));
+    SEXP x = PROTECT(allocMatrix(REALSXP, c->nr, c->nt));
     if (c->ymatrix && !isNull(c->y_dimnames))
         setAttrib(x, R_DimNamesSymbol, c->y_dimnames);
     else if (!c->ymatrix && !isNull(c->y_names))
-        setAttrib(x, R_NamesSymbol, c->y_names);
+    {
+        SEXP names = PROTECT(allocVector(VECSXP, 2));
+        SET_VECTOR_ELT(names, 0, c->y_names);
+        setAttrib(x, R_DimNamesSymbol, names);
+        UNPROTECT(1);
+    }
     UNPROTECT(1);
     return x;
+}
+
+static void mvm_kernel_effect_names(const mvm_context *c, SEXP value)
+{
+    SEXP rows = PROTECT(allocVector(STRSXP, c->total)),
+         names = PROTECT(allocVector(VECSXP, 2)),
+         coefficient = PROTECT(mkString("response")),
+         response_rows = isNull(c->y_dimnames) ? R_NilValue
+                             : VECTOR_ELT(c->y_dimnames, 0),
+         traits = isNull(c->y_dimnames) ? R_NilValue
+                             : VECTOR_ELT(c->y_dimnames, 1);
+    for (int i = 0; i < c->total; i++)
+    {
+        if (TYPEOF(c->y_names) == STRSXP && LENGTH(c->y_names) == c->total)
+        {
+            SET_STRING_ELT(rows, i, STRING_ELT(c->y_names, i));
+            continue;
+        }
+        int row = i % c->nr, trait = i / c->nr;
+        char number[32], fallback[32];
+        st_text_write(number, sizeof(number), "%d", row + 1);
+        SEXP label = TYPEOF(response_rows) == STRSXP
+                         ? STRING_ELT(response_rows, row) : R_NilValue;
+        if (label == NA_STRING)
+        {
+            SET_STRING_ELT(rows, i, NA_STRING);
+            continue;
+        }
+        const char *text = isNull(label) ? number : translateCharUTF8(label);
+        if (c->nt == 1)
+        {
+            SET_STRING_ELT(rows, i, mkCharCE(text, CE_UTF8));
+            continue;
+        }
+        st_text_write(fallback, sizeof(fallback), "trait%d", trait + 1);
+        const char *name = TYPEOF(traits) == STRSXP &&
+                                   STRING_ELT(traits, trait) != NA_STRING
+                               ? translateCharUTF8(STRING_ELT(traits, trait))
+                               : fallback;
+        size_t size = strlen(text), extra = strlen(name);
+        if (size > SIZE_MAX - 2 || extra > SIZE_MAX - size - 2)
+            error("st_mxd_mv: response-cell label size overflow");
+        size += extra + 2;
+        char *combined = mvm_alloc(size, sizeof(char));
+        st_text_write(combined, size, "%s:%s", text, name);
+        SET_STRING_ELT(rows, i, mkCharCE(combined, CE_UTF8));
+    }
+    SET_VECTOR_ELT(names, 0, rows);
+    SET_VECTOR_ELT(names, 1, coefficient);
+    setAttrib(value, R_DimNamesSymbol, names);
+    UNPROTECT(3);
 }
 
 static SEXP mvm_diagnostics(mvm_context *c, int status, const char *message,
@@ -10938,7 +11023,7 @@ static SEXP mvm_result_extended(mvm_context *c, int status, const char *message,
             SET_STRING_ELT(un, k, mkChar(z->name));
             if (z->kernel)
             {
-                SEXP uk = PROTECT(allocVector(REALSXP, c->total));
+                SEXP uk = PROTECT(allocMatrix(REALSXP, c->total, 1));
                 for (int i = 0; i < c->total; i++)
                 {
                     double v = 0;
@@ -10948,8 +11033,7 @@ static SEXP mvm_result_extended(mvm_context *c, int status, const char *message,
                              c->alpha[j];
                     REAL(uk)[i] = v * c->row_scale[i];
                 }
-                if (!isNull(c->y_names))
-                    setAttrib(uk, R_NamesSymbol, c->y_names);
+                mvm_kernel_effect_names(c, uk);
                 SET_VECTOR_ELT(u, k, uk);
                 UNPROTECT(1);
                 continue;
@@ -11035,8 +11119,11 @@ static SEXP mvm_result_extended(mvm_context *c, int status, const char *message,
          gr = PROTECT(allocVector(REALSXP, c->np));
     for (int i = 0; i < c->n; i++)
         INTEGER(obs)[i] = c->obs[i] + 1;
-    memcpy(REAL(pa), c->par, c->np * sizeof(double));
-    memcpy(REAL(gr), c->grad, c->np * sizeof(double));
+    if (c->np > 0)
+    {
+        memcpy(REAL(pa), c->par, c->np * sizeof(double));
+        memcpy(REAL(gr), c->grad, c->np * sizeof(double));
+    }
     SET_VECTOR_ELT(ans, 12, obs);
     SET_VECTOR_ELT(ans, 13, pa);
     SET_VECTOR_ELT(ans, 14, gr);
@@ -11144,7 +11231,7 @@ static void mvm_lbfgsb(int n, int history, double *x, double *lower,
     *status = result.status;
     *function_calls = result.function_calls;
     *gradient_calls = result.gradient_calls;
-    snprintf(message, 100, "%s", result.message);
+    st_text_write(message, 100, "%s", result.message);
     if (trace)
         Rprintf("L-BFGS-B final value %.12g after %d iterations: %s\n",
                 result.value, result.iterations, result.message);
@@ -11964,7 +12051,7 @@ static SEXP mvm_scalar_body(void *payload)
     memcpy(call->variance, variance, (size_t)c.k * sizeof(double));
     call->status = fit.status ? 1 : 0;
     if (call->message && call->message_size)
-        snprintf(call->message, call->message_size, "%s", fit.message);
+        st_text_message(call->message, call->message_size, fit.message);
     return R_NilValue;
 }
 
@@ -11983,7 +12070,7 @@ static SEXP mvm_scalar_error(SEXP condition, void *payload)
                               : "Scalar mixed-model fitting failed";
     call->status = -2;
     if (call->message && call->message_size)
-        snprintf(call->message, call->message_size, "%s", message);
+        st_text_message(call->message, call->message_size, message);
     return R_NilValue;
 }
 
@@ -11998,8 +12085,8 @@ int st_mxd_mv_scalar(int n, const double *y, int p, const double *X, int k,
         !R_FINITE(tolerance) || tolerance <= 0)
     {
         if (message && message_size)
-            snprintf(message, message_size, "%s",
-                     "Invalid scalar mixed-model arguments");
+            st_text_message(message, message_size,
+                            "Invalid scalar mixed-model arguments");
         return -2;
     }
     mvm_scalar_call call = {0};
@@ -12218,6 +12305,12 @@ static void *lmm_arg_alloc(lmm_arg_owner *owner, size_t size)
     block->next = owner->blocks; owner->blocks = block;
     return block->value;
 }
+static void *lmm_arg_array(lmm_arg_owner *owner, size_t count, size_t size)
+{
+    if (size && count > SIZE_MAX / size)
+        error("Argument storage size overflow");
+    return lmm_arg_alloc(owner, count * size);
+}
 static lmm_arg_view *lmm_arg_from(SEXP input)
 {
     lmm_arg_owner *owner = calloc(1,sizeof(*owner));
@@ -12290,9 +12383,12 @@ static SEXP lmm_arg_record_field(lmm_arg_view *view, const char *key,
 static lmm_arg_view *lmm_arg_put_indices(lmm_arg_view *view, const char *key,
                                          const int *values, int n)
 {
+    if (n < 0 || (n > 0 && !values))
+        error("Invalid argument index storage");
     lmm_arg_view *out = lmm_arg_storage(view, key, 4);
-    int *copy = lmm_arg_alloc(view->owner, (size_t)n * sizeof(int));
-    if (n) memcpy(copy, values, (size_t)n * sizeof(int));
+    int *copy = lmm_arg_array(view->owner, (size_t)n, sizeof(int));
+    if (n > 0)
+        memcpy(copy, values, (size_t)n * sizeof(int));
     out->fields->scalar.indices.values = copy;
     out->fields->scalar.indices.n = n;
     return out;
@@ -12361,33 +12457,56 @@ static SEXP lmm_arg_export(lmm_arg_view *view, int *np)
 {
     int source = TYPEOF(view->source) == VECSXP ? LENGTH(view->source) : 0;
     int extra = 0;
-    for (lmm_arg_field *f = view->fields; f; f = f->previous) extra++;
-    const char **keys = lmm_arg_alloc(view->owner,(source+extra+1)*sizeof(*keys));
-    SEXP original_names = getAttrib(view->source,R_NamesSymbol);
+    for (lmm_arg_field *f = view->fields; f; f = f->previous)
+    {
+        if (extra == INT_MAX - source)
+            error("Too many argument fields");
+        extra++;
+    }
+    const char **keys = lmm_arg_array(view->owner,
+                                     (size_t)source + (size_t)extra,
+                                     sizeof(*keys));
+    SEXP original_names = getAttrib(view->source, R_NamesSymbol);
+    if (source > 0 &&
+        (TYPEOF(original_names) != STRSXP || LENGTH(original_names) != source))
+        error("Argument records must have one name per field");
     int n = 0;
     for (int i = 0; i < source; i++)
-        keys[n++] = CHAR(STRING_ELT(original_names,i));
-    lmm_arg_field **fields = lmm_arg_alloc(view->owner,(extra+1)*sizeof(*fields));
+    {
+        if (STRING_ELT(original_names, i) == NA_STRING)
+            error("Argument field names must not be missing");
+        keys[n++] = CHAR(STRING_ELT(original_names, i));
+    }
+    lmm_arg_field **fields = lmm_arg_array(view->owner, (size_t)extra,
+                                          sizeof(*fields));
     int at = 0;
-    for (lmm_arg_field *f = view->fields; f; f = f->previous) fields[at++] = f;
+    for (lmm_arg_field *f = view->fields; f; f = f->previous)
+        fields[at++] = f;
     for (int i = extra - 1; i >= 0; i--)
     {
         int found = 0;
-        for (int j = 0; j < n; j++) if (!strcmp(keys[j],fields[i]->key)) { found=1;break; }
-        if (!found) keys[n++] = fields[i]->key;
+        for (int j = 0; j < n; j++)
+            if (!strcmp(keys[j], fields[i]->key))
+            {
+                found = 1;
+                break;
+            }
+        if (!found)
+            keys[n++] = fields[i]->key;
     }
-    SEXP out = lmm_keep(allocVector(VECSXP,n),np), names = lmm_keep(allocVector(STRSXP,n),np);
-    setAttrib(out,R_NamesSymbol,names);
+    SEXP out = lmm_keep(allocVector(VECSXP, n), np),
+         names = lmm_keep(allocVector(STRSXP, n), np);
+    setAttrib(out, R_NamesSymbol, names);
     for (int i = 0; i < n; i++)
     {
-        SET_STRING_ELT(names,i,mkChar(keys[i]));
-        lmm_arg_field *field = lmm_arg_find(view,keys[i]);
+        SET_STRING_ELT(names, i, mkChar(keys[i]));
+        lmm_arg_field *field = lmm_arg_find(view, keys[i]);
         SEXP value = field && field->kind == 1 ? ScalarLogical(field->scalar.logical)
                      : field && field->kind == 2 ? mkString(field->scalar.text)
                      : field && field->kind == 3 ? lmm_arg_export(field->scalar.record, np)
                      : field && field->kind == 4 ? lmm_arg_indices_export(field, np)
-                                                : lmm_arg_get(view,keys[i]);
-        SET_VECTOR_ELT(out,i,value);
+                                                : lmm_arg_get(view, keys[i]);
+        SET_VECTOR_ELT(out, i, value);
     }
     return out;
 }
@@ -13170,9 +13289,9 @@ static void lmm_text_expression(lmm_text_buffer *out, SEXP x, int depth)
                 else if (!R_FINITE(value))
                     strcpy(part, value < 0 ? "-Inf" : "Inf");
                 else if (TYPEOF(x) == INTSXP)
-                    snprintf(part, sizeof(part), "%dL", INTEGER(x)[j]);
+                    st_text_write(part, sizeof(part), "%dL", INTEGER(x)[j]);
                 else
-                    snprintf(part, sizeof(part), "%.15g", value);
+                    st_text_write(part, sizeof(part), "%.15g", value);
                 lmm_text_append(out, part);
             }
         }
@@ -13387,7 +13506,7 @@ static const char *lmm_value_string(SEXP x, int i, char *buf)
                    : mvm_num(x, i);
     if (!R_FINITE(v))
         return NULL;
-    snprintf(buf, 64, "%.17g", v);
+    st_text_write(buf, 64, "%.17g", v);
     return buf;
 }
 
@@ -13557,7 +13676,7 @@ static const char *lmm_real_character(double value)
     if (value == 0)
         value = 0;
     char scientific[80], output[768];
-    snprintf(scientific, sizeof(scientific), "%.*e", DBL_DIG - 1, value);
+    st_text_write(scientific, sizeof(scientific), "%.*e", DBL_DIG - 1, value);
     char *exponent = strchr(scientific, 'e'), *point = strchr(scientific, '.');
     int power = (int)strtol(exponent + 1, NULL, 10);
     char *last = exponent - 1;
@@ -13581,7 +13700,7 @@ static const char *lmm_real_character(double value)
         penalty = 0;
     if (fixed_width <= (int)strlen(scientific) + penalty)
     {
-        snprintf(output, sizeof(output), "%*.*f", fixed_width, decimals, value);
+        st_text_write(output, sizeof(output), "%*.*f", fixed_width, decimals, value);
         char *dot = strchr(output, '.');
         if (dot)
         {
@@ -13626,7 +13745,7 @@ static const char *lmm_character_value(SEXP value, int i, char *buffer)
     {
         if (INTEGER(value)[i] == NA_INTEGER)
             return NULL;
-        snprintf(buffer, 64, "%d", INTEGER(value)[i]);
+        st_text_write(buffer, 64, "%d", INTEGER(value)[i]);
         return buffer;
     }
     if (TYPEOF(value) == REALSXP)
@@ -13640,12 +13759,12 @@ static const char *lmm_character_value(SEXP value, int i, char *buffer)
                    *imaginary = z.i == 0 ? "0" : lmm_real_character(fabs(z.i));
         size_t n = strlen(real) + strlen(imaginary) + 3;
         char *out = mvm_alloc(n, sizeof(char));
-        snprintf(out, n, "%s%c%si", real, z.i < 0 ? '-' : '+', imaginary);
+        st_text_write(out, n, "%s%c%si", real, z.i < 0 ? '-' : '+', imaginary);
         return out;
     }
     if (TYPEOF(value) == RAWSXP)
     {
-        snprintf(buffer, 64, "%02x", RAW(value)[i]);
+        st_text_write(buffer, 64, "%02x", RAW(value)[i]);
         return buffer;
     }
     if (TYPEOF(value) == VECSXP || TYPEOF(value) == EXPRSXP)
@@ -13712,7 +13831,7 @@ static const char *lmm_data_label(const st_data_value *value, int i,
         return lmm_real_character(number);
     if (!R_FINITE(number))
         return NULL;
-    snprintf(buffer, 64,
+    st_text_write(buffer, 64,
              character && value->kind == ST_DATA_INTEGER ? "%.0f" : "%.17g",
              number);
     return buffer;
@@ -14091,12 +14210,12 @@ static int lmm_standard_contrast_values(lmm_variable *v, const char *kind)
         {
             char label[32];
             if (poly && j < 3)
-                snprintf(label, sizeof(label), "%s",
+                st_text_write(label, sizeof(label), "%s",
                          j == 0   ? ".L"
                          : j == 1 ? ".Q"
                                   : ".C");
             else
-                snprintf(label, sizeof(label), poly ? "^%d" : "%d", j + 1);
+                st_text_write(label, sizeof(label), poly ? "^%d" : "%d", j + 1);
             v->native_contrast_names[j] = lmm_design_string(label);
         }
         if (!poly)
@@ -14162,7 +14281,7 @@ static void lmm_native_contrast_input(lmm_variable *v,
     for (int j = 0; j < q; j++)
     {
         char buffer[32];
-        snprintf(buffer, sizeof(buffer), "%d", j + 1);
+        st_text_write(buffer, sizeof(buffer), "%d", j + 1);
         const char *label = columns && columns->kind != ST_DATA_NULL
                                 ? st_data_string(columns, j)
                                 : buffer;
@@ -14331,7 +14450,7 @@ static void lmm_factor_contrast_values(lmm_design *d, lmm_variable *v,
     for (int j = 0; j < q; j++)
     {
         char buffer[32];
-        snprintf(buffer, sizeof(buffer), "%d", j + 1);
+        st_text_write(buffer, sizeof(buffer), "%d", j + 1);
         if (!isNull(columns) && STRING_ELT(columns, j) == NA_STRING)
             error("st.lmm: contrast column names must be nonempty for %s",
                   v->name);
@@ -14568,7 +14687,7 @@ static int lmm_variable_id(lmm_design *d, SEXP expr)
                             label = NULL;
                         else
                         {
-                            snprintf(buffer, sizeof(buffer), "%d",
+                            st_text_write(buffer, sizeof(buffer), "%d",
                                      factor_map[code - 1]);
                             label = buffer;
                         }
@@ -15056,7 +15175,7 @@ static lmm_native_matrix *lmm_matrix_term_values(lmm_design *d, lmm_terms *t)
                                        contrast_columns != x->nlevels - 1;
                         int named = !indicator && (!d->sumcoding || centered) &&
                                     contrast_columns;
-                        snprintf(part, sizeof(part), "%s%s", x->name,
+                        st_text_write(part, sizeof(part), "%s%s", x->name,
                                  named ? lmm_variable_contrast_name(x, a)
                                        : lmm_variable_level(x, level));
                         double mean = 0;
@@ -15082,10 +15201,10 @@ static lmm_native_matrix *lmm_matrix_term_values(lmm_design *d, lmm_terms *t)
                     else
                     {
                         if (x->columns > 1)
-                            snprintf(part, sizeof(part), "%s%d", x->name,
+                            st_text_write(part, sizeof(part), "%s%d", x->name,
                                      a + 1);
                         else
-                            snprintf(part, sizeof(part), "%s", x->name);
+                            st_text_write(part, sizeof(part), "%s", x->name);
                         for (int i = 0; i < d->n; i++)
                             out->values[i + (size_t)d->n * col] *=
                                 x->values[i + (size_t)d->n * a];
@@ -15135,8 +15254,12 @@ static SEXP lmm_matrix_design(lmm_design *d, SEXP rhs, SEXP *metadata)
          cn = lmm_keep(allocVector(STRSXP, p), &d->np),
          assign = lmm_keep(allocVector(INTSXP, p), &d->np),
          dn = lmm_keep(allocVector(VECSXP, 2), &d->np);
-    memcpy(REAL(X), values->values, (size_t)d->n * p * sizeof(double));
-    memcpy(INTEGER(assign), values->assign, (size_t)p * sizeof(int));
+    if (p > 0)
+    {
+        if (d->n > 0)
+            memcpy(REAL(X), values->values, (size_t)d->n * p * sizeof(double));
+        memcpy(INTEGER(assign), values->assign, (size_t)p * sizeof(int));
+    }
     for (int j = 0; j < p; j++)
         SET_STRING_ELT(cn, j, mkChar(values->column_names[j]));
     SET_VECTOR_ELT(dn, 1, cn);
@@ -15710,7 +15833,7 @@ static SEXP kp_factor_export(const kp_factor *values, int *np)
         for (int i = 0; i < n; i++)
         {
             char buffer[40];
-            snprintf(buffer, sizeof(buffer), "%d", i + 1);
+            st_text_write(buffer, sizeof(buffer), "%d", i + 1);
             SET_STRING_ELT(rows, i, mkChar(buffer));
         }
     }
@@ -15762,7 +15885,7 @@ SEXP st_kernel_structure(SEXP args)
                             const char *label;
                             if (values[j].numeric_names)
                             {
-                                snprintf(buffer, sizeof(buffer), "%d", h + 1);
+                                st_text_write(buffer, sizeof(buffer), "%d", h + 1);
                                 label = buffer;
                             }
                             else
@@ -16049,7 +16172,7 @@ static lmm_overlay_layout lmm_overlay_composition(lmm_design *g,
             const char *value = code < 0 ? "<missing>"
                 : lmm_variable_level(g->var + group[j], code);
             size_t used = strlen(label);
-            snprintf(label + used, size - used, "%s%zu:%s",
+            st_text_write(label + used, size - used, "%s%zu:%s",
                      j ? ":" : "", strlen(value), value);
         }
         out.levels[h] = label;
@@ -16093,7 +16216,7 @@ static lmm_overlay_layout lmm_overlay_composition(lmm_design *g,
         for (int j = 0; j < na; j++)
         {
             size_t used = strlen(label);
-            snprintf(label + used, size - used, "[%s]",
+            st_text_write(label + used, size - used, "[%s]",
                      lmm_variable_level(g->var + at[j], choice[j]));
         }
         for (int j = 0; j < out.count; j++)
@@ -16355,7 +16478,7 @@ static void lmm_emit_blocks(lmm_blocks *out, lmm_design *g, lmm_terms *t,
                 int code = v->code[represent[h]];
                 const char *s = code < 0 ? "<missing>"
                                 : v->special == 4
-                                    ? (snprintf(temp, 64, "%d", code + 1), temp)
+                                    ? (st_text_write(temp, 64, "%d", code + 1), temp)
                                     : lmm_variable_level(v, code);
                 if (strlen(label) + strlen(s) + 2 >= sizeof(label))
                     error("st.lmm: grouping label too long");
@@ -16409,7 +16532,7 @@ static void lmm_emit_blocks(lmm_blocks *out, lmm_design *g, lmm_terms *t,
         {
             int rem = aa, choice[LMM_NV], selected = 1;
             char label[8192];
-            snprintf(label, sizeof(label), "%s", termname);
+            st_text_write(label, sizeof(label), "%s", termname);
             for (int j = 0; j < na; j++)
             {
                 lmm_variable *v = g->var + at[j];
@@ -16427,7 +16550,7 @@ static void lmm_emit_blocks(lmm_blocks *out, lmm_design *g, lmm_terms *t,
                         selected = 0;
                 }
                 size_t used = strlen(label);
-                snprintf(label + used, sizeof(label) - used, "[%s]", s);
+                st_text_write(label + used, sizeof(label) - used, "[%s]", s);
             }
             if (!selected)
                 continue;
@@ -16504,12 +16627,12 @@ static void lmm_emit_blocks(lmm_blocks *out, lmm_design *g, lmm_terms *t,
                         {
                             char s[2048];
                             if (nt > 1)
-                                snprintf(s, sizeof(s), "%s:%s",
+                                st_text_write(s, sizeof(s), "%s:%s",
                                          CHAR(STRING_ELT(g->traits,
                                                          traitdiag ? tr : h)),
                                          bnames[basisdiag ? bc : a]);
                             else
-                                snprintf(s, sizeof(s), "%s",
+                                st_text_write(s, sizeof(s), "%s",
                                          bnames[basisdiag ? bc : a]);
                             SET_STRING_ELT(cn, a + bd * h, mkChar(s));
                         }
@@ -16593,17 +16716,17 @@ static void lmm_emit_blocks(lmm_blocks *out, lmm_design *g, lmm_terms *t,
                     if (out->count == LMM_NBLOCK)
                         error("st.lmm: too many covariance blocks");
                     char full[8192];
-                    snprintf(full, sizeof(full), "%s", label);
+                    st_text_write(full, sizeof(full), "%s", label);
                     if (traitdiag && nt > 1)
                     {
                         size_t used = strlen(full);
-                        snprintf(full + used, sizeof(full) - used, "{%s}",
+                        st_text_write(full + used, sizeof(full) - used, "{%s}",
                                  CHAR(STRING_ELT(g->traits, tr)));
                     }
                     if (basisdiag && nb > 1)
                     {
                         size_t used = strlen(full);
-                        snprintf(full + used, sizeof(full) - used, "{%s}",
+                        st_text_write(full + used, sizeof(full) - used, "{%s}",
                                  bnames[bc]);
                     }
                     out->block_values[out->count] = b;
@@ -16790,7 +16913,7 @@ static SEXP lmm_rcov_align(SEXP input, SEXP data, int n, int nt,
         for (int t = 0; t < nt; t++)
         {
             char fallback[40];
-            snprintf(fallback, sizeof(fallback), "trait%d", t + 1);
+            st_text_write(fallback, sizeof(fallback), "trait%d", t + 1);
             const char *trait = isNull(traits) ? fallback
                                : translateCharUTF8(STRING_ELT(traits, t));
             if ((!isNull(traits) && STRING_ELT(traits, t) == NA_STRING) ||
@@ -16801,7 +16924,7 @@ static SEXP lmm_rcov_align(SEXP input, SEXP data, int n, int nt,
                 const char *row = translateCharUTF8(STRING_ELT(labels, i));
                 size_t capacity = strlen(trait) + strlen(row) + 48;
                 char *label = mvm_alloc(capacity, sizeof(char));
-                snprintf(label, capacity, "%zu:%s:%s", strlen(trait), trait, row);
+                st_text_write(label, capacity, "%zu:%s:%s", strlen(trait), trait, row);
                 SET_STRING_ELT(cells, i + rows * t, mkCharCE(label, CE_UTF8));
             }
         }
@@ -17078,7 +17201,7 @@ static SEXP lmm_compile_arguments(lmm_arg_view *args, int *omit_units)
     for (int t = 0; t < d->nt; t++)
     {
         char buf[40];
-        snprintf(buf, 40, "trait%d", t + 1);
+        st_text_write(buf, 40, "trait%d", t + 1);
         SET_STRING_ELT(
             d->traits, t,
             isNull(yn)
@@ -17134,7 +17257,8 @@ static SEXP lmm_compile_arguments(lmm_arg_view *args, int *omit_units)
             REAL(y)[i] -= REAL(offset)[i];
     int p = mvm_ncol(base), N = d->n * d->nt;
     SEXP X = lmm_keep(allocMatrix(REALSXP, N, p * d->nt), &d->np);
-    memset(REAL(X), 0, (size_t)N * p * d->nt * sizeof(double));
+    if (N > 0 && p > 0)
+        memset(REAL(X), 0, (size_t)N * p * d->nt * sizeof(double));
     SEXP cn = lmm_keep(allocVector(STRSXP, p * d->nt), &d->np),
          basecn = VECTOR_ELT(getAttrib(base, R_DimNamesSymbol), 1);
     for (int t = 0; t < d->nt; t++)
@@ -17145,7 +17269,7 @@ static SEXP lmm_compile_arguments(lmm_arg_view *args, int *omit_units)
                 [i + d->n * t + (size_t)N * (j + p * t)] =
                     REAL(base)[i + (size_t)d->n * j];
             char buf[4096];
-            snprintf(buf, sizeof(buf), "%s:%s", CHAR(STRING_ELT(d->traits, t)),
+            st_text_write(buf, sizeof(buf), "%s:%s", CHAR(STRING_ELT(d->traits, t)),
                      CHAR(STRING_ELT(basecn, j)));
             SET_STRING_ELT(cn, j + p * t,
                            d->nt == 1 ? STRING_ELT(basecn, j) : mkChar(buf));
@@ -19241,7 +19365,7 @@ static void mvm_trait_product_identifiability(mvm_context *c)
             blocks[at] = k;
             size_t size = strlen(b->name) + 80;
             char *label = mvm_alloc(size, sizeof(char));
-            snprintf(label, size, "%s '%s' parameter %d",
+            st_text_write(label, size, "%s '%s' parameter %d",
                      b->random ? "random" : "residual", b->name, h + 1);
             labels[at] = label;
         }
@@ -20976,10 +21100,15 @@ static void lmm_print_text(const lmm_print_options *opt, const char *format,
     int size = vsnprintf(NULL, 0, format, copy);
     va_end(copy);
     if (size < 0)
+    {
+        va_end(args);
         error("print: unable to format output");
+    }
     char *text = mvm_alloc((size_t)size + 1, sizeof(char));
-    vsnprintf(text, (size_t)size + 1, format, args);
+    int written = vsnprintf(text, (size_t)size + 1, format, args);
     va_end(args);
+    if (written < 0 || written != size)
+        error("print: unable to format output");
     char *s = text;
     while (*s)
     {
@@ -21114,10 +21243,10 @@ static const char *lmm_print_number(double value, int digits, char *buffer)
         return value > 0 ? "Inf" : "-Inf";
     double threshold = pow(10.0, -digits);
     if (value != 0 && fabs(value) < threshold)
-        snprintf(buffer, LMM_PRINT_BUFFER, value > 0 ? "<%.*f" : ">-%.*f",
+        st_text_write(buffer, LMM_PRINT_BUFFER, value > 0 ? "<%.*f" : ">-%.*f",
                  digits, threshold);
     else
-        snprintf(buffer, LMM_PRINT_BUFFER, "%.*f", digits, value);
+        st_text_write(buffer, LMM_PRINT_BUFFER, "%.*f", digits, value);
     return buffer;
 }
 
@@ -21139,9 +21268,9 @@ static const char *lmm_print_df(double value, int digits, char *buffer)
     double integer = nearbyint(value), tolerance = .5 * pow(10.0, -places);
     tolerance += 8 * DBL_EPSILON * fmax(1.0, fabs(value));
     if (fabs(value - integer) <= tolerance)
-        snprintf(buffer, LMM_PRINT_BUFFER, "%.0f", integer == 0 ? 0 : integer);
+        st_text_write(buffer, LMM_PRINT_BUFFER, "%.0f", integer == 0 ? 0 : integer);
     else
-        snprintf(buffer, LMM_PRINT_BUFFER, "%.*f", places, value);
+        st_text_write(buffer, LMM_PRINT_BUFFER, "%.*f", places, value);
     return buffer;
 }
 
@@ -21161,20 +21290,20 @@ static const char *lmm_print_value(double value, int integer, int force_df,
     if (lmm_print_is_probability(name) && R_FINITE(value) && value >= 0 &&
         value < pow(10.0, -digits))
     {
-        snprintf(buffer, LMM_PRINT_BUFFER, "<%.*f", digits, pow(10.0, -digits));
+        st_text_write(buffer, LMM_PRINT_BUFFER, "<%.*f", digits, pow(10.0, -digits));
         return buffer;
     }
     if (!strcmp(name, "position") && R_FINITE(value) &&
         value == nearbyint(value))
     {
-        snprintf(buffer, LMM_PRINT_BUFFER, "%.0f", value);
+        st_text_write(buffer, LMM_PRINT_BUFFER, "%.0f", value);
         return buffer;
     }
     if (integer || !strcmp(name, "simulations") || !strcmp(name, "failures"))
     {
         if (!R_FINITE(value))
             return lmm_print_number(value, digits, buffer);
-        snprintf(buffer, LMM_PRINT_BUFFER, "%.0f", value);
+        st_text_write(buffer, LMM_PRINT_BUFFER, "%.0f", value);
         return buffer;
     }
     return lmm_print_number(value, digits, buffer);
@@ -21378,10 +21507,10 @@ static void lmm_print_grid_source(SEXP table, const char **names,
             do
             {
                 char suffix[32];
-                snprintf(suffix, sizeof(suffix), "~%d", ++serial);
+                st_text_write(suffix, sizeof(suffix), "~%d", ++serial);
                 int take =
                     lmm_print_prefix(raw[at], width[j] - (int)strlen(suffix));
-                snprintf(shortened, (size_t)width[j] + 1, "%.*s%s", take,
+                st_text_write(shortened, (size_t)width[j] + 1, "%.*s%s", take,
                          raw[at], suffix);
                 collision = 0;
                 for (int k = 0; k <= nr; k++)
@@ -22136,7 +22265,7 @@ static lmm_print_covariance_values lmm_print_covariance_labels(SEXP matrix,
         for (int i = 0; i < d; i++)
         {
             char fallback[32];
-            snprintf(fallback, sizeof(fallback), "%d", i + 1);
+            st_text_write(fallback, sizeof(fallback), "%d", i + 1);
             labels[i] = isNull(names) ? lmm_print_copy(fallback)
                 : lmm_print_coefficient_text(STRING_ELT(names, i));
         }
@@ -22183,7 +22312,7 @@ static int lmm_print_covariance_matrix(SEXP matrix,
     {
         rowwidth = imax2(rowwidth, (int)strlen(values.rows[i]));
         char *key = mvm_alloc(32, sizeof(char));
-        snprintf(key, 32, "c%d", i + 1);
+        st_text_write(key, 32, "c%d", i + 1);
         names[i + 1] = key;
         labels[i + 1] = values.columns[i];
         int width = (int)strlen(labels[i + 1]);
@@ -22248,7 +22377,7 @@ static void lmm_print_scalar_variances(SEXP object, SEXP sigma, SEXP sn,
         else if (!strcmp(name, "units"))
             strcpy(label, "Residual");
         else
-            snprintf(label, strlen(name) + 32, "Residual: %s", name);
+            st_text_write(label, strlen(name) + 32, "Residual: %s", name);
         values.label[row] = label;
         values.value[row++] = mvm_num(VECTOR_ELT(sigma, k), 0);
     }
@@ -22313,7 +22442,7 @@ static void lmm_print_covariance_components(SEXP blocks, SEXP specification,
                                 ? mvm_get(VECTOR_ELT(schema, axis), "name")
                                 : R_NilValue;
                 char label[256];
-                snprintf(label, sizeof(label), "rho(%s)",
+                st_text_write(label, sizeof(label), "rho(%s)",
                          isNull(name) ? (axis ? "factor2" : "factor1")
                                       : translateCharUTF8(asChar(name)));
                 values.label[axis + 1] = lmm_print_copy(label);
@@ -22350,7 +22479,7 @@ static void lmm_print_covariance_components(SEXP blocks, SEXP specification,
                                     ? mvm_get(VECTOR_ELT(schema, axis), "name")
                                     : R_NilValue;
                     char label[256];
-                    snprintf(label, sizeof(label), "rho(%s)",
+                    st_text_write(label, sizeof(label), "rho(%s)",
                              isNull(name) ? "axis" : translateCharUTF8(asChar(name)));
                     values.label[row] = lmm_print_copy(label);
                     values.value[row++] = variance > 0
@@ -22620,7 +22749,7 @@ static SEXP lmm_hybrid_predictions(SEXP object, SEXP mode, int *np)
     for (int t = 0; t < nt; t++)
     {
         char label[8192];
-        snprintf(label, sizeof(label), "prediction.%s",
+        st_text_write(label, sizeof(label), "prediction.%s",
                  CHAR(STRING_ELT(traits, t)));
         const char *name = nt == 1 ? "prediction" : label;
         char *copy = mvm_alloc(strlen(name) + 1, sizeof(char));
@@ -22840,6 +22969,8 @@ static SEXP lmm_compare_models_request(lmm_arg_view *args, int *np);
 static SEXP lmm_drop1_request(lmm_arg_view *args, int *np);
 static SEXP lmm_by_method_request(lmm_arg_view *args, int *np);
 static SEXP lmm_diagnostics_method_request(SEXP object, lmm_arg_view *args, int *np);
+static const char *lmm_diagnostic_type_request(lmm_arg_view *args,
+                                               const char *action);
 static SEXP lmm_influence_method_request(SEXP object, lmm_arg_view *args, int *np);
 static SEXP lmm_diagnostic_plot_request(SEXP object, lmm_arg_view *args, int *np);
 static SEXP lmm_influence_plot_request(SEXP object, lmm_arg_view *args, int *np);
@@ -23054,6 +23185,21 @@ static SEXP st_lmm_method_request(lmm_arg_view *args)
             UNPROTECT(np);
             return ans;
         }
+    }
+    if (mom_is(object) &&
+        (!strcmp(action, "hatvalues") || !strcmp(action, "rstandard") ||
+         !strcmp(action, "rstudent")))
+    {
+        if (strcmp(action, "rstudent"))
+            (void)lmm_diagnostic_type_request(args, action);
+        else if (!lmm_arg_is_null(args, "influence") ||
+                 lmm_arg_length(args, "control"))
+            error("st.lmm moments: supplied influence and deletion controls "
+                  "are not supported for studentized residuals");
+        ans = lmm_keep(mom_method_request(args), &np);
+        ans = lmm_input_pad(object, ans, &np);
+        UNPROTECT(np);
+        return ans;
     }
     if (!strcmp(action, "plot.diagnostics") ||
         !strcmp(action, "diagnostic.plot.data"))
@@ -25039,13 +25185,13 @@ static const char *lsm_labels_row(const lsm_label_values *labels,
             if (!s)
                 s = "NA";
             int n =
-                snprintf(buf + used, 8192 - used, "%s%s", used ? " " : "", s);
+                st_text_write(buf + used, 8192 - used, "%s%s", used ? " " : "", s);
             if (n < 0 || (size_t)n >= 8192 - used)
                 error("st.lsm: label too long");
             used += n;
         }
     if (!used)
-        snprintf(buf, 8192, "%d", row + 1);
+        st_text_write(buf, 8192, "%d", row + 1);
     return buf;
 }
 
@@ -25168,7 +25314,7 @@ static void lsm_export_df_methods(SEXP out, const char *const *methods,
         for (int i = 0; i < n; i++)
         {
             char key[32];
-            snprintf(key, sizeof(key), "%d", i + 1);
+            st_text_write(key, sizeof(key), "%d", i + 1);
             SET_STRING_ELT(row_methods, i, mkChar(methods[rows ? rows[i] : i]));
             SET_STRING_ELT(keys, i, mkChar(key));
         }
@@ -25343,7 +25489,8 @@ static SEXP lsm_covariance_output(SEXP object, int *np)
     lsm_linear_compute(fit, input, q, p, columns,
                        CHAR(asChar(mvm_get(object, "ddf"))), 0, 0, np, &values);
     SEXP out = lmm_keep(allocMatrix(REALSXP, q, q), np);
-    memcpy(REAL(out), values.linear.vcov, (size_t)q * q * sizeof(double));
+    if (q > 0)
+        memcpy(REAL(out), values.linear.vcov, (size_t)q * q * sizeof(double));
     if (!isNull(rows))
     {
         SEXP names = lmm_keep(allocVector(VECSXP, 2), np);
@@ -26138,9 +26285,9 @@ static void lsm_result_label_names(const char **names, int labels, int total)
         do
         {
             if (suffix == 1)
-                snprintf(label, length + 40, "%s.predictor", original);
+                st_text_write(label, length + 40, "%s.predictor", original);
             else
-                snprintf(label, length + 40, "%s.predictor.%d", original, suffix);
+                st_text_write(label, length + 40, "%s.predictor.%d", original, suffix);
             collision = 0;
             for (int h = 0; h < total; h++)
                 if (h != j)
@@ -26768,7 +26915,7 @@ static int lsm_threshold_scope(const lsm_values *values, const lsm_name_values *
             {
                 size_t length = strlen(name) + 8;
                 char *label = mvm_alloc(length, sizeof(char));
-                snprintf(label, length, "%s %s", summary->within[j + k * summary->nv]
+                st_text_write(label, length, "%s %s", summary->within[j + k * summary->nv]
                              ? "Within" : "Across", name);
                 scope[k] = label;
             }
@@ -26783,7 +26930,7 @@ static int lsm_threshold_scope(const lsm_values *values, const lsm_name_values *
                 const char *level = summary->levels[j + k * summary->nv];
                 size_t length = strlen(name) + strlen(level) + 2;
                 char *label = mvm_alloc(length, sizeof(char));
-                snprintf(label, length, "%s=%s", name, level);
+                st_text_write(label, length, "%s=%s", name, level);
                 scope[k] = label;
             }
             return 1;
@@ -26941,18 +27088,21 @@ static SEXP lsm_build_export(const lsm_values *values, int *np)
     if (isNull(L))
     {
         L = lmm_keep(allocMatrix(REALSXP, q, p), np);
-        memcpy(REAL(L), values->L, (size_t)q * p * sizeof(double));
+        if (q > 0 && p > 0)
+            memcpy(REAL(L), values->L, (size_t)q * p * sizeof(double));
     }
     if (isNull(group))
     {
         group = lmm_keep(allocVector(INTSXP, q), np);
-        memcpy(INTEGER(group), values->group, (size_t)q * sizeof(int));
+        if (q > 0)
+            memcpy(INTEGER(group), values->group, (size_t)q * sizeof(int));
     }
     if (isNull(family))
     {
         family = lmm_keep(allocVector(INTSXP, values->ng), np);
-        memcpy(INTEGER(family), values->family,
-               (size_t)values->ng * sizeof(int));
+        if (values->ng > 0)
+            memcpy(INTEGER(family), values->family,
+                   (size_t)values->ng * sizeof(int));
     }
     SET_VECTOR_ELT(out, 0, values->fit);
     SET_VECTOR_ELT(out, 1, L);
@@ -26975,7 +27125,8 @@ static SEXP lsm_build_export(const lsm_values *values, int *np)
     SET_VECTOR_ELT(out, 13, ScalarLogical(values->contrast));
     SET_VECTOR_ELT(out, 14, ScalarLogical(values->pairwise));
     SEXP ranks = lmm_keep(allocVector(INTSXP, values->ng), np);
-    memcpy(INTEGER(ranks), values->ranks, (size_t)values->ng * sizeof(int));
+    if (values->ng > 0)
+        memcpy(INTEGER(ranks), values->ranks, (size_t)values->ng * sizeof(int));
     SET_VECTOR_ELT(out, 15, ranks);
     SET_VECTOR_ELT(out, 16, lsm_value_export(values->offset, np));
     SET_VECTOR_ELT(out, 17, lsm_value_export(values->bias, np));
@@ -26988,8 +27139,9 @@ static SEXP lsm_build_export(const lsm_values *values, int *np)
     if (values->random_width)
     {
         SEXP target = lmm_keep(allocMatrix(REALSXP, q, values->random_width), np);
-        memcpy(REAL(target), values->random_L,
-               (size_t)q * values->random_width * sizeof(double));
+        if (q > 0)
+            memcpy(REAL(target), values->random_L,
+                   (size_t)q * values->random_width * sizeof(double));
         setAttrib(out, install("random.L"), target);
         setAttrib(out, install("re.form"), values->re_form);
         setAttrib(out, install("inference.space"),
@@ -27013,8 +27165,9 @@ static SEXP lsm_build_export(const lsm_values *values, int *np)
         if (values->endpoints)
         {
             SEXP endpoints = lmm_keep(allocMatrix(INTSXP, q, 2), np);
-            memcpy(INTEGER(endpoints), values->endpoints,
-                   (size_t)q * 2 * sizeof(int));
+            if (q > 0)
+                memcpy(INTEGER(endpoints), values->endpoints,
+                       (size_t)q * 2 * sizeof(int));
             setAttrib(out, install("pair.endpoints"), endpoints);
         }
     }
@@ -27183,7 +27336,7 @@ static void lsm_symbolic_compute(SEXP source, const char *const *names, int p,
         {
             expr = VECTOR_ELT(source, i);
             char label[64];
-            snprintf(label, sizeof(label), "hypothesis%d", i + 1);
+            st_text_write(label, sizeof(label), "hypothesis%d", i + 1);
             out->labels[i] = lmm_design_string(label);
         }
         if (TYPEOF(expr) != LANGSXP || TYPEOF(CAR(expr)) != SYMSXP ||
@@ -27439,7 +27592,7 @@ static SEXP lsm_direct(SEXP args, int *np)
     for (int i = 0; i < q; i++)
     {
         char text[64];
-        snprintf(text, sizeof(text), "hypothesis%d", i + 1);
+        st_text_write(text, sizeof(text), "hypothesis%d", i + 1);
         SET_STRING_ELT(label, i,
                        isNull(rownames) ? mkChar(text)
                                         : STRING_ELT(rownames, i));
@@ -29207,9 +29360,9 @@ static const char **lsm_pairwise_display_levels(const lsm_label_values *labels,
         if (!count)
             continue;
         char *line = mvm_alloc(bytes, sizeof(char));
-        size_t used = snprintf(line, bytes, "%s: ", labels->names[j]);
+        size_t used = st_text_write(line, bytes, "%s: ", labels->names[j]);
         for (int i = 0; i < count; i++)
-            used += snprintf(line + used, bytes - used, "%s%s = %s",
+            used += st_text_write(line + used, bytes - used, "%s%s = %s",
                              i ? ", " : "", abbreviations[i], changed[i]);
         explanations[lines++] = line;
     }
@@ -29224,7 +29377,7 @@ static const char **lsm_pairwise_display_levels(const lsm_label_values *labels,
         char *text = mvm_alloc(bytes, sizeof(char));
         size_t used = 0;
         for (int j = 0; j < columns; j++)
-            used += snprintf(text + used, bytes - used, "%s%s",
+            used += st_text_write(text + used, bytes - used, "%s%s",
                              j ? " " : "", shortened[i + (size_t)n * j]);
         if (strstr(text, " - "))
             return NULL;
@@ -29503,7 +29656,7 @@ static void lsm_contrast_compute(const lsm_values *source, SEXP nesting,
                 if (reverse)
                     for (int j = 0; j < k; j++)
                         coef[j] = -coef[j];
-                snprintf(buf, sizeof(buf), "%s%d", name, h + 1);
+                st_text_write(buf, sizeof(buf), "%s%d", name, h + 1);
             }
             else if (symbolic)
             {
@@ -29531,9 +29684,9 @@ static void lsm_contrast_compute(const lsm_values *source, SEXP nesting,
                 if (matrix_method && !isNull(mn))
                     mn = VECTOR_ELT(mn, 0);
                 if (!isNull(mn))
-                    snprintf(buf, sizeof(buf), "%s", CHAR(STRING_ELT(mn, h)));
+                    st_text_write(buf, sizeof(buf), "%s", CHAR(STRING_ELT(mn, h)));
                 else
-                    snprintf(buf, sizeof(buf), "contrast%d", h + 1);
+                    st_text_write(buf, sizeof(buf), "contrast%d", h + 1);
             }
             else if (pair)
             {
@@ -29544,14 +29697,14 @@ static void lsm_contrast_compute(const lsm_values *source, SEXP nesting,
                 coef[a] = sign;
                 coef[b] = -sign;
                 int positive = ix[sign > 0 ? a : b], negative = ix[sign > 0 ? b : a];
-                snprintf(buf, sizeof(buf), "%s - %s",
+                st_text_write(buf, sizeof(buf), "%s - %s",
                          lsm_labels_row(labels, &by, positive),
                          lsm_labels_row(labels, &by, negative));
                 if (compact)
                 {
                     size_t bytes = strlen(compact[positive]) + strlen(compact[negative]) + 4;
                     char *text = mvm_alloc(bytes, sizeof(char));
-                    snprintf(text, bytes, "%s - %s", compact[positive], compact[negative]);
+                    st_text_write(text, bytes, "%s - %s", compact[positive], compact[negative]);
                     SET_STRING_ELT(display, row, mkCharCE(text, CE_UTF8));
                 }
                 if (sign < 0)
@@ -29580,14 +29733,14 @@ static void lsm_contrast_compute(const lsm_values *source, SEXP nesting,
                 for (int j = 0; j < k; j++)
                     coef[j] = poly[j + (size_t)k * (h + 1)];
                 if (h < 4)
-                    snprintf(buf, sizeof(buf), "%s", degrees[h]);
+                    st_text_write(buf, sizeof(buf), "%s", degrees[h]);
                 else
-                    snprintf(buf, sizeof(buf), "degree%d", h + 1);
+                    st_text_write(buf, sizeof(buf), "degree%d", h + 1);
             }
             else if (identity)
             {
                 coef[h] = 1;
-                snprintf(buf, sizeof(buf), "%s",
+                st_text_write(buf, sizeof(buf), "%s",
                          lsm_labels_row(labels, &by, ix[h]));
             }
             else if (effect)
@@ -29617,7 +29770,7 @@ static void lsm_contrast_compute(const lsm_values *source, SEXP nesting,
                     for (int j = 0; j < k; j++)
                         coef[j] /= scale;
                 }
-                snprintf(buf, sizeof(buf), "%s effect",
+                st_text_write(buf, sizeof(buf), "%s effect",
                          lsm_labels_row(labels, &by, ix[h]));
             }
             else if (!strcmp(name, "helmert"))
@@ -29625,7 +29778,7 @@ static void lsm_contrast_compute(const lsm_values *source, SEXP nesting,
                 for (int j = 0; j <= h; j++)
                     coef[j] = -1;
                 coef[h + 1] = h + 1;
-                snprintf(buf, sizeof(buf), "%s vs earlier",
+                st_text_write(buf, sizeof(buf), "%s vs earlier",
                          lsm_labels_row(labels, &by, ix[h + 1]));
             }
             else if (!strcmp(name, "mean_chg"))
@@ -29635,7 +29788,7 @@ static void lsm_contrast_compute(const lsm_values *source, SEXP nesting,
                 if (reverse)
                     for (int j = 0; j < k; j++)
                         coef[j] = -coef[j];
-                snprintf(buf, sizeof(buf), "%s|%s",
+                st_text_write(buf, sizeof(buf), "%s|%s",
                          lsm_labels_row(labels, &by, ix[h]),
                          lsm_labels_row(labels, &by, ix[h + 1]));
             }
@@ -29673,7 +29826,7 @@ static void lsm_contrast_compute(const lsm_values *source, SEXP nesting,
                 int plus = reverse ? h : h + 1, minus = reverse ? h + 1 : h;
                 coef[plus] = 1;
                 coef[minus] = -1;
-                snprintf(buf, sizeof(buf), "%s - %s",
+                st_text_write(buf, sizeof(buf), "%s - %s",
                          lsm_labels_row(labels, &by, ix[plus]),
                          lsm_labels_row(labels, &by, ix[minus]));
             }
@@ -30609,8 +30762,12 @@ static SEXP lsm_cld(SEXP object, SEXP args, int *np)
         for (int i = 0; i < k; i++)
             if (estimable[ix[i]])
             {
-                char *buf = mvm_alloc(ncol * 8 + 1, 1);
-                int used = 0;
+                size_t suffix_size = 3 + sizeof(int) * CHAR_BIT;
+                if ((size_t)ncol > (SIZE_MAX - 1) / suffix_size)
+                    error("Compact letter display exceeds its size limit");
+                size_t capacity = (size_t)ncol * suffix_size + 1;
+                char *buf = mvm_alloc(capacity, 1);
+                size_t used = 0;
                 for (int c = 0; c < ncol; c++)
                     if (member[i + (size_t)k * letter_order[c]])
                     {
@@ -30619,7 +30776,7 @@ static SEXP lsm_cld(SEXP object, SEXP args, int *np)
                         if (c < 52)
                             buf[used++] = letter;
                         else
-                            used += snprintf(buf + used, 8, ".%d%c", c / 52,
+                            used += st_text_write(buf + used, capacity - used, ".%d%c", c / 52,
                                              letter);
                     }
                 letters[ix[i]] = buf;
@@ -30826,7 +30983,7 @@ static const char *lsm_print_extra_key(const lsm_print_view *view,
     char *key = mvm_alloc(64, sizeof(char));
     for (int suffix = 1;; suffix++)
     {
-        snprintf(key, 64, "%s.%d", prefix, suffix);
+        st_text_write(key, 64, "%s.%d", prefix, suffix);
         int used = 0;
         for (int j = 0; j < view->columns; j++)
             used |= !strcmp(key, view->names[j]);
@@ -30901,7 +31058,7 @@ static void lsm_print_df_rows(lsm_print_view *view)
         if (compact || TYPEOF(rows) == INTSXP)
         {
             index = compact ? i + 1 : INTEGER(rows)[i];
-            snprintf(key, sizeof(key), "%ld", index);
+            st_text_write(key, sizeof(key), "%ld", index);
         }
         else if (TYPEOF(rows) == STRSXP && STRING_ELT(rows, i) != NA_STRING)
         {
@@ -31077,16 +31234,17 @@ static void lsm_print_thresholds(SEXP summary, const lmm_print_options *opt)
     {
         char lower[512] = "", higher[512] = "";
         if (lmm_options.LSD)
-            snprintf(lower, sizeof(lower), "LSD=%.*f", opt->digits, REAL(LSD)[i]);
+            st_text_write(lower, sizeof(lower), "LSD=%.*f", opt->digits, REAL(LSD)[i]);
         if (lmm_options.HSD)
-            snprintf(higher, sizeof(higher), "%sHSD=%.*f", lmm_options.LSD ? " " : "",
+            st_text_write(higher, sizeof(higher), "%sHSD=%.*f", lmm_options.LSD ? " " : "",
                      opt->digits, REAL(HSD)[i]);
         const char *name = CHAR(STRING_ELT(scope, i));
         int labelled = strcmp(name, "All comparisons") != 0;
         int length = snprintf(lines[i], sizeof(lines[i]), "%s%s%s%s (alpha=%.4g%s)",
             labelled ? name : "", labelled ? ": " : "", lower, higher, REAL(alpha)[i],
             isNull(getAttrib(summary, install("back.transform"))) ? "" : "; analysis scale");
-        if (length < 0 || length > opt->width || strchr(lines[i], '\n'))
+        if (length < 0 || (size_t)length >= sizeof(lines[i]) ||
+            length > opt->width || strchr(lines[i], '\n'))
             return;
     }
     for (int i = 0; i < n; i++)
@@ -31113,7 +31271,7 @@ static void lsm_print_reference(SEXP table, const lmm_print_options *opt)
             char buffer[LMM_PRINT_BUFFER];
             if (mvm_numeric(values) && !inherits(values, "factor"))
             {
-                snprintf(buffer, sizeof(buffer), "%.12g", mvm_num(values, i));
+                st_text_write(buffer, sizeof(buffer), "%.12g", mvm_num(values, i));
                 text[i] = lmm_print_copy(buffer);
             }
             else
@@ -31378,7 +31536,7 @@ static void lsm_print_summary(SEXP table, const lmm_print_options *opt,
         if (panel > 0)
         {
             char *panel_label = mvm_alloc(32, sizeof(char));
-            snprintf(panel_label, 32, "group.%d", panel + 1);
+            st_text_write(panel_label, 32, "group.%d", panel + 1);
             labels[j] = panel_label;
             shown++;
             continue;
@@ -31894,7 +32052,7 @@ static const char *lmm_parent_display(const char *id)
     if (!n || strspn(id, "0123456789") != n)
         return id;
     char *label = mvm_alloc(n + 2, sizeof(char));
-    snprintf(label, n + 2, "P%s", id);
+    st_text_write(label, n + 2, "P%s", id);
     return label;
 }
 
@@ -32150,7 +32308,7 @@ static const char *lmm_print_result_cell(SEXP column, int row, const char *name,
         }
         if (!isNull(labels))
             return translateCharUTF8(STRING_ELT(labels, row));
-        snprintf(buffer, LMM_PRINT_BUFFER, "%d", row + 1);
+        st_text_write(buffer, LMM_PRINT_BUFFER, "%d", row + 1);
         return buffer;
     }
     const char *semantic = "";
@@ -32302,7 +32460,7 @@ static void lmm_print_result(SEXP object, const lmm_print_options *opt, int *np,
                 error("print.st.lmm.result: data-frame columns must be atomic "
                       "vectors");
             char *key = mvm_alloc(32, sizeof(char));
-            snprintf(key, 32, "v%d", j);
+            st_text_write(key, 32, "v%d", j);
             names[j + 1] = key;
             const char *label = translateCharUTF8(STRING_ELT(original, at));
             int rank = lmm_test_column_rank(label);
@@ -32345,7 +32503,7 @@ static void lmm_print_result(SEXP object, const lmm_print_options *opt, int *np,
         for (int j = 0; j < nc; j++)
         {
             char *key = mvm_alloc(32, sizeof(char));
-            snprintf(key, 32, "v%d", j);
+            st_text_write(key, 32, "v%d", j);
             names[j + 1] = key;
             if (!matrix)
                 labels[j + 1] = "Value";
@@ -32354,7 +32512,7 @@ static void lmm_print_result(SEXP object, const lmm_print_options *opt, int *np,
             else
             {
                 char *label = mvm_alloc(32, sizeof(char));
-                snprintf(label, 32, "Column %d", j + 1);
+                st_text_write(label, 32, "Column %d", j + 1);
                 labels[j + 1] = label;
             }
         }
@@ -32914,12 +33072,12 @@ static const char *h_label(SEXP column, int i, char *buffer)
     {
         if (INTEGER(column)[i] == NA_INTEGER)
             return NULL;
-        snprintf(buffer, 64, "%d", INTEGER(column)[i]);
+        st_text_write(buffer, 64, "%d", INTEGER(column)[i]);
         return buffer;
     }
     if (TYPEOF(column) == REALSXP && R_FINITE(REAL(column)[i]))
     {
-        snprintf(buffer, 64, "%.15g", REAL(column)[i]);
+        st_text_write(buffer, 64, "%.15g", REAL(column)[i]);
         return buffer;
     }
     return NULL;
@@ -32977,12 +33135,12 @@ static const char *h_native_label(const st_data_value *column, int i,
     if (column->kind == ST_DATA_INTEGER &&
         column->data.integer[i] != NA_INTEGER)
     {
-        snprintf(buffer, 64, "%d", column->data.integer[i]);
+        st_text_write(buffer, 64, "%d", column->data.integer[i]);
         return buffer;
     }
     if (column->kind == ST_DATA_REAL && R_FINITE(column->data.real[i]))
     {
-        snprintf(buffer, 64, "%.15g", column->data.real[i]);
+        st_text_write(buffer, 64, "%.15g", column->data.real[i]);
         return buffer;
     }
     return NULL;
@@ -33116,7 +33274,7 @@ static st_data_value *h_mapping(gs_varset_type **parents, SEXP input,
         if (size >= INT_MAX)
             error("Hybrid label exceeds R string limit");
         char *label = mvm_alloc(size, 1);
-        snprintf(label, size, "%s:%s", a, b);
+        st_text_write(label, size, "%s:%s", a, b);
         levels[i] = label;
         for (int j = 0; j < i; j++)
             if (!strcmp(levels[j], label))
@@ -33254,7 +33412,7 @@ static const char **h_reverse_levels(hybrid_set *h)
         if (size >= INT_MAX)
             error("Hybrid label exceeds R string limit");
         char *label = mvm_alloc(size, 1);
-        snprintf(label, size, "%s:%s", left, right);
+        st_text_write(label, size, "%s:%s", left, right);
         levels[i] = label;
     }
     return levels;
@@ -33309,9 +33467,9 @@ static SEXP h_kernel_export(const char *dataset, const char *key)
         if (!strcmp(key, h->parent[side]->name))
             return st_data_to_R(st_marker_A_values_cached(key, "0 1 2"));
     char forward[2 * gs_MAXSTR + 2], reverse[2 * gs_MAXSTR + 2];
-    snprintf(forward, sizeof(forward), "%s:%s", h->parent[0]->name,
+    st_text_write(forward, sizeof(forward), "%s:%s", h->parent[0]->name,
              h->parent[1]->name);
-    snprintf(reverse, sizeof(reverse), "%s:%s", h->parent[1]->name,
+    st_text_write(reverse, sizeof(reverse), "%s:%s", h->parent[1]->name,
              h->parent[0]->name);
     int swapped = !strcmp(key, reverse);
     if (strcmp(key, forward) && !swapped)
@@ -34056,7 +34214,7 @@ static mom_ems_labels mom_ems_names(SEXP table)
             if (!unique)
             {
                 char *out = mvm_alloc(length + 32, sizeof(char));
-                snprintf(out, length + 32, "%s%d", normalized[i], suffix++);
+                st_text_write(out, length + 32, "%s%d", normalized[i], suffix++);
                 labels.alias[i] = out;
             }
         }
@@ -34212,9 +34370,9 @@ static void mom_ems_render(mom_ems_row *row, const mom_ems_labels *labels)
     size_t length = strlen(name) + (row->trait ? strlen(row->trait) : 0) + 16;
     row->lhs = mvm_alloc(length, sizeof(char));
     if (row->trait)
-        snprintf(row->lhs, length, "EMS(%s) [%s]", name, row->trait);
+        st_text_write(row->lhs, length, "EMS(%s) [%s]", name, row->trait);
     else
-        snprintf(row->lhs, length, "EMS(%s)", name);
+        st_text_write(row->lhs, length, "EMS(%s)", name);
     row->formula = mom_ems_formula(row->raw, selected);
     int count;
     row->cell = mom_ems_components(row->formula, &count);
@@ -34319,7 +34477,7 @@ static void mom_print_ems(SEXP object, SEXP sources,
             if (2 + lhs + 3 + strlen(rows[i].formula) > (size_t)opt->width)
             {
                 size_t capacity = (size_t)lhs + rhs + 8;
-                size_t used = snprintf(line, capacity, "  %s = ", rows[i].lhs);
+                size_t used = st_text_write(line, capacity, "  %s = ", rows[i].lhs);
                 for (int j = 0; j < rows[i].count; j++)
                 {
                     const char *join = j ? " + " : "";
@@ -34330,7 +34488,7 @@ static void mom_print_ems(SEXP object, SEXP sources,
                             used--;
                         line[used] = '\0';
                         lmm_print_text(opt, "%s\n", line);
-                        used = snprintf(line, capacity, j ? "    + " : "      ");
+                        used = st_text_write(line, capacity, j ? "    + " : "      ");
                         join = "";
                     }
                     size_t gap = strlen(join);
@@ -34347,7 +34505,7 @@ static void mom_print_ems(SEXP object, SEXP sources,
                                rows[i].formula);
             continue;
         }
-        int start = snprintf(line, (size_t)lhs + rhs + 8, "  %-*s = ", lhs,
+        int start = st_text_write(line, (size_t)lhs + rhs + 8, "  %-*s = ", lhs,
                              rows[i].lhs);
         memset(line + start, ' ', rhs);
         line[start + rhs] = '\0';
@@ -34433,7 +34591,7 @@ static mom_qr mom_basis(const double *X, int n, int p, double tol)
     double *tau = mvm_alloc(limit, sizeof(double)), query;
     int lwork = -1, info = 0;
     F77_CALL(dgeqp3)(&n, &p, a.Q, &n, a.pivot, tau, &query, &lwork, &info);
-    if (info || !R_FINITE(query) || query > INT_MAX)
+    if (info || !R_FINITE(query) || query < 1 || query > INT_MAX)
         error("st.lmm moments: QR workspace calculation failed");
     lwork = (int)query;
     double *work = mvm_alloc(lwork, sizeof(double));
@@ -34455,7 +34613,7 @@ static mom_qr mom_basis(const double *X, int n, int p, double tol)
         return a;
     lwork = -1;
     F77_CALL(dorgqr)(&n, &r, &r, a.Q, &n, tau, &query, &lwork, &info);
-    if (info || !R_FINITE(query) || query > INT_MAX)
+    if (info || !R_FINITE(query) || query < 1 || query > INT_MAX)
         error("st.lmm moments: orthogonal-basis workspace failed");
     lwork = (int)query;
     work = mvm_alloc(lwork, sizeof(double));
@@ -34694,7 +34852,7 @@ static SEXP lmm_moment_covariance_axes(SEXP traits, int *np)
     for (int t = 0; t < nt; t++)
     {
         char label[2048];
-        snprintf(label, sizeof(label), "%s:(Intercept)",
+        st_text_write(label, sizeof(label), "%s:(Intercept)",
                  CHAR(STRING_ELT(traits, t)));
         SET_STRING_ELT(axes, t, mkChar(label));
     }
@@ -34862,7 +35020,7 @@ static SEXP mom_fixed_tables_values(SEXP compiled, SEXP residualSSCP, int type,
             REAL(VECTOR_ELT(table, 9))[row] = ms;
             SET_STRING_ELT(VECTOR_ELT(table, 10), row, mkChar("Residual"));
             char label[8192];
-            snprintf(label, sizeof(label), "sigma2 + theta(%s)", name);
+            st_text_write(label, sizeof(label), "sigma2 + theta(%s)", name);
             SET_STRING_ELT(VECTOR_ELT(table, 11), row, mkChar(label));
         }
     }
@@ -35030,14 +35188,18 @@ static SEXP mom_ols_values_arguments(lmm_arg_view *args, SEXP compiled, int *np,
          sigma = lmm_keep(allocMatrix(REALSXP, nt, nt), np),
          columns = lmm_keep(allocVector(INTSXP, R), np),
          map = lmm_keep(allocMatrix(REALSXP, R, P), np);
-    memcpy(REAL(beta), values.beta, (size_t)P * sizeof(double));
+    if (P > 0)
+        memcpy(REAL(beta), values.beta, (size_t)P * sizeof(double));
     memcpy(REAL(fitted), values.fitted, (size_t)n * nt * sizeof(double));
     memcpy(REAL(residual), values.residual, (size_t)n * nt * sizeof(double));
     memcpy(REAL(E), values.E, (size_t)nt * nt * sizeof(double));
-    memcpy(REAL(covariance), values.covariance, (size_t)P * P * sizeof(double));
+    if (P > 0)
+        memcpy(REAL(covariance), values.covariance, (size_t)P * P * sizeof(double));
     memcpy(REAL(sigma), values.sigma, (size_t)nt * nt * sizeof(double));
-    memcpy(REAL(map), values.map, (size_t)R * P * sizeof(double));
-    memcpy(INTEGER(columns), values.columns, (size_t)R * sizeof(int));
+    if (R > 0 && P > 0)
+        memcpy(REAL(map), values.map, (size_t)R * P * sizeof(double));
+    if (R > 0)
+        memcpy(INTEGER(columns), values.columns, (size_t)R * sizeof(int));
     SEXP coefficient_names =
         VECTOR_ELT(getAttrib(mvm_get(spec, "X"), R_DimNamesSymbol), 1);
     setAttrib(beta, R_NamesSymbol, coefficient_names);
@@ -35129,7 +35291,8 @@ static SEXP mom_ols_values_arguments(lmm_arg_view *args, SEXP compiled, int *np,
     SET_VECTOR_ELT(moments, 2, hypotheses);
     SET_VECTOR_ELT(moments, 3, E);
     SEXP inverse = lmm_keep(allocMatrix(REALSXP, p, p), np);
-    memcpy(REAL(inverse), qr.inverse, (size_t)p * p * sizeof(double));
+    if (p > 0)
+        memcpy(REAL(inverse), qr.inverse, (size_t)p * p * sizeof(double));
     SET_VECTOR_ELT(moments, 4, inverse);
     SET_VECTOR_ELT(moments, 5, lmm_keep(ScalarReal(tol), np));
     SET_VECTOR_ELT(moments, 6,
@@ -35692,12 +35855,16 @@ static SEXP mom_linear_export(SEXP object, SEXP rows,
          estimable = lmm_keep(allocVector(LGLSXP, q), np),
          aligned = lmm_keep(allocMatrix(REALSXP, q, p), np),
          DF = lmm_keep(allocVector(REALSXP, q), np);
-    memcpy(REAL(estimate), v->estimate, (size_t)q * sizeof(double));
-    memcpy(REAL(SE), v->SE, (size_t)q * sizeof(double));
-    memcpy(LOGICAL(estimable), v->estimable, (size_t)q * sizeof(int));
-    memcpy(REAL(aligned), v->L, (size_t)q * p * sizeof(double));
-    memcpy(REAL(DF), values->DF, (size_t)q * sizeof(double));
-    if (!diagonal)
+    if (q > 0)
+    {
+        memcpy(REAL(estimate), v->estimate, (size_t)q * sizeof(double));
+        memcpy(REAL(SE), v->SE, (size_t)q * sizeof(double));
+        memcpy(LOGICAL(estimable), v->estimable, (size_t)q * sizeof(int));
+        memcpy(REAL(DF), values->DF, (size_t)q * sizeof(double));
+    }
+    if (q > 0 && p > 0)
+        memcpy(REAL(aligned), v->L, (size_t)q * p * sizeof(double));
+    if (!diagonal && q > 0)
         memcpy(REAL(covariance), v->vcov, (size_t)q * q * sizeof(double));
     SET_VECTOR_ELT(out, 0, estimate);
     SET_VECTOR_ELT(out, 1, SE);
@@ -36003,8 +36170,8 @@ static SEXP mom_confint_request(lmm_arg_view *args, int *np)
          rows = lmm_keep(allocVector(STRSXP, q), np),
          cn = lmm_keep(allocVector(STRSXP, 2), np);
     char lo[64], hi[64];
-    snprintf(lo, sizeof(lo), "%.3g %%", 50 * (1 - level));
-    snprintf(hi, sizeof(hi), "%.3g %%", 50 * (1 + level));
+    st_text_write(lo, sizeof(lo), "%.3g %%", 50 * (1 - level));
+    st_text_write(hi, sizeof(hi), "%.3g %%", 50 * (1 + level));
     SET_STRING_ELT(cn, 0, mkChar(lo));
     SET_STRING_ELT(cn, 1, mkChar(hi));
     for (int i = 0; i < q; i++)
@@ -36028,49 +36195,61 @@ static SEXP mom_diagnostic(SEXP object, const char *action, int *np)
         error(
             "st.lmm moments: regression diagnostics require a scalar response");
     SEXP engine = mvm_get(object, "engine"), cl = mvm_get(object, "moments"),
-         h = mvm_get(cl, "leverage"), e = mvm_get(engine, "residuals");
+         h = mvm_get(cl, "leverage"), e = mvm_get(engine, "residuals"),
+         weights = mvm_get(object, "weights");
     int n = LENGTH(h), p = asInteger(mvm_get(engine, "rank")),
         nu = lmm_moments_error_DF(engine);
     if (!strcmp(action, "hatvalues"))
-        return h;
+        return lmm_response_matrix(h,
+                                  mvm_get(mvm_get(object, "model"), "traits"), np);
     if (!strcmp(action, "rstudent") && nu <= 1)
         error("st.lmm moments: studentized residuals require more than one "
               "residual DF");
     if (!strcmp(action, "cooks.distance") && !p)
         error("st.lmm moments: Cook's distance requires fitted coefficients");
+    if (!isNull(weights) && (!mvm_numeric(weights) || LENGTH(weights) != n))
+        error("st.lmm moments: diagnostic weights do not match observations");
     double sse = REAL(mvm_get(cl, "E"))[0], mse = sse / nu;
     int plotting = !strcmp(action, "plot.data");
-    SEXP out = plotting ? R_NilValue : mom_vector(n, np),
+    int distance = !strcmp(action, "cooks.distance");
+    SEXP out = plotting ? R_NilValue
+                   : distance ? mom_vector(n, np)
+                              : lmm_keep(allocMatrix(REALSXP, n, 1), np),
          standard = plotting ? mom_vector(n, np) : R_NilValue;
     for (int i = 0; i < n; i++)
     {
+        double weight = isNull(weights) ? 1 : mvm_num(weights, i);
+        if (!R_FINITE(weight) || weight <= 0)
+            error("st.lmm moments: diagnostic weights must be positive and finite");
         double remain = 1 - REAL(h)[i];
         if (!(remain > 64 * DBL_EPSILON))
             error("st.lmm moments: deletion diagnostics are undefined for unit "
                   "leverage at row %d",
                   i + 1);
-        double standardized = REAL(e)[i] / sqrt(mse * remain);
+        double residual = sqrt(weight) * REAL(e)[i],
+               standardized = residual / sqrt(mse * remain);
         if (plotting)
             REAL(standard)[i] = standardized;
         if (!strcmp(action, "rstudent"))
         {
             double deleted =
-                (sse - REAL(e)[i] * REAL(e)[i] / remain) / (nu - 1);
+                (sse - residual * residual / remain) / (nu - 1);
             if (!(deleted > 0) || !R_FINITE(deleted))
                 error("st.lmm moments: deleted-observation residual variance "
                       "is invalid at row %d",
                       i + 1);
-            REAL(out)[i] = REAL(e)[i] / sqrt(deleted * remain);
+            REAL(out)[i] = residual / sqrt(deleted * remain);
         }
         else if (!strcmp(action, "cooks.distance"))
             REAL(out)
-            [i] = REAL(e)[i] * REAL(e)[i] / (p * mse) * REAL(h)[i] /
+            [i] = residual * residual / (p * mse) * REAL(h)[i] /
                   (remain * remain);
         else if (!plotting)
             REAL(out)[i] = standardized;
     }
     if (strcmp(action, "plot.data"))
-        return out;
+        return distance ? out : lmm_response_matrix(
+            out, mvm_get(mvm_get(object, "model"), "traits"), np);
     const char *names[] = {"fitted",          "residual",
                            "leverage",        "standardized",
                            "normal.quantile", "ordered.standardized",
@@ -37149,7 +37328,7 @@ static char *mom_general_sum(const char *a, const char *b)
         return (char *)a;
     size_t length = strlen(a) + strlen(b) + 4;
     char *out = mvm_alloc(length, sizeof(char));
-    snprintf(out, length, "%s + %s", a, b);
+    st_text_write(out, length, "%s + %s", a, b);
     return out;
 }
 
@@ -37235,7 +37414,7 @@ static SEXP mom_general_table_result(mom_general_table *g, SEXP traits,
             if (value == 0)
                 continue;
             char part[8192];
-            snprintf(part, sizeof(part), "%s%.10g %s(%s)",
+            st_text_write(part, sizeof(part), "%s%.10g %s(%s)",
                      strlen(expression) ? " + " : "", value,
                      g->kind[c] == 0 ? "theta" : "sigma2", g->name[c]);
             if (strlen(expression) + strlen(part) >= sizeof(expression))
@@ -37518,7 +37697,7 @@ static SEXP mom_general_pool(mom_general_table *g, SEXP ctl, SEXP traits,
         if (!eliminate)
         {
             char *label = mvm_alloc(40, sizeof(char));
-            snprintf(label, 40, "Pooled%d", step + 1);
+            st_text_write(label, 40, "Pooled%d", step + 1);
             g->name[target] = label;
         }
         SET_STRING_ELT(VECTOR_ELT(history, 4), step, mkChar(g->name[target]));
@@ -38091,7 +38270,7 @@ static SEXP mom_multivariate_arguments(lmm_arg_view *args, SEXP compiled,
                     if (C[s + (size_t)(ns + 1) * c] > 0)
                     {
                         char part[8192];
-                        snprintf(part, sizeof(part), " + %.10g Sigma(%s)",
+                        st_text_write(part, sizeof(part), " + %.10g Sigma(%s)",
                                  C[s + (size_t)(ns + 1) * c],
                                  CHAR(STRING_ELT(component_names, c)));
                         if (strlen(expression) + strlen(part) >= sizeof(expression))
@@ -38102,7 +38281,7 @@ static SEXP mom_multivariate_arguments(lmm_arg_view *args, SEXP compiled,
                 if (!residual_row && !sources[s].random)
                 {
                     char part[8192];
-                    snprintf(part, sizeof(part), " + %.10g theta(%s)",
+                    st_text_write(part, sizeof(part), " + %.10g theta(%s)",
                              sources[s].replication, name);
                     if (strlen(expression) + strlen(part) >= sizeof(expression))
                         error("st.lmm moments: mean-product expression too long");
@@ -38765,7 +38944,7 @@ static SEXP mom_mixed_arguments(lmm_arg_view *args, SEXP compiled, int *np)
             if (C[s + (size_t)(ns + 1) * j] > 0)
             {
                 char part[8192];
-                snprintf(part, sizeof(part), " + %.10g sigma2(%s)",
+                st_text_write(part, sizeof(part), " + %.10g sigma2(%s)",
                          C[s + (size_t)(ns + 1) * j],
                          CHAR(STRING_ELT(component_names, j)));
                 if (strlen(expression) + strlen(part) >= sizeof(expression))
@@ -38775,7 +38954,7 @@ static SEXP mom_mixed_arguments(lmm_arg_view *args, SEXP compiled, int *np)
         if (!residual_row && !sources[s].random)
         {
             char part[8192];
-            snprintf(part, sizeof(part), " + %.10g theta(%s)",
+            st_text_write(part, sizeof(part), " + %.10g theta(%s)",
                      sources[s].replication, name);
             if (strlen(expression) + strlen(part) >= sizeof(expression))
                 error("st.lmm moments: EMS expression too long");
@@ -40622,7 +40801,7 @@ static SEXP lmm_subset_inclusion(lmm_subset_context *s,
     for (int i = 0; i < n; i++)
     {
         char label[40];
-        snprintf(label, sizeof(label), "%d", i + 1);
+        st_text_write(label, sizeof(label), "%d", i + 1);
         SET_STRING_ELT(rn, i, mkChar(label));
         if (s->intercept)
             LOGICAL(matrix)[i] = TRUE;
@@ -41266,7 +41445,7 @@ static SEXP lmm_selection_summary_request(SEXP selection, lmm_arg_view *args, in
     for (int i = 0; i < count; i++)
     {
         char label[40];
-        snprintf(label, sizeof(label), "%d", INTEGER(mvm_get(stats, "id"))[i]);
+        st_text_write(label, sizeof(label), "%d", INTEGER(mvm_get(stats, "id"))[i]);
         SET_STRING_ELT(rn, i, mkChar(label));
         for (int j = 0; j < cols; j++)
             LOGICAL(which)
@@ -41422,7 +41601,7 @@ static SEXP lmm_selection_method_request(lmm_arg_view *args)
             error("st.lmm: id contains an invalid retained model identifier");
         int index = (int)value - 1, local = 0;
         char label[40];
-        snprintf(label, sizeof(label), "%d", index + 1);
+        st_text_write(label, sizeof(label), "%d", index + 1);
         SET_STRING_ELT(labels, k, mkChar(label));
         SEXP formula = VECTOR_ELT(formulas, index), answer;
         if (!strcmp(action, "formula"))
@@ -41541,7 +41720,7 @@ static SEXP lmm_selection_print_request(SEXP summary, lmm_arg_view *args, int *n
         {
             int k = 3 + j - skip;
             char key[48];
-            snprintf(key, sizeof(key), ".selection.column.%d", j + 1);
+            st_text_write(key, sizeof(key), ".selection.column.%d", j + 1);
             SET_STRING_ELT(tn, k, mkChar(key));
             keys[k] = CHAR(STRING_ELT(tn, k));
             labels[k] =
@@ -41708,9 +41887,14 @@ static SEXP lmm_selection_plot_request(SEXP summary, lmm_arg_view *args, int *np
         colours = lmm_keep(allocVector(STRSXP, 10), np);
         for (int j = 0; j < 10; j++)
         {
-            int value = (int)floor(230.0 * j / 9.0 + .5);
-            char code[8];
-            snprintf(code, sizeof(code), "#%02X%02X%02X", value, value, value);
+            unsigned int value = (unsigned int)floor(230.0 * j / 9.0 + .5);
+            static const char hex[] = "0123456789ABCDEF";
+            char code[8] = "#000000";
+            for (int channel = 0; channel < 3; channel++)
+            {
+                code[1 + 2 * channel] = hex[(value >> 4) & 15u];
+                code[2 + 2 * channel] = hex[value & 15u];
+            }
             SET_STRING_ELT(colours, j, mkChar(code));
         }
     }
@@ -41750,7 +41934,7 @@ static SEXP lmm_selection_plot_request(SEXP summary, lmm_arg_view *args, int *np
             colour = nc;
         REAL(aty)[i] = i + 1;
         char label[64];
-        snprintf(label, sizeof(label), "%.4g", mvm_num(values, row));
+        st_text_write(label, sizeof(label), "%.4g", mvm_num(values, row));
         SET_STRING_ELT(yl, i, mkChar(label));
         for (int j = 0; j < p; j++)
             REAL(z)
@@ -42008,7 +42192,7 @@ static SEXP lmm_model_metadata(SEXP object, const char *field, SEXP retained, in
                                                        : "numeric";
         if (mvm_numeric(value) && LENGTH(dim) == 2)
         {
-            snprintf(label, sizeof(label), "nmatrix.%d", INTEGER(dim)[1]);
+            st_text_write(label, sizeof(label), "nmatrix.%d", INTEGER(dim)[1]);
             kind = label;
         }
         SET_STRING_ELT(data_classes, j, mkChar(kind));
@@ -42356,7 +42540,7 @@ static SEXP lmm_component_name(SEXP names, int index, const char *prefix)
         STRING_ELT(names, index) != NA_STRING)
         return STRING_ELT(names, index);
     char buffer[80];
-    snprintf(buffer, sizeof(buffer), "%s%d", prefix, index + 1);
+    st_text_write(buffer, sizeof(buffer), "%s%d", prefix, index + 1);
     return mkChar(buffer);
 }
 
@@ -42487,7 +42671,7 @@ static SEXP lmm_component_row_name(lmm_components_context *c, int i)
         error("st.lmm: inconsistent response-cell layout");
     int row = i % nr, trait = i / nr;
     char number[64];
-    snprintf(number, sizeof(number), "%d", row + 1);
+    st_text_write(number, sizeof(number), "%d", row + 1);
     const char *name = number;
     if (TYPEOF(input) == STRSXP && LENGTH(input) == nr)
         name = translateCharUTF8(STRING_ELT(input, row));
@@ -42495,7 +42679,7 @@ static SEXP lmm_component_row_name(lmm_components_context *c, int i)
              !(LENGTH(input) == 2 && INTEGER(input)[0] == NA_INTEGER) &&
              INTEGER(input)[row] != NA_INTEGER)
     {
-        snprintf(number, sizeof(number), "%d", INTEGER(input)[row]);
+        st_text_write(number, sizeof(number), "%d", INTEGER(input)[row]);
         name = number;
     }
     if (nt == 1)
@@ -42503,7 +42687,7 @@ static SEXP lmm_component_row_name(lmm_components_context *c, int i)
     const char *t = translateCharUTF8(STRING_ELT(traits, trait));
     size_t size = strlen(name) + strlen(t) + 3;
     char *buffer = mvm_alloc(size, sizeof(char));
-    snprintf(buffer, size, "%s:%s", name, t);
+    st_text_write(buffer, size, "%s:%s", name, t);
     return mkCharCE(buffer, CE_UTF8);
 }
 
@@ -42523,7 +42707,7 @@ static SEXP lmm_component_fixed_label(int column, SEXP name)
     const char *text = translateCharUTF8(name);
     size_t size = strlen(text) + 48;
     char *buffer = mvm_alloc(size, sizeof(char));
-    snprintf(buffer, size, "b[%d]:%s", column + 1, text);
+    st_text_write(buffer, size, "b[%d]:%s", column + 1, text);
     return mkCharCE(buffer, CE_UTF8);
 }
 
@@ -42534,7 +42718,7 @@ static SEXP lmm_component_random_label(int index, SEXP term, SEXP level,
                *cs = translateCharUTF8(coefficient);
     size_t size = strlen(ts) + strlen(ls) + strlen(cs) + 64;
     char *buffer = mvm_alloc(size, sizeof(char));
-    snprintf(buffer, size, "u[%d]:%s[%s]:%s", index + 1, ts, ls, cs);
+    st_text_write(buffer, size, "u[%d]:%s[%s]:%s", index + 1, ts, ls, cs);
     return mkCharCE(buffer, CE_UTF8);
 }
 
@@ -42749,7 +42933,8 @@ static SEXP lmm_component_dense(lmm_components_context *c, const char *name)
         (size_t)rows > SIZE_MAX / sizeof(double) / (cols ? cols : 1))
         error("st.lmm: requested dense component exceeds matrix size limits");
     out = lmm_keep(allocMatrix(REALSXP, rows, cols), c->np);
-    memset(REAL(out), 0, (size_t)rows * cols * sizeof(double));
+    if (rows > 0 && cols > 0)
+        memset(REAL(out), 0, (size_t)rows * cols * sizeof(double));
     if (!strcmp(name, "R"))
     {
         for (int k = 0; k < c->ke; k++)
@@ -43506,7 +43691,17 @@ static SEXP lmm_component_value(lmm_components_context *c, const char *name,
         {
             SEXP values = VECTOR_ELT(blocks, k);
             if (isMatrix(values))
+            {
+                if (!isNull(mvm_get(VECTOR_ELT(c->random, k), "kernel")))
+                {
+                    SEXP rows = getAttrib(mvm_get(c->spec, "y"), R_NamesSymbol),
+                         coefficient = lmm_keep(mkString("response"), c->np);
+                    if (isNull(rows))
+                        rows = lmm_component_rows(c);
+                    lmm_component_dimnames(values, rows, coefficient, c->np);
+                }
                 continue;
+            }
             SEXP column = lmm_keep(allocMatrix(REALSXP, c->n, 1), c->np),
                  rows = getAttrib(values, R_NamesSymbol),
                  coefficient = lmm_keep(mkString("response"), c->np);
@@ -43699,7 +43894,7 @@ static SEXP lmm_component_pca_request(lmm_components_context *c, lmm_arg_view *a
                         sign * vectors[i + (size_t)d * source];
             }
             char buffer[64];
-            snprintf(buffer, sizeof(buffer), "PC%d", j + 1);
+            st_text_write(buffer, sizeof(buffer), "PC%d", j + 1);
             SET_STRING_ELT(principal, j, mkChar(buffer));
         }
         setAttrib(ev, R_NamesSymbol, principal);
@@ -44341,7 +44536,7 @@ static SEXP lmm_compare_models_request(lmm_arg_view *args, int *np)
                 if (!strcmp(label, resolved_labels[j]))
                     use = 0;
             char fallback[80];
-            snprintf(fallback, sizeof(fallback), "Model %d", i + 1);
+            st_text_write(fallback, sizeof(fallback), "Model %d", i + 1);
             resolved_labels[i] = lmm_design_string(use ? label : fallback);
             if (!isNull(node))
                 node = CDR(node);
@@ -44925,7 +45120,7 @@ static void lmm_objective_coordinate(SEXP table, SEXP names, int index,
 {
     mvm_block *b = c->block + block;
     char label[4096];
-    snprintf(label, sizeof(label), "%s%d:%s:%s[%d,%d]",
+    st_text_write(label, sizeof(label), "%s%d:%s:%s[%d,%d]",
              b->random ? "random" : "residual", block + 1, b->name, coordinate,
              row + 1, column + 1);
     SET_STRING_ELT(names, index, mkChar(label));
@@ -45043,7 +45238,7 @@ static SEXP lmm_objective_native(SEXP object, SEXP method, SEXP parameters,
                     if (b->axis_parameter[axis])
                     {
                         char label[48];
-                        snprintf(label, sizeof(label), "rho.%d", axis + 1);
+                        st_text_write(label, sizeof(label), "rho.%d", axis + 1);
                         lmm_objective_coordinate(table, names, position++, &c,
                                                  k, -1, -1, label,
                                                  "identity", 1);
@@ -45161,7 +45356,7 @@ static SEXP lmm_input_names(SEXP data, int n, int *np)
     for (int i = 0; i < n; i++)
     {
         char buffer[40];
-        snprintf(buffer, sizeof(buffer), "%d", i + 1);
+        st_text_write(buffer, sizeof(buffer), "%d", i + 1);
         SET_STRING_ELT(names, i, mkChar(buffer));
     }
     return names;
@@ -45415,7 +45610,8 @@ static void lmm_input_missing(SEXP value, int n, int *missing, int *nonfinite)
     for (int j = 0; j < nc; j++)
         for (int i = 0; i < n; i++)
         {
-            int at = i + n * j, na = 0, bad = 0;
+            R_xlen_t at = (R_xlen_t)i + (R_xlen_t)n * j;
+            int na = 0, bad = 0;
             if (TYPEOF(value) == REALSXP)
             {
                 na = ISNAN(REAL(value)[at]);
@@ -45577,8 +45773,9 @@ static lmm_arg_view *lmm_input_prepare_layout_arguments(lmm_arg_view *args, int 
                    (!lmm_arg_is_null(args, "selection") || !isNull(weights) ||
                     !isNull(getAttrib(data, install("st.lmm.refit.weights"))));
     SEXP missing_positions = lmm_keep(allocVector(INTSXP, omitted), np);
-    memcpy(INTEGER(missing_positions), missing_indices,
-           (size_t)omitted * sizeof(int));
+    if (omitted > 0)
+        memcpy(INTEGER(missing_positions), missing_indices,
+               (size_t)omitted * sizeof(int));
     SEXP selected_names = lmm_keep(allocVector(STRSXP, ns), np),
          original_names = lmm_input_names(data, n, np);
     for (int i = 0; i < ns; i++)
@@ -45988,8 +46185,10 @@ static SEXP lmm_input_finish_layout_arguments(SEXP object, lmm_arg_view *args,
     }
     SEXP weight_removed = lmm_keep(allocVector(INTSXP, nw), np),
          common_removed = lmm_keep(allocVector(INTSXP, nc), np);
-    memcpy(INTEGER(weight_removed), weight_indices, (size_t)nw * sizeof(int));
-    memcpy(INTEGER(common_removed), common_indices, (size_t)nc * sizeof(int));
+    if (nw > 0)
+        memcpy(INTEGER(weight_removed), weight_indices, (size_t)nw * sizeof(int));
+    if (nc > 0)
+        memcpy(INTEGER(common_removed), common_indices, (size_t)nc * sizeof(int));
     input_fields = lmm_arg_put(input_fields, "weight.removed", weight_removed, np);
     input_fields = lmm_arg_put(input_fields, "common.complete.removed", common_removed, np);
     input_fields = lmm_arg_put(input_fields, "prediction.omitted",
@@ -46209,7 +46408,7 @@ static SEXP lmm_target_columns(SEXP block, int *np)
     for (int j = 0; j < q; j++)
     {
         char text[48];
-        snprintf(text, sizeof(text), "coefficient%d", j + 1);
+        st_text_write(text, sizeof(text), "coefficient%d", j + 1);
         SET_STRING_ELT(names, j, mkChar(text));
     }
     return names;
@@ -46301,7 +46500,7 @@ static const char *lmm_target_column_text(SEXP block, int column, char *buffer,
     SEXP dn = getAttrib(basis, R_DimNamesSymbol);
     if (!isNull(dn) && TYPEOF(VECTOR_ELT(dn, 1)) == STRSXP)
         return CHAR(STRING_ELT(VECTOR_ELT(dn, 1), column));
-    snprintf(buffer, size, "coefficient%d", column + 1);
+    st_text_write(buffer, size, "coefficient%d", column + 1);
     return buffer;
 }
 
@@ -46858,7 +47057,8 @@ static SEXP lmm_at_parameters(SEXP object, SEXP parameters, int joint, int *np)
     {
         lmm_set(fit, "b", mvm_get(canonical, "fixed"));
         SEXP covariance = lmm_keep(allocMatrix(REALSXP, c.p, c.p), np);
-        memset(REAL(covariance), 0, (size_t)c.p * c.p * sizeof(double));
+        if (c.p > 0)
+            memset(REAL(covariance), 0, (size_t)c.p * c.p * sizeof(double));
         lmm_component_dimnames(
             covariance, getAttrib(mvm_get(canonical, "fixed"), R_NamesSymbol),
             getAttrib(mvm_get(canonical, "fixed"), R_NamesSymbol), np);
@@ -46982,7 +47182,7 @@ static const char *lmm_target_component_text(SEXP names, int index,
     if (TYPEOF(names) == STRSXP && index < LENGTH(names) &&
         STRING_ELT(names, index) != NA_STRING)
         return CHAR(STRING_ELT(names, index));
-    snprintf(buffer, size, "%s%d", prefix, index + 1);
+    st_text_write(buffer, size, "%s%d", prefix, index + 1);
     return buffer;
 }
 
@@ -47442,7 +47642,7 @@ static void lmm_target_native_emit(lmm_native_blocks *out, lmm_design *g,
                 const char *name =
                     code < 0 ? "<missing>"
                     : v->special == 4
-                        ? (snprintf(buffer, sizeof(buffer), "%d", code + 1),
+                        ? (st_text_write(buffer, sizeof(buffer), "%d", code + 1),
                            buffer)
                         : lmm_variable_level(v, code);
                 if (strlen(label) + strlen(name) + 2 >= sizeof(label))
@@ -47495,7 +47695,7 @@ static void lmm_target_native_emit(lmm_native_blocks *out, lmm_design *g,
         {
             int rem = aa, choice[LMM_NV], selected = 1;
             char label[8192];
-            snprintf(label, sizeof(label), "%s", termname);
+            st_text_write(label, sizeof(label), "%s", termname);
             for (int j = 0; j < na; j++)
             {
                 lmm_variable *v = g->var + at[j];
@@ -47512,7 +47712,7 @@ static void lmm_target_native_emit(lmm_native_blocks *out, lmm_design *g,
                         selected = 0;
                 }
                 size_t used = strlen(label);
-                snprintf(label + used, sizeof(label) - used, "[%s]", name);
+                st_text_write(label + used, sizeof(label) - used, "[%s]", name);
             }
             if (!selected)
                 continue;
@@ -47599,29 +47799,29 @@ static void lmm_target_native_emit(lmm_native_blocks *out, lmm_design *g,
                         {
                             char text[2048];
                             if (nt > 1)
-                                snprintf(
+                                st_text_write(
                                     text, sizeof(text), "%s:%s",
                                     lmm_native_trait(g, traitdiag ? tr : h),
                                     basis->column_names[basisdiag ? bc : a]);
                             else
-                                snprintf(
+                                st_text_write(
                                     text, sizeof(text), "%s",
                                     basis->column_names[basisdiag ? bc : a]);
                             block.basis->column_names[a + bd * h] =
                                 lmm_target_string(text);
                         }
                     char full[8192];
-                    snprintf(full, sizeof(full), "%s", label);
+                    st_text_write(full, sizeof(full), "%s", label);
                     if (traitdiag && nt > 1)
                     {
                         size_t used = strlen(full);
-                        snprintf(full + used, sizeof(full) - used, "{%s}",
+                        st_text_write(full + used, sizeof(full) - used, "{%s}",
                                  lmm_native_trait(g, tr));
                     }
                     if (basisdiag && nb > 1)
                     {
                         size_t used = strlen(full);
-                        snprintf(full + used, sizeof(full) - used, "{%s}",
+                        st_text_write(full + used, sizeof(full) - used, "{%s}",
                                  basis->column_names[bc]);
                     }
                     block.name = lmm_target_string(full);
@@ -47961,7 +48161,7 @@ lmm_target_native_fixed_values(lmm_design *d, lmm_native_matrix *base)
                 out->values[i + n * t + (size_t)N * (j + p * t)] =
                     base->values[i + (size_t)n * j];
             char text[4096];
-            snprintf(text, sizeof(text), "%s:%s", lmm_native_trait(d, t),
+            st_text_write(text, sizeof(text), "%s:%s", lmm_native_trait(d, t),
                      base->column_names[j]);
             out->column_names[j + p * t] =
                 nt == 1 ? base->column_names[j] : lmm_target_string(text);
@@ -49085,13 +49285,14 @@ static const double *lmm_target_numeric_values(SEXP x)
     {
         size_t n = (size_t)XLENGTH(x);
         double *values = mvm_alloc(n, sizeof(double));
-        memcpy(values, REAL(x), n * sizeof(double));
+        if (n > 0)
+            memcpy(values, REAL(x), n * sizeof(double));
         return values;
     }
     if (TYPEOF(x) == INTSXP)
     {
         R_xlen_t n = XLENGTH(x);
-        const int *source = INTEGER(x);
+        const int *source = n > 0 ? INTEGER(x) : NULL;
         double *values = mvm_alloc((size_t)n, sizeof(double));
         for (R_xlen_t i = 0; i < n; i++)
             values[i] = source[i] == NA_INTEGER ? NA_REAL : source[i];
@@ -49314,7 +49515,7 @@ static SEXP lmm_target_cell_names(SEXP names, SEXP traits, int n, int *np)
                        *b = CHAR(STRING_ELT(names, i));
             size_t length = strlen(a) + strlen(b) + 2;
             char *text = mvm_alloc(length, sizeof(char));
-            snprintf(text, length, "%s:%s", a, b);
+            st_text_write(text, length, "%s:%s", a, b);
             SET_STRING_ELT(out, i + n * t, mkChar(text));
         }
     return out;
@@ -49399,7 +49600,8 @@ static SEXP lmm_target_design_prepared_request(SEXP object, lmm_arg_view *reques
     {
         int p = mvm_ncol(mvm_get(spec, "X"));
         X = lmm_keep(allocMatrix(REALSXP, n, p), np);
-        memset(REAL(X), 0, (size_t)n * p * sizeof(double));
+        if (n > 0 && p > 0)
+            memset(REAL(X), 0, (size_t)n * p * sizeof(double));
         lmm_component_dimnames(
             X, cells,
             VECTOR_ELT(getAttrib(mvm_get(spec, "X"), R_DimNamesSymbol), 1), np);
@@ -50314,7 +50516,7 @@ static double lmm_profile_us_cone(lmm_profile_context *p, int restart)
                         continue;
                     }
                     double lambda = -numerator / denominator;
-                    for (int i = 0; i < d * d; i++)
+                    for (size_t i = 0; i < (size_t)d * d; i++)
                         M[i] += lambda * C[i];
                 }
             }
@@ -51368,10 +51570,15 @@ static char *lmm_profile_label(const char *format, ...)
     int n = vsnprintf(NULL, 0, format, args);
     va_end(args);
     if (n < 0)
+    {
+        va_end(copy);
         error("st.lmm.profile: parameter label could not be formatted");
+    }
     char *out = mvm_alloc((size_t)n + 1, sizeof(char));
-    vsnprintf(out, (size_t)n + 1, format, copy);
+    int written = vsnprintf(out, (size_t)n + 1, format, copy);
     va_end(copy);
+    if (written < 0 || written != n)
+        error("st.lmm.profile: parameter label could not be formatted");
     return out;
 }
 
@@ -51902,7 +52109,8 @@ static SEXP lmm_profile_map_record(lmm_profile_context *p,
         [j] = lmm_profile_upper(p->bounds[j]) ? p->upper[j] : R_PosInf;
         REAL(VECTOR_ELT(map, 6))[j] = p->x[j];
     }
-    memcpy(REAL(constant), p->fixed, p->c.np * sizeof(double));
+    if (p->c.np > 0)
+        memcpy(REAL(constant), p->fixed, (size_t)p->c.np * sizeof(double));
     SET_VECTOR_ELT(result, 0, map);
     SET_VECTOR_ELT(result, 1, constant);
     SET_VECTOR_ELT(result, 2, lmm_keep(ScalarInteger(p->fixed_index + 1), np));
@@ -52050,8 +52258,10 @@ static SEXP lmm_profile_start_record(SEXP baseline, lmm_profile_target *target,
     SEXP result = lmm_keep(mvm_list(21, keys), &np),
          parameters = lmm_keep(allocVector(REALSXP, p.c.np), &np),
          gradient = lmm_keep(allocVector(REALSXP, p.q), &np);
-    memcpy(REAL(parameters), p.full, p.c.np * sizeof(double));
-    memcpy(REAL(gradient), p.gradient, p.q * sizeof(double));
+    if (p.c.np > 0)
+        memcpy(REAL(parameters), p.full, (size_t)p.c.np * sizeof(double));
+    if (p.q > 0)
+        memcpy(REAL(gradient), p.gradient, (size_t)p.q * sizeof(double));
     SET_VECTOR_ELT(result, 0, lmm_keep(mkString(label), &np));
     SET_VECTOR_ELT(result, 1,
                    lmm_keep(ScalarReal(p.valid ? 2 * p.value : R_PosInf), &np));
@@ -53052,13 +53262,12 @@ static void lmm_profile_owned_keep(lmm_profile_owned *owner, void *value)
     for (lmm_profile_owned_item *item = owner->first; item; item = item->next)
         if (item->value == value)
             return;
-    lmm_profile_owned_item *item = malloc(sizeof(*item));
-    if (!item)
-        error("st.lmm.profile: unable to retain native state");
+    lmm_profile_owned_item *item = mvm_alloc(1, sizeof(*item));
     item->value = value;
     item->next = owner->first;
     st_work_detach(value);
     owner->first = item;
+    st_work_detach(item);
 }
 
 static void lmm_profile_baseline_compact(lmm_profile_baseline_values *baseline,
@@ -53246,9 +53455,9 @@ static SEXP lmm_profile_intervals_native(SEXP object, SEXP parm,
          columns = lmm_keep(allocVector(STRSXP, 2), np),
          dn = lmm_keep(allocVector(VECSXP, 2), np);
     char label[64];
-    snprintf(label, sizeof(label), "%.4g %%", 50 * (1 - level));
+    st_text_write(label, sizeof(label), "%.4g %%", 50 * (1 - level));
     SET_STRING_ELT(columns, 0, mkChar(label));
-    snprintf(label, sizeof(label), "%.4g %%", 50 * (1 + level));
+    st_text_write(label, sizeof(label), "%.4g %%", 50 * (1 + level));
     SET_STRING_ELT(columns, 1, mkChar(label));
     for (int i = 0; i < selected; i++)
     {
@@ -53338,9 +53547,9 @@ static SEXP lmm_profile_confint_request(SEXP object, lmm_arg_view *args, int *np
          columns = lmm_keep(allocVector(STRSXP, 2), np),
          dn = lmm_keep(allocVector(VECSXP, 2), np);
     char label[64];
-    snprintf(label, sizeof(label), "%.4g %%", 50 * (1 - level));
+    st_text_write(label, sizeof(label), "%.4g %%", 50 * (1 - level));
     SET_STRING_ELT(columns, 0, mkChar(label));
-    snprintf(label, sizeof(label), "%.4g %%", 50 * (1 + level));
+    st_text_write(label, sizeof(label), "%.4g %%", 50 * (1 + level));
     SET_STRING_ELT(columns, 1, mkChar(label));
     for (int i = 0; i < n; i++)
     {
@@ -53604,7 +53813,7 @@ static SEXP lmm_simulation_draw_values_arguments(const double *mean, const doubl
     for (int b = 0; b < nsim; b++)
     {
         char name[48];
-        snprintf(name, sizeof(name), "sim_%d", b + 1);
+        st_text_write(name, sizeof(name), "sim_%d", b + 1);
         SET_STRING_ELT(names, b, mkChar(name));
         SET_VECTOR_ELT(out, b, allocMatrix(REALSXP, nr, nt));
         setAttrib(VECTOR_ELT(out, b), R_DimNamesSymbol, dimnames);
@@ -54981,7 +55190,7 @@ static SEXP lmm_prediction_input_values_request(SEXP object, lmm_arg_view *args,
                 b = lmm_parent_display(b);
                 size_t size = strlen(a) + strlen(b) + 2;
                 char *label = mvm_alloc(size, sizeof(char));
-                snprintf(label, size, "%s:%s", a, b);
+                st_text_write(label, size, "%s:%s", a, b);
                 SET_STRING_ELT(labels, i, mkChar(label));
             }
             setAttrib(result, install("prediction.labels"), labels);
@@ -55033,12 +55242,12 @@ static SEXP lmm_simulation_rows(SEXP data, int n, int *np)
         if (TYPEOF(old) == INTSXP && LENGTH(old) == n)
         {
             if (INTEGER(old)[i] == NA_INTEGER)
-                snprintf(text, sizeof(text), "NA");
+                st_text_write(text, sizeof(text), "NA");
             else
-                snprintf(text, sizeof(text), "%d", INTEGER(old)[i]);
+                st_text_write(text, sizeof(text), "%d", INTEGER(old)[i]);
         }
         else
-            snprintf(text, sizeof(text), "%d", i + 1);
+            st_text_write(text, sizeof(text), "%d", i + 1);
         SET_STRING_ELT(out, i, mkChar(text));
     }
     return out;
@@ -55068,8 +55277,10 @@ static SEXP lmm_simulation_target_request(SEXP object, lmm_arg_view *args, int f
          missing = lmm_keep(allocMatrix(LGLSXP, target.nr, target.nt), np),
          selected = lmm_keep(allocVector(LGLSXP, target.kr), np),
          masks = lmm_target_selection_export(object, target.masks, np);
-    memcpy(LOGICAL(missing), target.missing, (size_t)target.n * sizeof(int));
-    memcpy(LOGICAL(selected), target.selected, (size_t)target.kr * sizeof(int));
+    if (target.n > 0)
+        memcpy(LOGICAL(missing), target.missing, (size_t)target.n * sizeof(int));
+    if (target.kr > 0)
+        memcpy(LOGICAL(selected), target.selected, (size_t)target.kr * sizeof(int));
     setAttrib(selected, R_NamesSymbol, getAttrib(target.random, R_NamesSymbol));
     mom_dimnames(missing, rows, traits, np);
     SEXP out = (plan || lmm_target_flag_request(args, "plan.only", 0))
@@ -55193,9 +55404,9 @@ static void lmm_specified_hybrid_covariance(lmm_native_relationship *out,
             return;
         }
     char forward[2 * gs_MAXSTR + 2], reverse[2 * gs_MAXSTR + 2];
-    snprintf(forward, sizeof(forward), "%s:%s", h->parent[0]->name,
+    st_text_write(forward, sizeof(forward), "%s:%s", h->parent[0]->name,
              h->parent[1]->name);
-    snprintf(reverse, sizeof(reverse), "%s:%s", h->parent[1]->name,
+    st_text_write(reverse, sizeof(reverse), "%s:%s", h->parent[1]->name,
              h->parent[0]->name);
     int swapped = !strcmp(key, reverse);
     if (strcmp(key, forward) && !swapped)
@@ -55251,9 +55462,9 @@ static SEXP lmm_specified_registry_rows(const st_data_value *data, int n,
                     ? old->data.integer[i]
                     : i + 1;
             if (row == NA_INTEGER)
-                snprintf(buffer, sizeof(buffer), "NA");
+                st_text_write(buffer, sizeof(buffer), "NA");
             else
-                snprintf(buffer, sizeof(buffer), "%d", row);
+                st_text_write(buffer, sizeof(buffer), "%d", row);
             label = buffer;
         }
         SET_STRING_ELT(out, i, mkChar(label));
@@ -56785,6 +56996,10 @@ static SEXP lmm_diagnostics_method_request(SEXP object, lmm_arg_view *args, int 
                       ? (variance[i] > 0 ? residual[i] / sqrt(variance[i])
                                          : NA_REAL)
                       : residual[i];
+        SEXP names = getAttrib(answer, R_DimNamesSymbol),
+             rows = isNull(names) ? R_NilValue : VECTOR_ELT(names, 0);
+        lmm_component_dimnames(answer, rows,
+                              mvm_get(mvm_get(object, "model"), "traits"), np);
         lmm_diagnostic_attributes(answer, object, type, np);
         return answer;
     }
@@ -56953,14 +57168,14 @@ static void lmm_influence_unit_values(SEXP object, SEXP group,
                     label = "NA";
                 else
                 {
-                    snprintf(buffer, sizeof(buffer), "%d",
+                    st_text_write(buffer, sizeof(buffer), "%d",
                              INTEGER(rownames)[i]);
                     label = buffer;
                 }
             }
             else
             {
-                snprintf(buffer, sizeof(buffer), "%d", i + 1);
+                st_text_write(buffer, sizeof(buffer), "%d", i + 1);
                 label = buffer;
             }
         }
@@ -57574,7 +57789,7 @@ static SEXP lmm_deletion_prediction_values(SEXP original,
                 row_name = NA_STRING;
             else
             {
-                snprintf(buffer, sizeof(buffer), "%d", value);
+                st_text_write(buffer, sizeof(buffer), "%d", value);
                 row_name = mkChar(buffer);
             }
         }
@@ -58081,7 +58296,8 @@ static SEXP lmm_deletion_estimates(lmm_deletion_task *job, int *np)
         SET_STRING_ELT(sigma_names, k, mkChar(block->name));
     }
     setAttrib(sigma, R_NamesSymbol, sigma_names);
-    memcpy(REAL(parameters), c->par, (size_t)c->np * sizeof(double));
+    if (c->np > 0)
+        memcpy(REAL(parameters), c->par, (size_t)c->np * sizeof(double));
     SET_VECTOR_ELT(out, 0, coefficients);
     SET_VECTOR_ELT(out, 1, covariance);
     SET_VECTOR_ELT(out, 2, sigma);
@@ -58222,7 +58438,7 @@ static SEXP lmm_deletion_fit_body(void *payload)
         if (fit->status.status != 0)
         {
             char message[256];
-            snprintf(message, sizeof(message),
+            st_text_write(message, sizeof(message),
                      "st.lmm: %s; inferential tests are unavailable",
                      fit->status.message);
             lmm_allfit_warning(fit, message);
@@ -58281,7 +58497,7 @@ static SEXP lmm_deletion_fit_body(void *payload)
     if (fit->status.status != 0)
     {
         char message[256];
-        snprintf(message, sizeof(message),
+        st_text_write(message, sizeof(message),
                  "st.lmm: %s; inferential tests are unavailable",
                  fit->status.message);
         lmm_allfit_warning(fit, message);
@@ -59463,7 +59679,7 @@ static SEXP lmm_plot_panel_request(const char *name, const char *title,
                                                                : 3;
     }
     char footer[256];
-    snprintf(footer, sizeof(footer), "%s; %d of %d %s unavailable", assumption,
+    st_text_write(footer, sizeof(footer), "%s; %d of %d %s unavailable", assumption,
              total - finite, total, unit);
     const char *graphic_names[] = {"x",   "y",   "xlab", "ylab", "main",
                                    "sub", "col", "pch",  "type", "cex.sub"};
@@ -59615,7 +59831,7 @@ static SEXP lmm_diagnostic_plot_request(SEXP object, lmm_arg_view *args, int *np
                 const char *trait = CHAR(STRING_ELT(mvm_get(data, "trait"), i));
                 size_t size = strlen(row) + strlen(trait) + 4;
                 char *value = mvm_alloc(size, sizeof(char));
-                snprintf(value, size, "%s:%s", row, trait);
+                st_text_write(value, size, "%s:%s", row, trait);
                 SET_STRING_ELT(labels, i, mkCharCE(value, CE_UTF8));
             }
         }
@@ -59753,11 +59969,11 @@ static SEXP lmm_influence_plot_request(SEXP object, lmm_arg_view *args, int *np)
             if (column >= 0)
             {
                 SEXP cn = VECTOR_ELT(getAttrib(db, R_DimNamesSymbol), 1);
-                snprintf(title, sizeof(title), "Deletion influence: %s",
+                st_text_write(title, sizeof(title), "Deletion influence: %s",
                          CHAR(STRING_ELT(cn, column)));
             }
             else
-                snprintf(title, sizeof(title), "%s",
+                st_text_write(title, sizeof(title), "%s",
                          kind == 0 ? "Deletion influence: Cook's distance"
                                    : "Deletion influence: fixed coefficients");
             SEXP plot = lmm_plot_panel_request(
@@ -59911,7 +60127,7 @@ static const char *lmm_by_group_key(SEXP value, int i, char *buffer, int label)
         return NULL;
     if (x == 0)
         x = 0;
-    snprintf(buffer, 96, label ? "%.17g" : "%a", x);
+    st_text_write(buffer, 96, label ? "%.17g" : "%a", x);
     return buffer;
 }
 
@@ -60102,7 +60318,7 @@ static lmm_native_target * lmm_native_compile_prepared_arguments(lmm_arg_view *r
     for (int t = 0; t < nt; t++)
     {
         char text[40];
-        snprintf(text, sizeof(text), "trait%d", t + 1);
+        st_text_write(text, sizeof(text), "trait%d", t + 1);
         d->native_traits[t] =
             !isNull(trait_names) ? CHAR(STRING_ELT(trait_names, t))
             : nt == 1            ? (preselection ? lmm_text(CADR(fixed), &d->np)
@@ -60300,8 +60516,11 @@ static void lmm_preselection_prepare_arguments(lmm_arg_view *request, lmm_input_
     out->n = target->data->n;
     out->nt = target->data->nt;
     out->random_count = target->random.count;
-    size_t response_size = (size_t)out->n * out->nt * sizeof(double),
-           mask_size = (size_t)out->n * sizeof(int);
+    size_t response_size = mvm_size_product(
+               mvm_size_product((size_t)out->n, (size_t)out->nt), sizeof(double)),
+           mask_size = mvm_size_product((size_t)out->n, sizeof(int));
+    if (response_size > SIZE_MAX - mask_size)
+        error("st.lmm: preselection allocation overflow");
     void *values = mvm_alloc(response_size + mask_size, 1);
     out->response = values;
     out->omitted = (int *)((char *)values + response_size);
@@ -60729,7 +60948,7 @@ static void lmm_by_pool_compute(SEXP results, int requested,
         double *covariance = mvm_alloc((size_t)p * p, sizeof(double));
         unscaled[g] = covariance;
         sizes[g] = p;
-        for (int j = 0; j < p * p; j++)
+        for (size_t j = 0; j < (size_t)p * p; j++)
             covariance[j] = NA_REAL;
         for (int j = 0; j < r; j++)
             for (int k = 0; k < r; k++)
@@ -60751,7 +60970,7 @@ static void lmm_by_pool_compute(SEXP results, int requested,
     out->sizes = sizes;
     out->covariance = unscaled;
     for (int g = 0; g < ng; g++)
-        for (int j = 0; j < sizes[g] * sizes[g]; j++)
+        for (size_t j = 0; j < (size_t)sizes[g] * sizes[g]; j++)
             if (R_FINITE(unscaled[g][j]))
                 unscaled[g][j] *= out->sigma2;
 
@@ -60785,7 +61004,8 @@ static SEXP lmm_by_pool_export(SEXP results, const lmm_by_pool_values *values,
             int p = values->sizes[g];
             SEXP v = lmm_keep(allocMatrix(REALSXP, p, p), np),
                  engine = mvm_get(mvm_get(VECTOR_ELT(results, g), "fit"), "engine");
-            memcpy(REAL(v), values->covariance[g], (size_t)p * p * sizeof(double));
+            if (p > 0)
+                memcpy(REAL(v), values->covariance[g], (size_t)p * p * sizeof(double));
             setAttrib(v, R_DimNamesSymbol,
                       getAttrib(mvm_get(engine, "vcov.b"), R_DimNamesSymbol));
             SET_VECTOR_ELT(covariance, g, v);
@@ -61021,8 +61241,12 @@ static SEXP lmm_by_coefficients(SEXP object, int *np)
          labels = mvm_get(mvm_get(object, "prepared"), "group.labels");
     int ng = LENGTH(models), capacity = 0;
     for (int g = 0; g < ng; g++)
-        capacity +=
-            LENGTH(mvm_get(mvm_get(VECTOR_ELT(models, g), "engine"), "b"));
+    {
+        int count = LENGTH(mvm_get(mvm_get(VECTOR_ELT(models, g), "engine"), "b"));
+        if (count > INT_MAX - capacity)
+            error("st.lmm.by: too many coefficient names");
+        capacity += count;
+    }
     SEXP *native_names = mvm_alloc(capacity, sizeof(*native_names));
     int p = 0;
     for (int g = 0; g < ng; g++)
@@ -61045,7 +61269,7 @@ static SEXP lmm_by_coefficients(SEXP object, int *np)
         SET_STRING_ELT(names, j, native_names[j]);
     SEXP out = lmm_keep(allocMatrix(REALSXP, ng, p), np),
          dn = lmm_keep(allocVector(VECSXP, 2), np);
-    for (int i = 0; i < ng * p; i++)
+    for (R_xlen_t i = 0; i < (R_xlen_t)ng * p; i++)
         REAL(out)[i] = NA_REAL;
     for (int g = 0; g < ng; g++)
     {
@@ -61650,7 +61874,8 @@ static SEXP st_prediction_reals(const double *values, int n, int *np)
     if (!values)
         return R_NilValue;
     SEXP out = h_keep(allocVector(REALSXP, n), np);
-    memcpy(REAL(out), values, (size_t)n * sizeof(double));
+    if (n > 0)
+        memcpy(REAL(out), values, (size_t)n * sizeof(double));
     return out;
 }
 
@@ -61683,7 +61908,7 @@ static SEXP st_prediction_panel_export(const st_prediction_panel *p, int *np)
     SET_VECTOR_ELT(out, 5, st_prediction_reals(p->mean, p->m, np));
     SET_VECTOR_ELT(out, 6, h_keep(ScalarReal(p->denominator), np));
     char signature[32];
-    snprintf(signature, sizeof(signature), "%016llx",
+    st_text_write(signature, sizeof(signature), "%016llx",
              (unsigned long long)p->signature);
     SET_VECTOR_ELT(out, 7, h_keep(mkString(signature), np));
     SET_VECTOR_ELT(out, 8, st_prediction_reals(p->performance, p->n, np));
@@ -61940,7 +62165,7 @@ static void lmm_store_marker_fit(SEXP object, SEXP dataset, SEXP symbolic_terms)
             state, &state->term[k], VECTOR_ELT(blocks, k),
             VECTOR_ELT(effects, k), CHAR(STRING_ELT(names, k)));
     char identity[64];
-    snprintf(identity, sizeof(identity), "%016llx-%llu",
+    st_text_write(identity, sizeof(identity), "%016llx-%llu",
              (unsigned long long)st_prediction_identity_hash(state),
              (unsigned long long)++st_marker_model_serial);
     state->identity = st_prediction_string(identity);
@@ -62201,7 +62426,7 @@ static struct st_marker_state *st_prediction_read(SEXP input)
         st_prediction_term_read(state, &state->term[k], VECTOR_ELT(terms, k),
                                 CHAR(STRING_ELT(names, k)));
     char expected[17];
-    snprintf(expected, sizeof(expected), "%016llx",
+    st_text_write(expected, sizeof(expected), "%016llx",
              (unsigned long long)st_prediction_identity_hash(state));
     st_prediction_require(strlen(state->identity) > 17 &&
                           !strncmp(state->identity, expected, 16) &&
@@ -62494,12 +62719,12 @@ static const char *st_prediction_data_label(const st_data_value *column, int i,
         return column->data.string[i];
     if (column->kind == ST_DATA_INTEGER && column->data.integer[i] != INT_MIN)
     {
-        snprintf(buffer, 64, "%d", column->data.integer[i]);
+        st_text_write(buffer, 64, "%d", column->data.integer[i]);
         return buffer;
     }
     if (column->kind == ST_DATA_REAL && isfinite(column->data.real[i]))
     {
-        snprintf(buffer, 64, "%.15g", column->data.real[i]);
+        st_text_write(buffer, 64, "%.15g", column->data.real[i]);
         return buffer;
     }
     return NULL;
@@ -62527,7 +62752,7 @@ static SEXP st_prediction_training_export(SEXP dataset, SEXP predictions,
             const char *trait = CHAR(STRING_ELT(traits, t));
             size_t len = strlen(trait) + sizeof("prediction.");
             char *name = mvm_alloc(len, sizeof(char));
-            snprintf(name, len, "prediction.%s", trait);
+            st_text_write(name, len, "prediction.%s", trait);
             keys[t] = name;
         }
     }
@@ -63342,9 +63567,9 @@ static SEXP lmm_wald_intervals(lmm_wald_values values, SEXP parm, SEXP level,
     double tail = (1 - asReal(level)) / 2,
            z = qnorm5(1 - tail, 0, 1, TRUE, FALSE);
     char label[64];
-    snprintf(label, sizeof(label), "%.1f %%", 100 * tail);
+    st_text_write(label, sizeof(label), "%.1f %%", 100 * tail);
     SET_STRING_ELT(cn, 0, mkChar(label));
-    snprintf(label, sizeof(label), "%.1f %%", 100 * (1 - tail));
+    st_text_write(label, sizeof(label), "%.1f %%", 100 * (1 - tail));
     SET_STRING_ELT(cn, 1, mkChar(label));
     for (int i = 0; i < n; i++)
     {
@@ -63619,7 +63844,8 @@ static SEXP lmm_adapter(SEXP args, int *np)
             REAL(b)[j] = mvm_num(beta, j);
             LOGICAL(estimable)[j] = TRUE;
         }
-        memcpy(REAL(V), covariance, (size_t)p * p * sizeof(double));
+        if (p > 0)
+            memcpy(REAL(V), covariance, (size_t)p * p * sizeof(double));
         setAttrib(b, R_NamesSymbol, bn);
         SET_VECTOR_ELT(dn, 0, bn);
         SET_VECTOR_ELT(dn, 1, bn);
@@ -63688,7 +63914,8 @@ static SEXP lmm_adapter(SEXP args, int *np)
          X = lmm_keep(allocMatrix(REALSXP, matrix->rows, p), np),
          bhat = lmm_keep(allocVector(REALSXP, p), np),
          V = lmm_keep(allocMatrix(REALSXP, r, r), np);
-    memcpy(REAL(X), matrix->values, (size_t)matrix->rows * p * sizeof(double));
+    if (matrix->rows > 0 && p > 0)
+        memcpy(REAL(X), matrix->values, (size_t)matrix->rows * p * sizeof(double));
     setAttrib(bhat, R_NamesSymbol, bn);
     for (int j = 0; j < p; j++)
         REAL(bhat)[j] = NA_REAL;
@@ -63841,7 +64068,43 @@ static SEXP lmm_native_simple(SEXP args, int *np)
         SEXP indices = mvm_get(args, "indices"),
              plain = lmm_result_plain(object, 0, np, 0),
              tail = lmm_keep(allocList(length(indices) + 1), np),
-             call = lmm_keep(lcons(R_NilValue, tail), np);
+             call = lmm_keep(lcons(R_NilValue, tail), np),
+             single_index = R_NilValue;
+        int evaluated_index = 0;
+        if (!strcmp(action, "result.extract") && isMatrix(plain) &&
+            length(indices) == 2 && CADR(indices) != R_MissingArg)
+        {
+            SEXP dim = getAttrib(plain, R_DimSymbol),
+                 names = getAttrib(plain, R_DimNamesSymbol);
+            if (INTEGER(dim)[0] == 1 || INTEGER(dim)[1] == 1)
+            {
+                single_index = lmm_keep(eval(CADR(indices), mvm_get(args, "envir")), np);
+                evaluated_index = 1;
+                if (TYPEOF(single_index) == STRSXP && XLENGTH(single_index) == 1 &&
+                    STRING_ELT(single_index, 0) != NA_STRING &&
+                    TYPEOF(names) == VECSXP && LENGTH(names) == 2)
+                {
+                    const char *key = translateCharUTF8(STRING_ELT(single_index, 0));
+                    int selected = -1;
+                    for (int axis = 0; axis < 2 && selected < 0; axis++)
+                    {
+                        if (INTEGER(dim)[1 - axis] != 1) continue;
+                        SEXP labels = VECTOR_ELT(names, axis);
+                        if (TYPEOF(labels) != STRSXP || LENGTH(labels) != INTEGER(dim)[axis])
+                            continue;
+                        for (int i = 0; i < LENGTH(labels); i++)
+                            if (STRING_ELT(labels, i) != NA_STRING &&
+                                !strcmp(key, translateCharUTF8(STRING_ELT(labels, i))))
+                            {
+                                selected = i;
+                                break;
+                            }
+                    }
+                    if (selected >= 0)
+                        single_index = lmm_keep(ScalarInteger(selected + 1), np);
+                }
+            }
+        }
         SETCAR(call,
                findFun(install(!strcmp(action, "result.subset") ? "[" : "[["),
                        R_BaseEnv));
@@ -63851,11 +64114,14 @@ static SEXP lmm_native_simple(SEXP args, int *np)
         for (SEXP from = CDR(indices); from != R_NilValue;
              from = CDR(from), node = CDR(node))
         {
-            SETCAR(node, CAR(from));
+            SETCAR(node, from == CDR(indices) && evaluated_index
+                             ? lmm_quoted(single_index, np) : CAR(from));
             SET_TAG(node, TAG(from));
         }
-        SETCAR(node, mvm_get(args, !strcmp(action, "result.subset") ? "drop"
-                                                                    : "exact"));
+        SETCAR(node, !strcmp(action, "result.subset") && isMatrix(plain)
+                         ? lmm_keep(ScalarLogical(FALSE), np)
+                         : mvm_get(args, !strcmp(action, "result.subset") ? "drop"
+                                                                         : "exact"));
         SET_TAG(node,
                 install(!strcmp(action, "result.subset") ? "drop" : "exact"));
         return lmm_result_wrap(lmm_keep(eval(call, mvm_get(args, "envir")), np),
@@ -64209,7 +64475,7 @@ static void lmm_allfit_diagnostics_values(lmm_allfit_task *job,
     if (is_singular && !strcmp(singular, "warning"))
     {
         char message[160];
-        snprintf(message, sizeof(message),
+        st_text_write(message, sizeof(message),
                  "st.lmm: singular random-effect covariance at tolerance %.3g",
                  tol);
         lmm_allfit_warning(job, message);
@@ -64547,7 +64813,8 @@ static SEXP lmm_selection_covariance_export_request(lmm_selection_values *fit,
     const double *values = lmm_selection_covariance_request(fit, args);
     SEXP out = lmm_keep(allocMatrix(REALSXP, fit->p, fit->p), np),
          dimensions = lmm_keep(allocVector(VECSXP, 2), np);
-    memcpy(REAL(out), values, (size_t)fit->p * fit->p * sizeof(double));
+    if (fit->p > 0)
+        memcpy(REAL(out), values, (size_t)fit->p * fit->p * sizeof(double));
     SET_VECTOR_ELT(dimensions, 0, names);
     SET_VECTOR_ELT(dimensions, 1, names);
     setAttrib(out, R_DimNamesSymbol, dimensions);
@@ -64601,7 +64868,8 @@ static SEXP lmm_selection_extract_request(SEXP object, lmm_arg_view *args, SEXP 
     else
     {
         out = lmm_keep(allocVector(REALSXP, fit.p), np);
-        memcpy(REAL(out), fit.coefficients, (size_t)fit.p * sizeof(double));
+        if (fit.p > 0)
+            memcpy(REAL(out), fit.coefficients, (size_t)fit.p * sizeof(double));
         setAttrib(out, R_NamesSymbol, names);
         out = lmm_allfit_display(out, np, 0);
         if (lmm_arg_logical(args, "vcov") == TRUE)
@@ -65373,7 +65641,7 @@ static SEXP lmm_drop1_request(lmm_arg_view *args, int *np)
         SEXP previous = getAttrib(out, install("note"));
         const char *text = isNull(previous) ? "" : CHAR(asChar(previous));
         char note[1024];
-        snprintf(note, sizeof(note), "%s%sInformation criterion penalty k = %.8g.",
+        st_text_write(note, sizeof(note), "%s%sInformation criterion penalty k = %.8g.",
                  text, *text ? "\n" : "", k);
         setAttrib(out, install("note"), lmm_keep(mkString(note), np));
     }
@@ -65495,7 +65763,8 @@ static SEXP lmm_allfit_values(lmm_allfit_task *job, int *diagnostic_index,
         if (!ok)
             REAL(fitted)[i] = NA_REAL;
     }
-    memcpy(REAL(parameters), c->par, (size_t)c->np * sizeof(double));
+    if (c->np > 0)
+        memcpy(REAL(parameters), c->par, (size_t)c->np * sizeof(double));
     SET_VECTOR_ELT(out, 0, lmm_keep(ScalarReal(-c->objective), np));
     SET_VECTOR_ELT(out, 1, lmm_keep(ScalarInteger(c->r), np));
     SET_VECTOR_ELT(out, 2, b);
@@ -65867,7 +66136,7 @@ static SEXP lmm_allfit_task_body(void *payload)
     if (job->status.status != 0)
     {
         char message[256];
-        snprintf(message, sizeof(message),
+        st_text_write(message, sizeof(message),
                  "st.lmm: %s; inferential tests are unavailable",
                  job->status.message);
         lmm_allfit_warning(job, message);
@@ -66364,6 +66633,7 @@ static void lmm_bootstrap_prepare(SEXP args, lmm_bootstrap_context *c, int *np)
             else
                 response = lmm_bootstrap_response(
                     c->object, VECTOR_ELT(responses, i), &local);
+            response = lmm_response_matrix(response, traits, &local);
             SET_VECTOR_ELT(VECTOR_ELT(c->records, i), LMM_BOOT_RESPONSE,
                            response);
             UNPROTECT(local);
@@ -66441,14 +66711,11 @@ static void lmm_bootstrap_prepare(SEXP args, lmm_bootstrap_context *c, int *np)
                 if (STRING_ELT(traits, i) == NA_STRING && !c->simulation_error)
                     c->simulation_error =
                         "simulate.st.lmm: prepared trait names must be nonmissing";
-        if (c->nt > 1)
-        {
-            c->dimensions = lmm_keep(allocVector(VECSXP, 2), np);
-            SET_VECTOR_ELT(
-                c->dimensions, 0,
-                lmm_simulation_rows(mvm_get(c->object, "data"), c->nr, np));
-            SET_VECTOR_ELT(c->dimensions, 1, traits);
-        }
+        c->dimensions = lmm_keep(allocVector(VECSXP, 2), np);
+        SET_VECTOR_ELT(
+            c->dimensions, 0,
+            lmm_simulation_rows(mvm_get(c->object, "data"), c->nr, np));
+        SET_VECTOR_ELT(c->dimensions, 1, traits);
     }
 }
 
@@ -66468,11 +66735,8 @@ static SEXP lmm_bootstrap_draw_body(void *payload)
     {
         if (c->simulation_error)
             error("%s", c->simulation_error);
-        response = lmm_keep(c->nt == 1 ? allocVector(REALSXP, c->n)
-                                       : allocMatrix(REALSXP, c->nr, c->nt),
-                            &np);
-        if (c->nt > 1)
-            setAttrib(response, R_DimNamesSymbol, c->dimensions);
+        response = lmm_keep(allocMatrix(REALSXP, c->nr, c->nt), &np);
+        setAttrib(response, R_DimNamesSymbol, c->dimensions);
         GetRNGstate();
         for (int i = 0; i < c->n; i++)
             c->noise[i] = norm_rand();
@@ -66486,7 +66750,11 @@ static SEXP lmm_bootstrap_draw_body(void *payload)
         }
     }
     if (!c->joint)
+    {
+        response = lmm_response_matrix(
+            response, mvm_get(mvm_get(c->object, "model"), "traits"), &np);
         lmm_bootstrap_response_mask(c->object, response);
+    }
     SEXP seed = lmm_native_getvar(install(".Random.seed"), R_GlobalEnv, 0);
     if (seed == R_UnboundValue)
         error("Bootstrap stream state is missing");
@@ -66595,7 +66863,7 @@ static SEXP lmm_bootstrap_finish(lmm_bootstrap_context *c, SEXP runtime,
         void *mark = st_work_mark();
         int local = 0;
         char label[32];
-        snprintf(label, sizeof(label), "%d", i + 1);
+        st_text_write(label, sizeof(label), "%d", i + 1);
         SET_STRING_ELT(rows, i, mkChar(label));
         SEXP record = VECTOR_ELT(c->records, i);
         lmm_bootstrap_task job = {c, record, 0};
@@ -66994,7 +67262,7 @@ static SEXP lmm_overlay_predict(SEXP object, SEXP term, int block,
                            *group = translateCharUTF8(STRING_ELT(group_names, g));
                 size_t size = strlen(parent) + strlen(group) + 48;
                 char *label = mvm_alloc(size, sizeof(char));
-                snprintf(label, size, "%s:%zu:%s", group, strlen(parent), parent);
+                st_text_write(label, size, "%s:%zu:%s", group, strlen(parent), parent);
                 SET_STRING_ELT(expanded, a + parents * g, mkCharCE(label, CE_UTF8));
             }
         labels = expanded;
@@ -67236,7 +67504,7 @@ static void lmm_gwas_read_markers(lmm_gwas_markers *p, SEXP input, SEXP map,
             {
                 int j = (int)entry->nr;
                 char label[64];
-                snprintf(label, sizeof(label), "%d", entry->chrom);
+                st_text_write(label, sizeof(label), "%d", entry->chrom);
                 p->chrom[j] = lmm_design_string(label);
                 p->position[j] = entry->pos;
             }
@@ -67256,7 +67524,7 @@ static void lmm_gwas_read_markers(lmm_gwas_markers *p, SEXP input, SEXP map,
             const char *group = chrom->kind == ST_DATA_STRING
                                     ? st_data_string(chrom, i) : label;
             if (chrom->kind != ST_DATA_STRING)
-                snprintf(label, sizeof(label), "%.15g",
+                st_text_write(label, sizeof(label), "%.15g",
                          chrom->kind == ST_DATA_REAL ? chrom->data.real[i]
                                                     : chrom->data.integer[i]);
             p->chrom[j] = lmm_design_string(group);
@@ -68453,7 +68721,7 @@ static SEXP lmm_gwas(SEXP request)
     for (int t = 0; t < traits; t++)
     {
         char label[64];
-        snprintf(label, sizeof(label), "trait%d", t + 1);
+        st_text_write(label, sizeof(label), "trait%d", t + 1);
         SET_STRING_ELT(trait_names, t,
                        !isNull(rawdn) && !isNull(VECTOR_ELT(rawdn, 1))
                            ? STRING_ELT(VECTOR_ELT(rawdn, 1), t)
@@ -68612,10 +68880,10 @@ static SEXP lmm_gwas(SEXP request)
                                    : NA_STRING);
                 REAL(mvm_get(table, "position"))[row] = panel.position[marker];
                 char text[64];
-                snprintf(text, sizeof(text), "%d", panel.reference[marker]);
+                st_text_write(text, sizeof(text), "%d", panel.reference[marker]);
                 SET_STRING_ELT(mvm_get(table, "reference.allele"), row,
                                mkChar(text));
-                snprintf(text, sizeof(text), "%d", panel.effect[marker]);
+                st_text_write(text, sizeof(text), "%d", panel.effect[marker]);
                 SET_STRING_ELT(mvm_get(table, "effect.allele"), row,
                                mkChar(text));
                 double sum = 0;
@@ -69005,7 +69273,7 @@ static SEXP lmm_gwas_print(SEXP args)
                             "Score", "p",       "Status"};
         lmm_print_table(mvm_get(simulation, "thresholds"), tc, tl, 7, &options);
         lmm_print_text(&options,
-                       "Use p.sim <= alpha; score cutoffs require a strict "
+                       "Permutation significance uses p.sim <= alpha; score cutoffs require a strict "
                        "exceedance.\n");
     }
     return object;
@@ -69113,7 +69381,7 @@ static SEXP lmm_gwas_summary(SEXP args)
     for (int k = 0; k < LENGTH(fits); k++)
     {
         char fallback[64];
-        snprintf(fallback, sizeof(fallback), "fit%d", k + 1);
+        st_text_write(fallback, sizeof(fallback), "fit%d", k + 1);
         SEXP label = mkChar(fallback);
         if (TYPEOF(labels) == STRSXP && LENGTH(labels) == LENGTH(fits) &&
             STRING_ELT(labels, k) != NA_STRING &&
@@ -69357,7 +69625,7 @@ static SEXP lmm_diallel_cross(SEXP args)
         }
         size_t length = strlen(x) + strlen(y) + 64;
         char *label = mvm_alloc(length, sizeof(char));
-        snprintf(label, length, "%zu:%s|%zu:%s", strlen(x), x, strlen(y), y);
+        st_text_write(label, length, "%zu:%s|%zu:%s", strlen(x), x, strlen(y), y);
         uint64_t hash = UINT64_C(14695981039346656037);
         for (const unsigned char *p = (const unsigned char *)label; *p; p++)
             hash = (hash ^ *p) * UINT64_C(1099511628211);
@@ -69383,11 +69651,32 @@ static SEXP lmm_diallel_cross(SEXP args)
 
 typedef struct
 {
+    size_t matrix, index, value;
+    int allocated, valid;
+} ocs_face;
+
+typedef struct
+{
+    ocs_face *face;
+    double *matrix, *value;
+    int *index;
+    size_t matrix_capacity, index_capacity, value_capacity;
+    size_t matrix_used, index_used, value_used;
+    double warm_lipschitz;
+    double *pd_factor;
+    int *pd_index, pd_count;
+    size_t pd_capacity;
+} ocs_face_cache;
+
+typedef struct
+{
     int n, maxit, maxouter, rank;
     uint64_t iterations, outer;
     double tolerance, rank_tolerance, scale, merit_scale, merit_offset;
+    double relation_offset, *relation_linear;
     double *K, *g, *original_g, *lower, *upper, *eigenvectors, *eigenvalues;
     double minimum_eigenvalue, symmetry;
+    ocs_face_cache *face_cache;
 } ocs_problem;
 
 typedef struct
@@ -69396,11 +69685,212 @@ typedef struct
     int converged, iterations;
 } ocs_qp_result;
 
+static void ocs_face_prepare(ocs_problem *p)
+{
+    if (p->n < 2 || p->face_cache) return;
+    size_t matrix = 0, index = 0, value = 0,
+           matrix_limit = 1048576, linear_limit = 65536;
+    size_t pd_capacity = 0;
+    double pd_error = 64 * DBL_EPSILON * p->n * fmax(1, fabs(p->eigenvalues[p->n - 1]));
+    if (p->n >= 256 && !p->relation_linear && p->rank == p->n && p->eigenvalues[0] > pd_error)
+    {
+        pd_capacity = p->n > 512 ? 262144 : (size_t)p->n * p->n;
+        matrix_limit -= pd_capacity;
+    }
+    for (size_t d = 1; d < (size_t)p->n; d++)
+    {
+        if (d > (matrix_limit - matrix) / d) matrix = matrix_limit;
+        else matrix += d * d;
+        if (d + 1 > linear_limit - index) index = linear_limit;
+        else index += d + 1;
+        if (d > linear_limit - value) value = linear_limit;
+        else value += d;
+        if (matrix == matrix_limit && index == linear_limit &&
+            value == linear_limit) break;
+    }
+    ocs_face_cache *cache = mvm_alloc(1, sizeof(*cache));
+    cache->face = mvm_alloc((size_t)p->n + 1, sizeof(*cache->face));
+    cache->matrix = mvm_alloc(matrix, sizeof(double));
+    cache->index = mvm_alloc(index, sizeof(int));
+    cache->value = mvm_alloc(value, sizeof(double));
+    cache->matrix_capacity = matrix;
+    cache->index_capacity = index;
+    cache->value_capacity = value;
+    cache->pd_capacity = pd_capacity;
+    if (pd_capacity)
+    {
+        cache->pd_factor = mvm_alloc(pd_capacity, sizeof(double));
+        cache->pd_index = mvm_alloc(p->n, sizeof(int));
+    }
+    p->face_cache = cache;
+}
+
+static int ocs_face_get(ocs_problem *p, int count, const int *index,
+    double *vectors, double *values)
+{
+    ocs_face_cache *cache = p->face_cache;
+    if (!cache) return 0;
+    ocs_face *face = cache->face + count;
+    size_t d = (size_t)count - 1;
+    if (!face->valid || memcmp(cache->index + face->index, index,
+                               (size_t)count * sizeof(int))) return 0;
+    memcpy(vectors, cache->matrix + face->matrix, d * d * sizeof(double));
+    memcpy(values, cache->value + face->value, d * sizeof(double));
+    return 1;
+}
+
+static void ocs_face_set(ocs_problem *p, int count, const int *index,
+    const double *vectors, const double *values)
+{
+    ocs_face_cache *cache = p->face_cache;
+    if (!cache) return;
+    ocs_face *face = cache->face + count;
+    size_t d = (size_t)count - 1, cells = d * d;
+    if (!face->allocated)
+    {
+        if (cells > cache->matrix_capacity - cache->matrix_used ||
+            (size_t)count > cache->index_capacity - cache->index_used ||
+            d > cache->value_capacity - cache->value_used) return;
+        face->matrix = cache->matrix_used;
+        face->index = cache->index_used;
+        face->value = cache->value_used;
+        cache->matrix_used += cells;
+        cache->index_used += count;
+        cache->value_used += d;
+        face->allocated = 1;
+    }
+    face->valid = 0;
+    memcpy(cache->index + face->index, index, (size_t)count * sizeof(int));
+    memcpy(cache->matrix + face->matrix, vectors, cells * sizeof(double));
+    memcpy(cache->value + face->value, values, d * sizeof(double));
+    face->valid = 1;
+}
+
+static void ocs_accumulate(long double term, long double *value,
+                               long double *correction)
+{
+    long double next = *value + term;
+    *correction += fabsl(*value) >= fabsl(term)
+        ? (*value - next) + term : (term - next) + *value;
+    *value = next;
+}
+
+static int ocs_pd_direction(ocs_problem *p, int count, const int *index,
+    const double *gradient, double *direction, double *factor, double *rhs)
+{
+    ocs_face_cache *cache = p->face_cache;
+    if (!cache || !cache->pd_factor) return 0;
+    int info = 0, two = 2;
+    if (cache->pd_count == count &&
+        !memcmp(cache->pd_index, index, (size_t)count * sizeof(int)))
+        memcpy(factor, cache->pd_factor, (size_t)count * count * sizeof(double));
+    else
+    {
+        for (int j = 0; j < count; j++) for (int i = 0; i < count; i++)
+            factor[i + (size_t)count * j] = p->K[index[i] + (size_t)p->n * index[j]];
+        F77_CALL(dpotrf)("U", &count, factor, &count, &info FCONE);
+        if (info) return 0;
+        if ((size_t)count <= cache->pd_capacity / count)
+        {
+            memcpy(cache->pd_factor, factor, (size_t)count * count * sizeof(double));
+            memcpy(cache->pd_index, index, (size_t)count * sizeof(int));
+            cache->pd_count = count;
+        }
+    }
+    for (int i = 0; i < count; i++)
+    {
+        rhs[i] = -gradient[index[i]];
+        rhs[count + i] = 1;
+    }
+    F77_CALL(dpotrs)("U", &count, &two, factor, &count, rhs, &count, &info FCONE);
+    if (info) return 0;
+    long double total = 0, one = 0;
+    for (int i = 0; i < count; i++)
+    {
+        if (!R_FINITE(rhs[i]) || !R_FINITE(rhs[count + i])) return 0;
+        total += rhs[i];
+        one += rhs[count + i];
+    }
+    if (!(one > 0) || !R_FINITE((double)one)) return 0;
+    long double multiplier = total / one, mass = 0;
+    int largest = 0;
+    for (int i = 0; i < count; i++)
+    {
+        rhs[i] = (double)((long double)rhs[i] - multiplier * rhs[count + i]);
+        if (!R_FINITE(rhs[i])) return 0;
+        mass += rhs[i];
+        if (fabs(rhs[i]) > fabs(rhs[largest])) largest = i;
+    }
+    rhs[largest] = (double)((long double)rhs[largest] - mass);
+    if (!R_FINITE(rhs[largest])) return 0;
+    for (int i = 0; i < count; i++) direction[index[i]] = rhs[i];
+    return 1;
+}
+
 static double ocs_dot(const double *a, const double *b, int n)
 {
-    long double value = 0;
-    for (int i = 0; i < n; i++) value += (long double)a[i] * b[i];
-    return (double)value;
+    long double value = 0, correction = 0;
+    for (int i = 0; i < n; i++)
+        ocs_accumulate((long double)a[i] * b[i], &value, &correction);
+    return (double)(value + correction);
+}
+
+static int ocs_shift_relation(ocs_problem *p, const double *matrix)
+{
+    int n = p->n;
+    double smallest = INFINITY, largest = -INFINITY;
+    size_t count = (size_t)n * n;
+    for (size_t i = 0; i < count; i++)
+    {
+        smallest = fmin(smallest, matrix[i]);
+        largest = fmax(largest, matrix[i]);
+    }
+    if (smallest <= 0 || largest - smallest > smallest * 1e-2) return 0;
+    double *linear = mvm_alloc(n, sizeof(double));
+    void *mark = st_work_mark();
+    double *candidate = mvm_alloc(count, sizeof(double)),
+           *vectors = mvm_alloc(count, sizeof(double)),
+           *values = mvm_alloc(n, sizeof(double));
+    double offset = matrix[0], scale = 0, qscale = 0;
+    int nonzero_linear = 0;
+    for (int i = 0; i < n; i++)
+    {
+        linear[i] = (double)((long double)matrix[i] - offset);
+        scale = fmax(scale, fabs(linear[i]));
+        if (linear[i]) nonzero_linear = 1;
+    }
+    for (int j = 0; j < n; j++) for (int i = 0; i < n; i++)
+    {
+        long double value = ((long double)matrix[i + (size_t)n * j] -
+            matrix[i]) - ((long double)matrix[(size_t)n * j] - offset);
+        candidate[i + (size_t)n * j] = (double)value;
+        qscale = fmax(qscale, fabs((double)value));
+    }
+    scale = fmax(scale, qscale);
+    if (!scale) scale = 1;
+    if (!qscale) qscale = 1;
+    for (size_t i = 0; i < count; i++) vectors[i] = candidate[i] / qscale;
+    if (!mvm_symmetric_eigen(vectors, values, n, MVM_EIGEN_VECTORS))
+        error("Cross-planning relation shift eigendecomposition failed");
+    double bound = 64 * DBL_EPSILON * n * fmax(1, fabs(values[n - 1]));
+    int shifted = values[0] >= -bound;
+    if (!shifted)
+        error("Cross-planning common-offset K has a non-positive-semidefinite centered component");
+    if (shifted)
+    {
+        for (size_t i = 0; i < count; i++) p->K[i] = candidate[i] / scale;
+        memcpy(p->eigenvectors, vectors, count * sizeof(double));
+        for (int i = 0; i < n; i++)
+        {
+            p->eigenvalues[i] = values[i] * (qscale / scale);
+            linear[i] /= scale;
+        }
+        p->scale = scale;
+        p->relation_offset = offset;
+        p->relation_linear = nonzero_linear ? linear : NULL;
+    }
+    st_work_reset(mark);
+    return shifted;
 }
 
 static void ocs_product(const ocs_problem *p, const double *x, double *y)
@@ -69415,7 +69905,48 @@ static double ocs_relatedness(const ocs_problem *p, const double *x,
                                double *work)
 {
     ocs_product(p, x, work);
-    return ocs_dot(x, work, p->n);
+    double value = ocs_dot(x, work, p->n);
+    if (p->relation_linear)
+    {
+        value += 2 * ocs_dot(p->relation_linear, x, p->n);
+        for (int i = 0; i < p->n; i++) work[i] += p->relation_linear[i];
+    }
+    return value;
+}
+
+static long double ocs_centered_gradient(const ocs_problem *p,
+    const double *x, double tradeoff, double *gradient)
+{
+    ocs_product(p, x, gradient);
+    long double common = (long double)gradient[0] + p->relation_linear[0] -
+                         (long double)tradeoff * p->g[0];
+    for (int i = 0; i < p->n; i++)
+        gradient[i] = (double)(((long double)gradient[i] +
+            p->relation_linear[i] - (long double)tradeoff * p->g[i]) - common);
+    return common;
+}
+
+static long double ocs_mass_delta(const double *x, int n)
+{
+    long double sum = 0, correction = 0;
+    for (int i = 0; i < n; i++) ocs_accumulate(x[i], &sum, &correction);
+    return (sum - 1) + correction;
+}
+
+static long double ocs_original_excess(const ocs_problem *p,
+    const double *x, double theta, double *work)
+{
+    long double value = (long double)ocs_relatedness(p, x, work) * p->scale -
+                        ((long double)theta - p->relation_offset);
+    if (p->relation_offset)
+    {
+        long double delta = ocs_mass_delta(x, p->n);
+        value += p->relation_offset * delta * (2 + delta);
+        if (p->relation_linear)
+            value += 2 * delta * p->scale *
+                     ocs_dot(p->relation_linear, x, p->n);
+    }
+    return value;
 }
 
 static double ocs_linear(int n, const double *score, const double *lower,
@@ -69480,6 +70011,7 @@ static void ocs_refine_minimum(const ocs_problem *p, const double *lower,
             if (active[i]) rhs[count] -= x[i];
         for (int j = 0; j < count; j++)
         {
+            if (p->relation_linear) rhs[j] -= p->relation_linear[index[j]];
             for (int i = 0; i < count; i++)
                 a[i + (size_t)d * j] =
                     p->K[index[i] + (size_t)n * index[j]];
@@ -69619,6 +70151,233 @@ static int ocs_row_basis(const ocs_problem *p, double *basis,
     return rank;
 }
 
+static void ocs_project_box(int n, const double *v, const double *lower,
+    const double *upper, double *x)
+{
+    long double low = INFINITY, high = -INFINITY;
+    for (int i = 0; i < n; i++)
+    {
+        low = fminl(low, (long double)v[i] - upper[i]);
+        high = fmaxl(high, (long double)v[i] - lower[i]);
+    }
+    for (int iteration = 0; iteration < 80; iteration++)
+    {
+        long double middle = low * .5L + high * .5L, sum = 0;
+        if (middle == low || middle == high) break;
+        for (int i = 0; i < n; i++)
+        {
+            long double value = (long double)v[i] - middle;
+            sum += value < lower[i] ? lower[i] : value > upper[i] ? upper[i] : value;
+        }
+        if (sum > 1) low = middle;
+        else high = middle;
+    }
+    long double remaining = 1;
+    for (int i = 0; i < n; i++)
+    {
+        long double value = (long double)v[i] - high;
+        x[i] = value < lower[i] ? lower[i] : value > upper[i] ? upper[i] : (double)value;
+        remaining -= x[i];
+    }
+    for (int i = 0; i < n && remaining != 0; i++)
+    {
+        long double change = remaining > 0 ? fminl(remaining, (long double)upper[i] - x[i])
+                                           : fmaxl(remaining, (long double)lower[i] - x[i]);
+        double before = x[i];
+        x[i] = (double)((long double)x[i] + change);
+        if (x[i] < lower[i]) x[i] = lower[i];
+        if (x[i] > upper[i]) x[i] = upper[i];
+        remaining -= (long double)x[i] - before;
+    }
+}
+
+static double ocs_face_stationarity(int n, const double *gradient,
+    const int *active)
+{
+    long double sum = 0;
+    int count = 0;
+    double violation = 0, smallest = INFINITY, largest = -INFINITY;
+    for (int i = 0; i < n; i++)
+        if (!active[i]) { sum += gradient[i]; count++; }
+    if (count)
+    {
+        long double multiplier = -sum / count;
+        for (int i = 0; i < n; i++)
+        {
+            long double value = (long double)gradient[i] + multiplier;
+            if (!active[i]) violation = fmax(violation, (double)fabsl(value));
+            else if (active[i] == -1) violation = fmax(violation, (double)-value);
+            else if (active[i] == 1) violation = fmax(violation, (double)value);
+        }
+    }
+    else
+    {
+        for (int i = 0; i < n; i++)
+        {
+            if (active[i] == -1) smallest = fmin(smallest, gradient[i]);
+            else if (active[i] == 1) largest = fmax(largest, gradient[i]);
+        }
+        if (R_FINITE(smallest) && R_FINITE(largest)) violation = fmax(0, largest - smallest);
+    }
+    return violation;
+}
+
+static int ocs_warm_large(ocs_problem *p, double tradeoff,
+    const double *lower, const double *upper, double *x,
+    double *previous, double *y, double *v, double *gradient,
+    double *product, int *active, int *order)
+{
+    int n = p->n;
+    if (n < 256 || p->relation_linear || p->maxit < 4 ||
+        !R_FINITE(tradeoff) || tradeoff > 1 / sqrt(DBL_EPSILON)) return 0;
+    double largest = p->eigenvalues[n - 1],
+           error = 64 * DBL_EPSILON * n * fmax(1, fabs(largest)),
+           lipschitz = largest + error,
+           strong = fmax(0, p->eigenvalues[0] - error);
+    if (!(lipschitz > 0) || !R_FINITE(lipschitz)) return 0;
+    if (p->face_cache && p->face_cache->warm_lipschitz > 0)
+        lipschitz = p->face_cache->warm_lipschitz;
+    else
+    {
+        double common = INFINITY;
+        for (size_t i = 0; i < (size_t)n * n; i++) common = fmin(common, p->K[i]);
+        common = fmax(0, common);
+        long double row_bound = 0;
+        for (int i = 0; i < n; i++)
+        {
+            long double sum = 0;
+            for (int j = 0; j < n; j++) sum += fabsl((long double)p->K[i + (size_t)n * j] - common);
+            row_bound = fmaxl(row_bound, sum);
+        }
+        double candidate = (double)(row_bound * (1 + 64 * DBL_EPSILON * n) + error);
+        if (candidate > 0 && R_FINITE(candidate)) lipschitz = fmin(lipschitz, candidate);
+        if (p->face_cache) p->face_cache->warm_lipschitz = lipschitz;
+    }
+    strong = fmin(strong, lipschitz);
+    int accelerated = !(n < 1024 && (!(strong > 0) || lipschitz / strong > 1000));
+    double momentum = strong > 0 ?
+        (sqrt(lipschitz) - sqrt(strong)) / (sqrt(lipschitz) + sqrt(strong)) : 0;
+    double acceleration = 1, target = p->tolerance * .02 * (tradeoff > 0 ? tradeoff : 1e-4);
+    int budget = p->maxit / 2;
+    if (budget > 1024) budget = 1024;
+    double objective = .5 * ocs_relatedness(p, x, product) - tradeoff * ocs_dot(p->g, x, n);
+    int used = 0;
+    if (p->rank == n && strong > 0)
+    {
+        memcpy(previous, x, (size_t)n * sizeof(double));
+        long double mass = 0, merit_mass = 0;
+        for (int j = 0; j < n; j++)
+        {
+            if (!(j % 64)) R_CheckUserInterrupt();
+            long double one = 0, merit = 0;
+            const double *column = p->eigenvectors + (size_t)n * j;
+            for (int i = 0; i < n; i++)
+            {
+                one += column[i];
+                merit += (long double)column[i] * p->g[i];
+            }
+            y[j] = (double)one;
+            v[j] = (double)merit;
+            mass += one * one / p->eigenvalues[j];
+            merit_mass += one * merit / p->eigenvalues[j];
+        }
+        if (mass > 0 && R_FINITE((double)mass) && R_FINITE((double)merit_mass))
+        {
+            long double multiplier = (1 - (long double)tradeoff * merit_mass) / mass;
+            for (int j = 0; j < n; j++)
+                gradient[j] = (double)(((long double)tradeoff * v[j] + multiplier * y[j]) / p->eigenvalues[j]);
+            for (int i = 0; i < n; i++)
+            {
+                long double value = 0;
+                for (int j = 0; j < n; j++)
+                    value += (long double)p->eigenvectors[i + (size_t)n * j] * gradient[j];
+                x[i] = (double)value;
+            }
+            ocs_project_box(n, x, lower, upper, v);
+            memcpy(x, v, (size_t)n * sizeof(double));
+            double next = .5 * ocs_relatedness(p, x, product) - tradeoff * ocs_dot(p->g, x, n);
+            if (R_FINITE(next) && next <= objective)
+                objective = next;
+            else
+            {
+                memcpy(x, previous, (size_t)n * sizeof(double));
+                ocs_product(p, x, product);
+            }
+            used++;
+            p->iterations++;
+            double magnitude = 0;
+            for (int i = 0; i < n; i++)
+            {
+                gradient[i] = product[i] - tradeoff * p->g[i];
+                magnitude = fmax(magnitude, fabs(gradient[i]));
+            }
+            double gap = fmax(0, ocs_dot(gradient, x, n) -
+                ocs_linear(n, gradient, lower, upper, 0, v, order)),
+                   limit = fmax(target, 32 * DBL_EPSILON * (1 + magnitude));
+            ocs_active(n, x, lower, upper, active);
+            if ((gap <= limit && ocs_face_stationarity(n, gradient, active) <= limit) || n < 1024)
+                return used;
+        }
+    }
+    if (!accelerated) return used;
+    memcpy(y, x, (size_t)n * sizeof(double));
+    for (; used < budget; used++)
+    {
+        if (!(used % 16)) R_CheckUserInterrupt();
+        memcpy(previous, x, (size_t)n * sizeof(double));
+        ocs_product(p, y, product);
+        for (int i = 0; i < n; i++) v[i] = y[i] - (product[i] - tradeoff * p->g[i]) / lipschitz;
+        ocs_project_box(n, v, lower, upper, x);
+        double q = ocs_relatedness(p, x, product),
+               next = .5 * q - tradeoff * ocs_dot(p->g, x, n);
+        int restarted = 0;
+        if (!R_FINITE(next) || next > objective +
+            64 * DBL_EPSILON * (1 + fabs(next) + fabs(objective)))
+        {
+            ocs_product(p, previous, product);
+            for (int i = 0; i < n; i++) v[i] = previous[i] - (product[i] - tradeoff * p->g[i]) / lipschitz;
+            ocs_project_box(n, v, lower, upper, x);
+            q = ocs_relatedness(p, x, product);
+            next = .5 * q - tradeoff * ocs_dot(p->g, x, n);
+            acceleration = 1;
+            restarted = 1;
+        }
+        p->iterations++;
+        if (!R_FINITE(next))
+        {
+            memcpy(x, previous, (size_t)n * sizeof(double));
+            used++;
+            break;
+        }
+        double magnitude = 0;
+        for (int i = 0; i < n; i++)
+        {
+            gradient[i] = product[i] - tradeoff * p->g[i];
+            magnitude = fmax(magnitude, fabs(gradient[i]));
+        }
+        double gap = fmax(0, ocs_dot(gradient, x, n) -
+            ocs_linear(n, gradient, lower, upper, 0, v, order)),
+               limit = fmax(target, 32 * DBL_EPSILON * (1 + magnitude));
+        ocs_active(n, x, lower, upper, active);
+        if (gap <= limit && ocs_face_stationarity(n, gradient, active) <= limit)
+        {
+            used++;
+            break;
+        }
+        double beta = momentum;
+        if (!(strong > 0))
+        {
+            double next_acceleration = .5 * (1 + sqrt(1 + 4 * acceleration * acceleration));
+            beta = (acceleration - 1) / next_acceleration;
+            acceleration = next_acceleration;
+        }
+        if (restarted) beta = 0;
+        for (int i = 0; i < n; i++) y[i] = x[i] + beta * (x[i] - previous[i]);
+        objective = next;
+    }
+    return used;
+}
+
 static ocs_qp_result ocs_qp(ocs_problem *p, double tradeoff,
                               const double *lower, const double *upper,
                               double *x)
@@ -69643,29 +70402,73 @@ static ocs_qp_result ocs_qp(ocs_problem *p, double tradeoff,
     ocs_active(n, x, lower, upper, active);
     ocs_qp_result result = {0};
     double target = p->tolerance * .02 * (tradeoff > 0 ? tradeoff : 1e-4);
-    for (int iteration = 0; iteration < p->maxit; iteration++)
+    if (p->relation_linear)
+        target *= fmin(1, fmax(DBL_MIN, fabs(p->eigenvalues[n - 1])));
+    int warm_iterations = ocs_warm_large(p, tradeoff, lower, upper, x,
+        direction, product, oracle, gradient, kx, active, order);
+    result.iterations = warm_iterations;
+    ocs_active(n, x, lower, upper, active);
+    for (int iteration = warm_iterations; iteration < p->maxit; iteration++)
     {
         if (!(iteration % 32)) R_CheckUserInterrupt();
         result.iterations++;
         p->iterations++;
         double q = ocs_relatedness(p, x, kx), magnitude = 0;
+        long double gradient_common = 0;
+        if (p->relation_linear)
+            gradient_common = ocs_centered_gradient(p, x, tradeoff, gradient);
         for (int i = 0; i < n; i++)
         {
-            gradient[i] = kx[i] - tradeoff * p->g[i];
+            if (!p->relation_linear) gradient[i] = kx[i] - tradeoff * p->g[i];
             magnitude = fmax(magnitude, fabs(gradient[i]));
         }
-        double current = ocs_dot(gradient, x, n),
+        double current = p->relation_linear
+                   ? (double)((long double)ocs_dot(gradient, x, n) +
+                       gradient_common * ocs_mass_delta(x, n))
+                   : ocs_dot(gradient, x, n),
                linear = ocs_linear(n, gradient, lower, upper, 0, oracle,
                                      order),
                gap = fmax(0, current - linear),
-               limit = fmax(target, 32 * DBL_EPSILON * (1 + magnitude));
+               limit = fmax(target, p->relation_linear
+                   ? (double)(32 * LDBL_EPSILON * (1 + magnitude + fabs(tradeoff)) +
+                       32 * DBL_EPSILON * fabs(p->eigenvalues[n - 1]))
+                   : 32 * DBL_EPSILON * (1 + magnitude));
         result.value = q - 2 * tradeoff * ocs_dot(p->g, x, n);
         result.gap = 2 * gap;
         result.lower_bound = result.value - result.gap;
         if (gap <= limit)
         {
-            result.converged = 1;
-            break;
+            long double sum = 0;
+            int count = 0;
+            double violation = 0, smallest = INFINITY, largest = -INFINITY;
+            for (int i = 0; i < n; i++)
+                if (!active[i]) { sum += gradient[i]; count++; }
+            if (count)
+            {
+                long double multiplier = -sum / count;
+                for (int i = 0; i < n; i++)
+                {
+                    long double value = (long double)gradient[i] + multiplier;
+                    if (!active[i]) violation = fmax(violation, (double)fabsl(value));
+                    else if (active[i] == -1) violation = fmax(violation, (double)-value);
+                    else if (active[i] == 1) violation = fmax(violation, (double)value);
+                }
+            }
+            else
+            {
+                for (int i = 0; i < n; i++)
+                {
+                    if (active[i] == -1) smallest = fmin(smallest, gradient[i]);
+                    else if (active[i] == 1) largest = fmax(largest, gradient[i]);
+                }
+                if (R_FINITE(smallest) && R_FINITE(largest))
+                    violation = fmax(0, largest - smallest);
+            }
+            if (violation <= limit)
+            {
+                result.converged = 1;
+                break;
+            }
         }
         int free_count = 0;
         for (int i = 0; i < n; i++)
@@ -69674,81 +70477,95 @@ static ocs_qp_result ocs_qp(ocs_problem *p, double tradeoff,
         memset(direction, 0, (size_t)n * sizeof(double));
         if (free_count > 1)
         {
-            int d = free_count - 1;
-            memset(basis, 0, (size_t)free_count * d * sizeof(double));
-            for (int j = 0; j < d; j++)
+            if (!ocs_pd_direction(p, free_count, free_index, gradient, direction, reduced, middle))
             {
-                double value = 1 / sqrt((double)(j + 1) * (j + 2));
-                for (int i = 0; i <= j; i++)
-                    basis[i + (size_t)free_count * j] = value;
-                basis[j + 1 + (size_t)free_count * j] = -(j + 1) * value;
-            }
-            for (int j = 0; j < d; j++)
+                int d = free_count - 1;
+                memset(basis, 0, (size_t)free_count * d * sizeof(double));
+                for (int j = 0; j < d; j++)
+                {
+                    double value = 1 / sqrt((double)(j + 1) * (j + 2));
+                    for (int i = 0; i <= j; i++)
+                        basis[i + (size_t)free_count * j] = value;
+                    basis[j + 1 + (size_t)free_count * j] = -(j + 1) * value;
+                }
+                if (!ocs_face_get(p, free_count, free_index, reduced, eigen))
+                {
+                    for (int j = 0; j < d; j++)
+                        for (int i = 0; i < free_count; i++)
+                        {
+                            double value = 0;
+                            for (int k = 0; k < free_count; k++)
+                                value += p->K[free_index[i] +
+                                              (size_t)n * free_index[k]] *
+                                         basis[k + (size_t)free_count * j];
+                            middle[i + (size_t)free_count * j] = value;
+                        }
+                    for (int j = 0; j < d; j++)
+                        for (int i = 0; i < d; i++)
+                        {
+                            double value = 0;
+                            for (int k = 0; k < free_count; k++)
+                                value += basis[k + (size_t)free_count * i] *
+                                         middle[k + (size_t)free_count * j];
+                            reduced[i + (size_t)d * j] = value;
+                        }
+                    if (!mvm_symmetric_eigen(reduced, eigen, d,
+                                              MVM_EIGEN_VECTORS))
+                        error("st.ocs: reduced eigendecomposition failed");
+                    ocs_face_set(p, free_count, free_index, reduced, eigen);
+                }
+                for (int j = 0; j < d; j++)
+                {
+                    projected[j] = 0;
+                    for (int i = 0; i < free_count; i++)
+                        projected[j] += basis[i + (size_t)free_count * j] *
+                                        gradient[free_index[i]];
+                }
+                double threshold = p->rank_tolerance *
+                                   fmax(DBL_MIN, fabs(eigen[d - 1])), nullnorm = 0;
+                for (int j = 0; j < d; j++)
+                {
+                    coefficient[j] = 0;
+                    for (int i = 0; i < d; i++)
+                        coefficient[j] += reduced[i + (size_t)d * j] *
+                                          projected[i];
+                    if (eigen[j] <= threshold)
+                        nullnorm += coefficient[j] * coefficient[j];
+                }
+                null_direction = sqrt(nullnorm) > limit * .1;
+                for (int j = 0; j < d; j++)
+                    coefficient[j] = null_direction
+                        ? (eigen[j] <= threshold ? -coefficient[j] : 0)
+                        : (eigen[j] > threshold
+                               ? -coefficient[j] / eigen[j] : 0);
+                for (int i = 0; i < d; i++)
+                {
+                    coordinate[i] = 0;
+                    for (int j = 0; j < d; j++)
+                        coordinate[i] += reduced[i + (size_t)d * j] *
+                                         coefficient[j];
+                }
+                double norm = 0;
                 for (int i = 0; i < free_count; i++)
                 {
                     double value = 0;
-                    for (int k = 0; k < free_count; k++)
-                        value += p->K[free_index[i] +
-                                      (size_t)n * free_index[k]] *
-                                 basis[k + (size_t)free_count * j];
-                    middle[i + (size_t)free_count * j] = value;
+                    for (int j = 0; j < d; j++)
+                        value += basis[i + (size_t)free_count * j] *
+                                 coordinate[j];
+                    direction[free_index[i]] = value;
+                    norm = fmax(norm, fabs(value));
                 }
-            for (int j = 0; j < d; j++)
-                for (int i = 0; i < d; i++)
-                {
-                    double value = 0;
-                    for (int k = 0; k < free_count; k++)
-                        value += basis[k + (size_t)free_count * i] *
-                                 middle[k + (size_t)free_count * j];
-                    reduced[i + (size_t)d * j] = value;
-                }
-            if (!mvm_symmetric_eigen(reduced, eigen, d,
-                                      MVM_EIGEN_VECTORS))
-                error("st.ocs: reduced eigendecomposition failed");
-            for (int j = 0; j < d; j++)
-            {
-                projected[j] = 0;
-                for (int i = 0; i < free_count; i++)
-                    projected[j] += basis[i + (size_t)free_count * j] *
-                                    gradient[free_index[i]];
+                if (norm <= 64 * DBL_EPSILON ||
+                    ocs_dot(direction, gradient, n) >= 0)
+                    fallback = 1;
+            
             }
-            double threshold = p->rank_tolerance *
-                               fmax(DBL_MIN, fabs(eigen[d - 1])), nullnorm = 0;
-            for (int j = 0; j < d; j++)
+            else
             {
-                coefficient[j] = 0;
-                for (int i = 0; i < d; i++)
-                    coefficient[j] += reduced[i + (size_t)d * j] *
-                                      projected[i];
-                if (eigen[j] <= threshold)
-                    nullnorm += coefficient[j] * coefficient[j];
+                double norm = 0;
+                for (int i = 0; i < free_count; i++) norm = fmax(norm, fabs(direction[free_index[i]]));
+                if (norm <= 64 * DBL_EPSILON || ocs_dot(direction, gradient, n) >= 0) fallback = 1;
             }
-            null_direction = sqrt(nullnorm) > limit * .1;
-            for (int j = 0; j < d; j++)
-                coefficient[j] = null_direction
-                    ? (eigen[j] <= threshold ? -coefficient[j] : 0)
-                    : (eigen[j] > threshold
-                           ? -coefficient[j] / eigen[j] : 0);
-            for (int i = 0; i < d; i++)
-            {
-                coordinate[i] = 0;
-                for (int j = 0; j < d; j++)
-                    coordinate[i] += reduced[i + (size_t)d * j] *
-                                     coefficient[j];
-            }
-            double norm = 0;
-            for (int i = 0; i < free_count; i++)
-            {
-                double value = 0;
-                for (int j = 0; j < d; j++)
-                    value += basis[i + (size_t)free_count * j] *
-                             coordinate[j];
-                direction[free_index[i]] = value;
-                norm = fmax(norm, fabs(value));
-            }
-            if (norm <= 64 * DBL_EPSILON ||
-                ocs_dot(direction, gradient, n) >= 0)
-                fallback = 1;
         }
         else fallback = 1;
         if (fallback)
@@ -69836,10 +70653,17 @@ static ocs_qp_result ocs_qp(ocs_problem *p, double tradeoff,
     if (tradeoff == 0 && result.converged)
         ocs_refine_minimum(p, lower, upper, x);
     double q = ocs_relatedness(p, x, kx);
-    for (int i = 0; i < n; i++) gradient[i] = kx[i] - tradeoff * p->g[i];
-    double linear = ocs_linear(n, gradient, lower, upper, 0, oracle, order);
+    long double gradient_common = 0;
+    if (p->relation_linear)
+        gradient_common = ocs_centered_gradient(p, x, tradeoff, gradient);
+    else for (int i = 0; i < n; i++) gradient[i] = kx[i] - tradeoff * p->g[i];
+    double linear = ocs_linear(n, gradient, lower, upper, 0, oracle, order),
+           current = p->relation_linear
+               ? (double)((long double)ocs_dot(gradient, x, n) +
+                   gradient_common * ocs_mass_delta(x, n))
+               : ocs_dot(gradient, x, n);
     result.value = q - 2 * tradeoff * ocs_dot(p->g, x, n);
-    result.gap = 2 * fmax(0, ocs_dot(gradient, x, n) - linear);
+    result.gap = 2 * fmax(0, current - linear);
     result.lower_bound = result.value - result.gap;
     st_work_reset(mark);
     return result;
@@ -69850,10 +70674,21 @@ static double ocs_gain_upper(ocs_problem *p, const double *x, double theta,
                                double *oracle, int *order)
 {
     double q = ocs_relatedness(p, x, work), multiplier = .5 / tradeoff;
-    for (int i = 0; i < p->n; i++)
+    long double common = 0;
+    if (p->relation_linear)
+    {
+        common = ocs_centered_gradient(p, x, tradeoff, score);
+        for (int i = 0; i < p->n; i++) score[i] = -score[i] / tradeoff;
+    }
+    else for (int i = 0; i < p->n; i++)
         score[i] = p->g[i] - work[i] / tradeoff;
     double value = ocs_linear(p->n, score, p->lower, p->upper, 1, oracle,
                                 order);
+    if (p->relation_linear)
+        return (double)((long double)ocs_dot(p->g, x, p->n) +
+            (long double)multiplier * ((long double)theta - q) + value -
+            ocs_dot(score, x, p->n) + common *
+            ocs_mass_delta(x, p->n) / tradeoff);
     return ocs_dot(p->g, x, p->n) + multiplier * (theta - q) +
            value - ocs_dot(score, x, p->n);
 }
@@ -70159,7 +70994,7 @@ static SEXP lmm_ocs(SEXP args)
         for (int i = 0; i < n; i++)
         {
             char label[64];
-            snprintf(label, sizeof(label), "%d", i + 1);
+            st_text_write(label, sizeof(label), "%d", i + 1);
             SET_STRING_ELT(names, i, mkChar(label));
         }
     }
@@ -70242,7 +71077,28 @@ static SEXP lmm_ocs(SEXP args)
         error("st.ocs: K must be positive semidefinite");
     for (int i = 0; i < n; i++)
         if (p.eigenvalues[i] > p.rank_tolerance * largest) p.rank++;
-    double theta = theta_original / p.scale,
+    double original_relation_scale = p.scale,
+           minimum_entry = INFINITY, maximum_entry = -INFINITY;
+    for (R_xlen_t i = 0; i < XLENGTH(matrix); i++)
+    {
+        minimum_entry = fmin(minimum_entry, mvm_num(matrix, i));
+        maximum_entry = fmax(maximum_entry, mvm_num(matrix, i));
+    }
+    if (minimum_entry > 0 &&
+        maximum_entry - minimum_entry <= minimum_entry * 1e-2)
+    {
+        double *original = mvm_alloc((size_t)n * n, sizeof(double));
+        for (int j = 0; j < n; j++) for (int i = 0; i < n; i++)
+        {
+            double a = mvm_num(matrix, i + (R_xlen_t)n * j),
+                   b = mvm_num(matrix, j + (R_xlen_t)n * i);
+            original[i + (size_t)n * j] = a == b ? a : a * .5 + b * .5;
+        }
+        ocs_shift_relation(&p, original);
+    }
+    ocs_face_prepare(&p);
+    double theta = (double)(((long double)theta_original -
+                             p.relation_offset) / p.scale),
            *x = mvm_alloc(n, sizeof(double)),
            *minimum = mvm_alloc(n, sizeof(double)),
            *trial = mvm_alloc(n, sizeof(double)),
@@ -70262,7 +71118,8 @@ static SEXP lmm_ocs(SEXP args)
         ocs_linear(n, p.g, p.lower, p.upper, 0, minimum, order);
         ocs_qp_result minfit = ocs_qp(&p, 0, p.lower, p.upper, minimum);
         minimum_q = ocs_relatedness(&p, minimum, work);
-        minq_lower = fmax(0, minfit.lower_bound);
+        minq_lower = fmax(p.relation_linear ? -p.relation_offset / p.scale : 0,
+                          minfit.lower_bound);
         if (theta_original < 0)
         {
             certificate = "negative.PSD.bound";
@@ -70300,7 +71157,7 @@ static SEXP lmm_ocs(SEXP args)
             double face_q = ocs_relatedness(&p, high, work);
             upper_gain = maximum_gain;
             if (face_q <= theta &&
-                (theta != 0 || ocs_zero_valid(&p, high)))
+                (p.relation_linear || theta != 0 || ocs_zero_valid(&p, high)))
             {
                 memcpy(x, high, (size_t)n * sizeof(double));
                 status = "optimal";
@@ -70312,9 +71169,9 @@ static SEXP lmm_ocs(SEXP args)
                 status = "maxit";
                 certificate = "lagrangian.global.bound";
                 int endpoint_ok = 0,
-                    endpoint_attempted = theta == 0 ||
-                        (minimum_q > roundoff &&
-                         theta <= minimum_q + roundoff);
+                    endpoint_attempted = !p.relation_linear &&
+                        (theta == 0 || (minimum_q > roundoff &&
+                         theta <= minimum_q + roundoff));
                 if (endpoint_attempted)
                 {
                     double endpoint_upper = ocs_endpoint(&p, minimum,
@@ -70396,7 +71253,7 @@ static SEXP lmm_ocs(SEXP args)
                         lambda = (p.merit_scale / p.scale) * (.5 / tradeoff);
                 }
             }
-            if (theta == 0 && !ocs_zero_valid(&p, x))
+            if (!p.relation_linear && theta == 0 && !ocs_zero_valid(&p, x))
             {
                 feasible = 0;
                 status = "maxit";
@@ -70404,15 +71261,63 @@ static SEXP lmm_ocs(SEXP args)
             }
         }
     }
-    double sum_residual = NA_REAL, lower_residual = NA_REAL,
-           upper_residual = NA_REAL, q_residual = NA_REAL,
-           primal = NA_REAL, stationarity = NA_REAL,
+    double rejected_mass_residual = NA_REAL,
+           rejected_relation_residual = NA_REAL;
+    if (feasible && p.relation_offset &&
+        ocs_original_excess(&p, x, theta_original, work) > 0)
+    {
+        if (ocs_original_excess(&p, minimum, theta_original, work) <= 0)
+        {
+            double lower = 0, upper = 1;
+            memcpy(high, minimum, (size_t)n * sizeof(double));
+            for (int iteration = 0; iteration < 80; iteration++)
+            {
+                double fraction = lower * .5 + upper * .5;
+                if (fraction == lower || fraction == upper) break;
+                for (int i = 0; i < n; i++)
+                    trial[i] = (double)((1 - (long double)fraction) *
+                        minimum[i] + (long double)fraction * x[i]);
+                if (ocs_original_excess(&p, trial, theta_original, work) <= 0)
+                {
+                    lower = fraction;
+                    memcpy(high, trial, (size_t)n * sizeof(double));
+                }
+                else upper = fraction;
+            }
+            memcpy(x, high, (size_t)n * sizeof(double));
+            if (!ocs_gap_valid(upper_gain, ocs_dot(p.g, x, n), p.tolerance))
+            {
+                status = "maxit";
+                certificate = "original.simplex.rounding.limit";
+            }
+        }
+        else
+        {
+            status = "maxit";
+            certificate = "original.simplex.rounding.limit";
+            long double excess = ocs_original_excess(&p, x, theta_original, work);
+            if (excess > (long double)p.tolerance * p.scale)
+            {
+                feasible = 0;
+                rejected_mass_residual = (double)fabsl(ocs_mass_delta(x, n));
+                rejected_relation_residual = (double)excess;
+            }
+        }
+    }
+    double sum_residual = rejected_mass_residual, lower_residual = NA_REAL,
+           upper_residual = NA_REAL, q_residual = rejected_relation_residual,
+           primal = R_FINITE(rejected_relation_residual)
+               ? fmax(rejected_mass_residual, rejected_relation_residual) : NA_REAL,
+           stationarity = NA_REAL,
            complementarity = NA_REAL, sum_multiplier = NA_REAL,
            gain = NA_REAL, q = NA_REAL;
     if (feasible)
     {
         gain = ocs_dot(p.original_g, x, n);
-        q = ocs_relatedness(&p, x, work) * p.scale;
+        q = p.relation_offset
+            ? (double)((long double)theta_original +
+                ocs_original_excess(&p, x, theta_original, work))
+            : ocs_relatedness(&p, x, work) * p.scale;
         double sum = 0;
         lower_residual = upper_residual = 0;
         for (int i = 0; i < n; i++)
@@ -70421,8 +71326,11 @@ static SEXP lmm_ocs(SEXP args)
             lower_residual = fmax(lower_residual, p.lower[i] - x[i]);
             upper_residual = fmax(upper_residual, x[i] - p.upper[i]);
         }
-        sum_residual = fabs(sum - 1);
-        q_residual = fmax(0, q - theta_original);
+        sum_residual = p.relation_offset
+            ? (double)fabsl(ocs_mass_delta(x, n)) : fabs(sum - 1);
+        q_residual = p.relation_offset ?
+            (double)fmaxl(0, ocs_original_excess(&p, x, theta_original, work)) :
+            fmax(0, q - theta_original);
         primal = fmax(fmax(sum_residual, lower_residual),
                       fmax(upper_residual, q_residual));
         if ((!strcmp(status, "optimal") ||
@@ -70440,8 +71348,16 @@ static SEXP lmm_ocs(SEXP args)
             int free_count = 0;
             for (int i = 0; i < n; i++)
             {
-                score[i] = -p.original_g[i] +
-                           2 * lambda * p.scale * work[i];
+                if (p.relation_offset)
+                {
+                    long double gradient = work[i];
+                    if (p.relation_linear)
+                        gradient += ocs_mass_delta(x, n) * p.relation_linear[i];
+                    score[i] = (double)(-(long double)p.original_g[i] +
+                               2 * (long double)lambda * p.scale * gradient);
+                }
+                else score[i] = -p.original_g[i] +
+                                2 * lambda * p.scale * work[i];
                 if (p.lower[i] == p.upper[i]) continue;
                 if (x[i] <= p.lower[i] + p.tolerance)
                     lo = fmax(lo, -score[i]);
@@ -70453,7 +71369,14 @@ static SEXP lmm_ocs(SEXP args)
             else if (R_FINITE(lo) && R_FINITE(hi)) nu = lo * .5 + hi * .5;
             else if (R_FINITE(lo)) nu = lo;
             else if (R_FINITE(hi)) nu = hi;
-            sum_multiplier = nu;
+            long double common_gradient = p.relation_offset *
+                (1 + ocs_mass_delta(x, n));
+            if (p.relation_linear)
+                common_gradient += (long double)p.scale *
+                                   ocs_dot(p.relation_linear, x, n);
+            sum_multiplier = p.relation_offset
+                ? (double)((long double)nu - 2 * (long double)lambda *
+                    common_gradient) : nu;
             stationarity = 0;
             for (int i = 0; i < n; i++)
             {
@@ -70466,7 +71389,10 @@ static SEXP lmm_ocs(SEXP args)
                 else residual = fabs(residual);
                 stationarity = fmax(stationarity, residual);
             }
-            complementarity = fabs(lambda * (theta_original - q));
+            complementarity = p.relation_offset
+                ? (double)fabsl((long double)lambda *
+                    ocs_original_excess(&p, x, theta_original, work))
+                : fabs(lambda * (theta_original - q));
             for (int i = 0; i < n; i++)
             {
                 double residual = score[i] + nu;
@@ -70492,7 +71418,11 @@ static SEXP lmm_ocs(SEXP args)
     }
     SET_VECTOR_ELT(result, 1, lmm_keep(ScalarReal(gain), &np));
     SET_VECTOR_ELT(result, 2, lmm_keep(ScalarReal(q), &np));
-    SET_VECTOR_ELT(result, 3, lmm_keep(ScalarReal(minimum_q * p.scale), &np));
+    double reported_minimum = p.relation_offset && R_FINITE(minimum_q)
+        ? (double)((long double)theta_original +
+            ocs_original_excess(&p, minimum, theta_original, work))
+        : minimum_q * p.scale;
+    SET_VECTOR_ELT(result, 3, lmm_keep(ScalarReal(reported_minimum), &np));
     SET_VECTOR_ELT(result, 4, lmm_keep(ScalarReal(theta_original), &np));
     SET_VECTOR_ELT(result, 5, lmm_keep(mkString(status), &np));
     const char *diagnostic_names[] = {"simplex.residual", "lower.residual",
@@ -70506,7 +71436,8 @@ static SEXP lmm_ocs(SEXP args)
                             ? p.merit_offset + p.merit_scale * upper_gain
                             : NA_REAL;
     double diagnostic_values[] = {sum_residual, lower_residual,
-        upper_residual, q_residual, primal, minq_lower * p.scale, gain_upper,
+        upper_residual, q_residual, primal,
+        (double)((long double)minq_lower * p.scale + p.relation_offset), gain_upper,
         feasible && R_FINITE(gain_upper) ? gain_upper - gain : NA_REAL,
         lambda, (double)p.iterations, (double)p.outer,
         p.minimum_eigenvalue, (double)p.rank, stationarity, complementarity,
@@ -70516,7 +71447,7 @@ static SEXP lmm_ocs(SEXP args)
                        lmm_keep(ScalarReal(diagnostic_values[i]), &np));
     SET_VECTOR_ELT(diagnostics, 16, lmm_keep(mkString(certificate), &np));
     SET_VECTOR_ELT(diagnostics, 17,
-                   lmm_keep(ScalarReal(p.symmetry * p.scale), &np));
+                   lmm_keep(ScalarReal(p.symmetry * original_relation_scale), &np));
     SET_VECTOR_ELT(result, 6, diagnostics);
     const char *bound_result_names[] = {"lower", "upper"};
     SEXP bounds = lmm_keep(mvm_list(2, bound_result_names), &np);
@@ -70819,7 +71750,7 @@ static void cp05_prepare(cp05_covariance *p, SEXP matrix, int named,
         for (int i = 0; i < n; i++)
         {
             char label[64];
-            snprintf(label, sizeof(label), "%d", i + 1);
+            st_text_write(label, sizeof(label), "%d", i + 1);
             SET_STRING_ELT(p->names, i, mkChar(label));
         }
     }
@@ -70945,6 +71876,92 @@ double st_cross_propsd_validate(SEXP matrix, int nparents, const char **ids,
     double loss = (double)cp05_loss(&p, selected);
     if (!(loss < maximum))
         error("st.cross.allocate: pooled family slots violate the inherited strict diversity limit");
+    st_work_reset(mark);
+    return loss;
+}
+
+typedef struct
+{
+    cp05_covariance covariance;
+    int nparents, *mapping;
+    double workcells;
+} cp09_propsd;
+
+void *st_cross_propsd_prepare64(SEXP matrix, int nparents, const char **ids)
+{
+    if (nparents < 1 || !ids)
+        error("cross planning: invalid diversity parent reference");
+    cp09_propsd *state = mvm_alloc(1, sizeof(*state));
+    cp05_prepare(&state->covariance, matrix, 1, NULL);
+    state->nparents = nparents;
+    state->mapping = mvm_alloc(nparents, sizeof(int));
+    for (int i = 0; i < nparents; i++)
+    {
+        if (!ids[i] || !ids[i][0])
+            error("cross planning: invalid diversity parent ID");
+        for (int j = 0; j < i; j++)
+            if (!strcmp(ids[i], ids[j]))
+                error("cross planning: duplicate diversity parent ID");
+        int at = -1;
+        for (int j = 0; j < state->covariance.n; j++)
+            if (!strcmp(ids[i], translateCharUTF8(STRING_ELT(
+                            state->covariance.names, j))))
+            { at = j; break; }
+        if (at < 0)
+            error("cross planning: diversity G does not contain every candidate parent");
+        state->mapping[i] = at;
+    }
+    int n = state->covariance.n, lwork = -1, info = 0;
+    double query = 0;
+    F77_CALL(dsyev)("N", "U", &n, state->covariance.G, &n,
+        state->covariance.counts, &query, &lwork, &info FCONE FCONE);
+    if (info || !R_FINITE(query) || query < 1 || query > INT_MAX)
+        error("cross planning: diversity workspace query failed");
+    state->workcells = ceil((double)sizeof(*state) / sizeof(double) +
+        (double)n * n + (double)n *
+            (sizeof(double) + sizeof(int) + sizeof(long double)) / sizeof(double) +
+        (double)nparents * sizeof(int) / sizeof(double) +
+        (double)n * n + n + query);
+    return state;
+}
+
+double st_cross_propsd_workcells64(const void *prepared)
+{
+    if (!prepared) return 0;
+    return ((const cp09_propsd *)prepared)->workcells;
+}
+
+double st_cross_propsd_eval64(void *prepared, const int64_t *counts)
+{
+    cp09_propsd *state = prepared;
+    if (!state || !counts)
+        error("cross planning: invalid prepared diversity evaluation");
+    int64_t total = 0;
+    for (int i = 0; i < state->nparents; i++)
+    {
+        if (counts[i] < 0 || counts[i] > INT64_C(9007199254740991) - total)
+            error("cross planning: literal diversity sample exceeds 2^53-1 occurrences");
+        total += counts[i];
+    }
+    if (total < 2)
+        error("cross planning: literal diversity sample needs at least two occurrences");
+    cp05_covariance *p = &state->covariance;
+    memset(p->counts, 0, (size_t)p->n * sizeof(double));
+    for (int i = 0; i < state->nparents; i++)
+        p->counts[state->mapping[i]] = (double)counts[i];
+    cp05_moments selected = cp05_evaluate(p);
+    double loss = (double)cp05_loss(p, selected);
+    if (!R_FINITE(loss))
+        error("cross planning: diversity loss is not finite");
+    return loss;
+}
+
+double st_cross_propsd_loss64(SEXP matrix, int nparents,
+                                const char **ids, const int64_t *counts)
+{
+    void *mark = st_work_mark();
+    void *prepared = st_cross_propsd_prepare64(matrix, nparents, ids);
+    double loss = st_cross_propsd_eval64(prepared, counts);
     st_work_reset(mark);
     return loss;
 }
@@ -71090,8 +72107,275 @@ static SEXP lmm_propsd_print(SEXP args)
 typedef struct
 {
     int a, b;
+    int family, seed, pollen;
     double score, mu, va, es, usefulness;
 } cp03_edge;
+
+void *st_cross_practical_prepare(SEXP request, SEXP parent_names,
+    SEXP original_K, double tolerance, int direction_known);
+int st_cross_practical_roles(const void *prepared);
+int st_cross_practical_requirements(const void *prepared);
+int st_cross_practical_eligible(const void *prepared, int seed, int pollen);
+int st_cross_practical_check(void *prepared, int nrows,
+    const int *seed, const int *pollen, const int *biological_family,
+    const int64_t *produced, const int64_t *retained,
+    const int64_t *operations, int direction_known);
+SEXP st_cross_practical_report(const void *prepared);
+double st_cross_practical_workspace_cells(const void *prepared);
+
+typedef int (*st_cross_joint_check)(void *opaque, int families, const int *produced);
+
+typedef struct
+{
+    int families, budget, retained, lower, upper;
+    int normal_mode, algorithm, response_criterion;
+    double max_cells, max_transitions, tolerance;
+} st_cross_joint_parameters;
+
+typedef struct
+{
+    int has_incumbent, complete, unresolved, proof_infeasible, limited;
+    double response, response_error;
+    double criterion_lower, criterion_upper, gap;
+    double work, cells;
+    const char *reason, *algorithm;
+} st_cross_joint_solution;
+
+void *st_cross_joint_prepare(SEXP progeny, int families,
+    int response_criterion, double reserved_cells);
+void st_cross_joint_parameters_get(const void *context,
+    st_cross_joint_parameters *parameters);
+double st_cross_joint_kernel(void *context, int produced, int retained,
+    int marginal, int refinement, double *error_estimate);
+void st_cross_joint_solve(void *context, const double *variance,
+    double accuracy, const int *initial, int *produced,
+    double *intensity, double *intensity_error, double *family_response,
+    int coupled, st_cross_joint_check check, void *opaque,
+    st_cross_joint_solution *solution);
+void st_cross_joint_validate(const void *context, int coupled);
+double st_cross_joint_remaining(const void *context);
+int st_cross_joint_limited(const void *context);
+SEXP st_cross_joint_normalized(const void *context);
+SEXP st_cross_joint_report(const void *context);
+SEXP st_cross_joint_evaluate(SEXP completed_plan);
+void st_cross_joint_work_limit(void *context, double remaining);
+void st_cross_variable_work_limit(void *context, double remaining);
+double st_cross_joint_work_used(const void *context);
+double st_cross_variable_work_used(const void *context);
+
+typedef int (*st_cross_variable_check)(void *opaque, int families,
+    const int *produced, const int *retained);
+
+typedef struct
+{
+    long double baseline, tail, response;
+} st_cross_variable_score;
+
+typedef struct
+{
+    int families, budget, selected, lower, upper, min_selected, max_selected;
+    int normal_mode, algorithm, response_criterion;
+    double max_cells, max_transitions, tolerance;
+} st_cross_variable_parameters;
+
+typedef struct
+{
+    int has_incumbent, complete, unresolved, proof_infeasible, limited;
+    st_cross_variable_score value, lower, upper;
+    long double selected_response;
+    double gap, work, cells;
+    const char *reason, *algorithm;
+} st_cross_variable_solution;
+
+void *st_cross_variable_prepare(SEXP progeny, int families,
+    SEXP parent_names, int biological_families,
+    const int *family_first, const int *family_second,
+    int response_criterion, double reserved_cells);
+void st_cross_variable_parameters_get(const void *context,
+    st_cross_variable_parameters *parameters);
+void st_cross_variable_bounds_get(const void *context, int family,
+    int *lower, int *upper, int *min_selected, int *max_selected);
+int st_cross_variable_necessary(const void *context);
+void st_cross_variable_validate(const void *context, int coupled);
+void st_cross_variable_solve(void *context, const int *family,
+    const double *mu, double anchor, const double *variance, double accuracy,
+    const int *initial_produced, const int *initial_retained,
+    int *produced, int *retained, double *intensity,
+    double *intensity_error, double *family_response,
+    int coupled, st_cross_variable_check check, void *opaque,
+    st_cross_variable_solution *solution);
+void st_cross_variable_rescore(void *context, const int *family,
+    const double *mu, double anchor, const double *variance, double accuracy,
+    const int *produced, const int *retained, double *intensity,
+    double *intensity_error, double *family_response,
+    st_cross_variable_solution *solution);
+st_cross_variable_score st_cross_variable_bound(void *context, int count,
+    const int *family, const double *mu, double anchor,
+    const double *variance, double accuracy, int *known);
+int st_cross_variable_compare(const st_cross_variable_score *first,
+    const st_cross_variable_score *second);
+long double st_cross_variable_difference(const st_cross_variable_score *first,
+    const st_cross_variable_score *second);
+double st_cross_variable_gap(const st_cross_variable_score *upper,
+    const st_cross_variable_score *lower);
+double st_cross_variable_total(const st_cross_variable_score *value,
+    double anchor, int include_response);
+double st_cross_variable_remaining(const void *context);
+int st_cross_variable_limited(const void *context);
+SEXP st_cross_variable_normalized(const void *context);
+SEXP st_cross_variable_report(const void *context);
+
+typedef double (*st_cross_genetic_intensity)(void *opaque,
+    int n, int r, int refinement, double *estimated_error);
+
+void st_cross_joint_evaluate_plan(SEXP plan, void *genetic,
+    st_cross_genetic_intensity intensity, void *count_context);
+
+typedef struct
+{
+    double mean, variance, covariance, origin_variance;
+    double additive_center;
+    int state;
+    const char *reason;
+} st_cross_genetic_moment;
+
+void *st_cross_genetic_prepare(SEXP inherited_model, SEXP request,
+    SEXP candidate_names, SEXP original_K);
+int st_cross_genetic_requirements(const void *context);
+void st_cross_genetic_method_set(void *context, int normal_mode);
+int st_cross_genetic_check(void *context, int families,
+    const int *first, const int *second,
+    const int64_t *produced, const int64_t *retained,
+    const double *accuracy, st_cross_genetic_intensity intensity,
+    void *count_context);
+SEXP st_cross_joint_evaluate_genetic(SEXP completed_plan,
+    void *prepared_genetic, st_cross_genetic_intensity intensity,
+    void *count_context);
+double st_cross_variable_kernel(void *context, int n, int r,
+    int refinement, double *estimated_error);
+int st_cross_genetic_limited(const void *context);
+void st_cross_genetic_no_incumbent(void *context);
+void *st_cross_genetic_scratch(void *context, size_t count, size_t width);
+void st_cross_genetic_validate_scores(void *context, int families,
+    const int *first, const int *second, const double *mean,
+    const double *variance);
+void st_cross_joint_external_limit(void *context);
+void st_cross_variable_external_limit(void *context);
+
+typedef struct
+{
+    void *model, *count_context;
+    st_cross_genetic_intensity intensity;
+    double *accuracy;
+    int requirements, final;
+} cp12_plan;
+
+typedef struct
+{
+    int64_t produced, retained;
+    double accuracy;
+    int training, evaluation;
+    uint64_t training_seed, evaluation_seed;
+    int request_training, request_evaluation;
+} st_cross_future_parameters;
+
+typedef struct
+{
+    int rows, direction_known, operations_known;
+    const int *seed, *pollen, *family_hint;
+    const int64_t *produced, *retained, *operations;
+} st_cross_future_operations;
+
+typedef struct
+{
+    int families;
+    const int *first, *second;
+    const int64_t *produced, *retained;
+    const double *accuracy;
+    const st_cross_future_operations *operation_view;
+} st_cross_future_design;
+
+typedef int (*st_cross_future_design_check)(void *opaque,
+    const st_cross_future_design *design, int mandatory);
+
+typedef struct
+{
+    int families, planned_points, automatic_references;
+    int64_t produced, retained;
+    st_cross_future_design_check check;
+    void *opaque;
+} st_cross_future_contract;
+
+typedef struct
+{
+    long double baseline, tail, g1_response, g2_response;
+} st_cross_future_score;
+
+typedef struct
+{
+    int complete, g1_state, limited, numerical;
+    int requested, completed;
+    st_cross_future_score score;
+    double work, cells;
+    const char *reason;
+} st_cross_future_value;
+
+typedef struct
+{
+    int limit_kind, has_limit, has_start, followup;
+    double limit;
+    uint64_t seed;
+    st_cross_future_design start;
+} st_cross_plan_override;
+
+void *st_cross_future_prepare(void *genetic, SEXP inherited_policy,
+    SEXP request, int criterion_future);
+void st_cross_future_parameters_get(const void *future,
+    st_cross_future_parameters *parameters);
+void st_cross_future_bind(void *future, const st_cross_future_contract *contract);
+int st_cross_future_validate(void *future,
+    const st_cross_future_design *design, int optimization);
+int st_cross_future_training(void *future,
+    const st_cross_future_design *design, st_cross_future_value *value);
+int st_cross_future_compare(const st_cross_future_score *a,
+    const st_cross_future_score *b);
+double st_cross_future_total(const void *future,
+    const st_cross_future_score *score, int horizon);
+int st_cross_future_limited(const void *future);
+int st_cross_future_final(void *future, int designs,
+    const st_cross_future_design *design, const char *const *names);
+SEXP st_cross_future_report(const void *future);
+void st_cross_genetic_point_begin(void *genetic, int has_cap, double cap);
+void st_cross_future_chosen(void *future, const st_cross_future_design *design,
+    const st_cross_future_value *value);
+void st_cross_future_kernel_set(void *future, st_cross_genetic_intensity kernel, void *count_context);
+int st_cross_genetic_check_mode(void *context, int families, const int *first, const int *second,
+    const int64_t *produced, const int64_t *retained, const double *accuracy,
+    st_cross_genetic_intensity intensity, void *count_context, int mandatory);
+
+typedef struct
+{
+    void *context, *count_problem;
+    int objective, variable, planned_points, m, nparents;
+    int have_best, have_reference, have_warm, complete, unknown, limited;
+    int original_method, original_maxit, original_starts;
+    uint64_t original_maxnodes, evaluations, rejected, accepted, sets, count_nodes, seed_nodes;
+    int64_t budget, retained;
+    int *edge, *best_edge, *reference_edge, *warm_edge;
+    int *first, *second, *degree, *used_family;
+    int *base_edge, *final_first, *final_second;
+    int64_t *base_n, *base_r;
+    int *lower, *upper, *min_retained, *max_retained;
+    int64_t *n, *r, *best_n, *best_r, *reference_n, *reference_r;
+    int64_t *warm_n, *warm_r;
+    double *accuracy;
+    st_cross_future_score best_score;
+    st_cross_future_value best_value;
+    const st_cross_plan_override *override;
+    const char *status, *reason;
+} cp13_plan;
+
+typedef struct cp10_problem cp10_problem;
 
 typedef struct
 {
@@ -71119,7 +72403,41 @@ typedef struct
     double work_estimate;
     double *requested_lower, *requested_upper, *requested_contributions;
     const char *reason, *bound_type;
+    void *practical;
+    int roles, nfamilies, practical_state;
+    int *family_lookup, *directed_lookup, *family_selected;
+    int *check_seed, *check_pollen, *check_family;
+    int64_t *check_produced;
+    int variable;
+    int joint_bound_known;
+    void *joint;
+    cp12_plan *genetic;
+    cp13_plan *future;
+    const st_cross_plan_override *point_override;
+    int frontier, typed_start_used, explicit_start;
+    void *count_workspace;
+    double count_remaining, count_ceiling;
 } cp03_problem;
+
+static int cp10_consider(cp03_problem *p);
+static int cp10_limited(cp03_problem *p);
+static void cp10_pruned(cp03_problem *p, double bound);
+static int cp11_consider(cp03_problem *p);
+static int cp11_limited(cp03_problem *p);
+static SEXP cp11_run(cp03_problem *p, SEXP args, SEXP names,
+    SEXP original_matrix, SEXP practical_request, SEXP diversity, int *np);
+static SEXP cp10_run(cp03_problem *p, SEXP args, SEXP names,
+    SEXP original_matrix, SEXP practical_request, SEXP diversity, int *np);
+static void cp13_seed_begin(cp03_problem *p);
+static void cp13_seed_end(cp03_problem *p);
+static void cp13_capture_fixed(cp10_problem *s);
+static SEXP cp13_fixed(cp10_problem *s, SEXP args, SEXP names,
+    SEXP original_matrix, SEXP practical_request, SEXP diversity, int *np);
+static SEXP cp13_objective(cp03_problem *p, int *np);
+static SEXP cp13_diagnostics(cp03_problem *p, SEXP diagnostics, int *np);
+static void cp13_bind(cp03_problem *p, void *count_problem, int64_t budget, int64_t retained);
+static void cp13_final(cp03_problem *p, int have, const int *edge,
+    const int64_t *n, const int64_t *r);
 
 static double cp05_plan_loss(cp03_problem *p)
 {
@@ -71141,6 +72459,16 @@ static uint64_t cp03_random(cp03_problem *p)
     return x * UINT64_C(2685821657736338717);
 }
 
+uint64_t st_cross_private_random(uint64_t *state)
+{
+    uint64_t value = *state;
+    value ^= value >> 12;
+    value ^= value << 25;
+    value ^= value >> 27;
+    *state = value;
+    return value * UINT64_C(2685821657736338717);
+}
+
 static int cp03_index(cp03_problem *p, int count)
 {
     uint64_t bound = (uint64_t)count, threshold = (UINT64_C(0) - bound) % bound;
@@ -71153,9 +72481,13 @@ static void cp03_clear(cp03_problem *p)
 {
     memset(p->selected, 0, (size_t)p->ne);
     memset(p->degree, 0, (size_t)p->o.n * sizeof(int));
-    memset(p->Kc, 0, (size_t)p->o.n * sizeof(double));
+    if (p->o.relation_linear)
+        memcpy(p->Kc, p->o.relation_linear, (size_t)p->o.n * sizeof(double));
+    else memset(p->Kc, 0, (size_t)p->o.n * sizeof(double));
     p->count = 0;
     p->current_score = 0;
+    if (p->family_selected)
+        memset(p->family_selected, 0, (size_t)p->nfamilies * sizeof(int));
 }
 
 static void cp03_change(cp03_problem *p, int edge, int sign)
@@ -71166,17 +72498,43 @@ static void cp03_change(cp03_problem *p, int edge, int sign)
     p->degree[b] += sign;
     p->count += sign;
     p->current_score += sign * p->edge[edge].score / p->m;
+    if (p->family_selected)
+        p->family_selected[p->edge[edge].family] = sign > 0 ? edge + 1 : 0;
     double scale = sign / (2.0 * p->m);
     for (int i = 0; i < n; i++)
         p->Kc[i] += scale * (p->o.K[i + (size_t)n * a] +
                              p->o.K[i + (size_t)n * b]);
 }
 
+static int cp09_check(cp03_problem *p)
+{
+    if (!p->practical) return 1;
+    int at = 0;
+    for (int e = 0; e < p->ne; e++)
+        if (p->selected[e])
+        {
+            if (at >= p->m) return -1;
+            cp03_edge *edge = p->edge + e;
+            p->check_seed[at] = p->roles ? edge->seed : edge->a;
+            p->check_pollen[at] = p->roles ? edge->pollen : edge->b;
+            p->check_family[at] = edge->family;
+            p->check_produced[at] = p->nprogeny;
+            at++;
+        }
+    p->practical_state = st_cross_practical_check(p->practical, at,
+        p->check_seed, p->check_pollen, p->check_family,
+        p->check_produced, NULL, NULL, p->roles);
+    if (p->practical_state == -2)
+        error("st.cross.plan: practical constraints require unavailable planning information");
+    return p->practical_state;
+}
+
 static double cp03_current_q(cp03_problem *p)
 {
     long double value = 0;
     for (int i = 0; i < p->o.n; i++)
-        value += (long double)p->degree[i] * p->Kc[i];
+        value += (long double)p->degree[i] * (p->Kc[i] +
+            (p->o.relation_linear ? p->o.relation_linear[i] : 0));
     return (double)(value / (2.0 * p->m));
 }
 
@@ -71185,6 +72543,42 @@ static int cp03_original_relation(cp03_problem *p, const int *degree,
                                      double *row_residual)
 {
     int n = p->o.n;
+    if (p->o.relation_offset)
+    {
+        long double denominator = 2 * (long double)p->m,
+                    square = denominator * denominator,
+                    value = 0, correction = 0, absolute = 0;
+        for (int i = 0; i < n; i++) if (degree[i])
+            for (int j = 0; j < n; j++) if (degree[j])
+            {
+                long double term = ((long double)p->original_K[i +
+                    (size_t)n * j] - p->o.relation_offset) * degree[i] * degree[j];
+                ocs_accumulate(term, &value, &correction);
+                absolute += fabsl(term);
+            }
+        value = (value + correction) / square;
+        absolute /= square;
+        long double operations = 3 * (long double)n * n + 8,
+                    limit = (long double)p->theta_original - p->o.relation_offset,
+                    allowance = p->tolerance * fmaxl(fabsl(limit), absolute),
+                    rounding = operations * LDBL_EPSILON /
+                        (1 - operations * LDBL_EPSILON) * absolute +
+                        operations * nextafterl(0.0L, 1.0L),
+                    total = (long double)p->o.relation_offset + value;
+        *reported = (double)total;
+        long double reported_error = rounding + fabsl(total - *reported);
+        *enclosure = (double)reported_error;
+        if ((long double)*enclosure < reported_error)
+            *enclosure = nextafter(*enclosure, INFINITY);
+        *row_residual = 0;
+        if (!isfinite(value) || !isfinite(absolute) || !isfinite(rounding) ||
+            !R_FINITE(*reported) || operations * LDBL_EPSILON >= .5)
+            return 0;
+        if (!absolute) return limit >= 0 ? 1 : -1;
+        if (nextafterl(value + rounding, INFINITY) <= limit + allowance) return 1;
+        if (nextafterl(value - rounding, -INFINITY) > limit + allowance) return -1;
+        return 0;
+    }
     long double denominator = 2 * (long double)p->m,
                 square = denominator * denominator, numerator = 0,
                 absolute = 0, maximum_row_residual = 0;
@@ -71267,8 +72661,12 @@ static int cp03_original_relation(cp03_problem *p, const int *degree,
 
 static int cp03_consider(cp03_problem *p)
 {
+    if (p->joint) return p->variable == 2 ? cp11_consider(p) : cp10_consider(p);
     int n = p->o.n, count = 0;
     memset(p->degree, 0, (size_t)n * sizeof(int));
+    int unique = 1;
+    if (p->practical)
+        memset(p->family_selected, 0, (size_t)p->nfamilies * sizeof(int));
     long double score = 0;
     for (int e = 0; e < p->ne; e++)
         if (p->selected[e])
@@ -71277,13 +72675,19 @@ static int cp03_consider(cp03_problem *p)
             p->degree[p->edge[e].a]++;
             p->degree[p->edge[e].b]++;
             score += p->edge[e].score;
+            if (p->practical)
+            {
+                int family = p->edge[e].family;
+                if (p->family_selected[family]) unique = 0;
+                p->family_selected[family] = e + 1;
+            }
         }
     p->count = count;
     p->current_score = (double)(score / p->m);
     double *c = p->scratch;
     for (int i = 0; i < n; i++) c[i] = p->degree[i] / (2.0 * p->m);
-    ocs_product(&p->o, c, p->Kc);
-    int feasible = count == p->m;
+    ocs_relatedness(&p->o, c, p->Kc);
+    int feasible = count == p->m && unique;
     for (int i = 0; i < n; i++)
         feasible &= p->degree[i] >= p->lower_degree[i] &&
                     p->degree[i] <= p->upper_degree[i];
@@ -71295,7 +72699,9 @@ static int cp03_consider(cp03_problem *p)
     int relation = cp03_original_relation(p, p->degree,
         &p->current_q_original, &p->current_q_error,
         &p->current_row_residual);
-    if (feasible && !relation)
+    int practical = p->practical && feasible ? cp09_check(p) : 1;
+    if (feasible && ((!relation && practical >= 0) ||
+                     (!practical && relation >= 0)))
     {
         if (!p->uncertain_leaves ||
             (p->fixed ? p->current_score < p->uncertain_score
@@ -71303,7 +72709,7 @@ static int cp03_consider(cp03_problem *p)
             p->uncertain_score = p->current_score;
         p->uncertain_leaves++;
     }
-    feasible &= relation > 0;
+    feasible &= relation > 0 && practical > 0;
     if (feasible && (!p->have_best ||
         (p->fixed ? p->current_score < p->best_score
                   : p->current_score > p->best_score)))
@@ -71331,6 +72737,24 @@ static int cp03_edge_order_min(const void *a, const void *b)
     if (x->score != y->score) return x->score < y->score ? -1 : 1;
     if (x->a != y->a) return x->a < y->a ? -1 : 1;
     return x->b < y->b ? -1 : x->b > y->b;
+}
+
+static int cp09_edge_order_max(const void *a, const void *b)
+{
+    int result = cp03_edge_order_max(a, b);
+    if (result) return result;
+    const cp03_edge *x = a, *y = b;
+    if (x->seed != y->seed) return x->seed < y->seed ? -1 : 1;
+    return x->pollen < y->pollen ? -1 : x->pollen > y->pollen;
+}
+
+static int cp09_edge_order_min(const void *a, const void *b)
+{
+    int result = cp03_edge_order_min(a, b);
+    if (result) return result;
+    const cp03_edge *x = a, *y = b;
+    if (x->seed != y->seed) return x->seed < y->seed ? -1 : 1;
+    return x->pollen < y->pollen ? -1 : x->pollen > y->pollen;
 }
 
 static int cp03_node_possible(cp03_problem *p, const int *remaining,
@@ -71392,6 +72816,12 @@ static void cp03_exact(cp03_problem *p)
                 void *point = st_work_mark();
                 cp03_consider(p);
                 st_work_reset(point);
+                if (p->joint && cp10_limited(p))
+                {
+                    p->stopped = 1;
+                    p->complete = 0;
+                    break;
+                }
                 level--;
                 continue;
             }
@@ -71404,9 +72834,11 @@ static void cp03_exact(cp03_problem *p)
             double bound = (double)((partial[level] +
                 prefix[level + need] - prefix[level]) / p->m) +
                 (p->fixed ? -p->bound_error : p->bound_error);
-            if (p->have_best && (p->fixed ? bound >= p->best_score
+            if (p->have_best && (!p->joint || p->joint_bound_known) &&
+                (p->fixed ? bound >= p->best_score
                                           : bound <= p->best_score))
             {
+                if (p->joint) cp10_pruned(p, bound);
                 level--;
                 continue;
             }
@@ -71414,7 +72846,9 @@ static void cp03_exact(cp03_problem *p)
             int a = p->edge[level].a, b = p->edge[level].b;
             remaining[a]--;
             remaining[b]--;
-            if (p->degree[a] < p->upper_degree[a] &&
+            if ((!p->family_selected ||
+                 !p->family_selected[p->edge[level].family]) &&
+                p->degree[a] < p->upper_degree[a] &&
                 p->degree[b] < p->upper_degree[b])
             {
                 cp03_change(p, level, 1);
@@ -71524,7 +72958,8 @@ static void cp03_relaxation(cp03_problem *p)
                fmax(1, p->o.eigenvalues[n - 1]);
     conversion = nextafter(conversion + spectral, INFINITY);
     double theta_relaxed = p->theta + p->tolerance + conversion;
-    p->minq_lower = fmax(0, fit.lower_bound - conversion);
+    p->minq_lower = fmax(p->o.relation_linear
+        ? -p->o.relation_offset / p->o.scale : 0, fit.lower_bound - conversion);
     if (p->theta + p->tolerance < p->minq_lower -
         256 * DBL_EPSILON * n * fmax(1, fabs(p->theta)))
     {
@@ -71657,7 +73092,8 @@ static int cp03_h_joint_start(cp03_problem *p, int start,
         for (int e = 0; e < p->ne; e++)
         {
             if (!(e % 2048)) R_CheckUserInterrupt();
-            if (p->selected[e]) continue;
+            if (p->selected[e] || (p->family_selected &&
+                p->family_selected[p->edge[e].family])) continue;
             int a = p->edge[e].a, b = p->edge[e].b;
             if (p->degree[a] >= p->upper_degree[a] ||
                 p->degree[b] >= p->upper_degree[b]) continue;
@@ -71727,13 +73163,15 @@ static int cp03_h_fixed_start(cp03_problem *p, int start, int *residual)
                 if (b == a || residual[b] <= 0 || e < 0 ||
                     p->selected[e]) continue;
                 double value = p->edge[e].score;
-                if (start) value += .25 * (cp03_h_uniform(p) - .5);
-                if (residual[b] > best_degree ||
-                    (residual[b] == best_degree && value < best_value))
+                int degree = start < 0 ? 0 : residual[b];
+                if (start < 0) value = cp03_h_uniform(p);
+                else if (start) value += .25 * (cp03_h_uniform(p) - .5);
+                if (degree > best_degree ||
+                    (degree == best_degree && value < best_value))
                 {
                     best = e;
                     partner = b;
-                    best_degree = residual[b];
+                    best_degree = degree;
                     best_value = value;
                 }
             }
@@ -71746,6 +73184,19 @@ static int cp03_h_fixed_start(cp03_problem *p, int start, int *residual)
     }
     for (int i = 0; i < n; i++) if (residual[i]) return 0;
     return 1;
+}
+
+static int cp03_h_fixed_fallback(cp03_problem *p, int *residual,
+                                    int *remaining)
+{
+    while (p->m < *remaining)
+    {
+        int charge = p->m + 1;
+        *remaining -= charge;
+        p->proposals += (uint64_t)charge;
+        if (cp03_h_fixed_start(p, -1, residual)) return 1;
+    }
+    return 0;
 }
 
 static int cp03_h_delta(cp03_problem *p, int removed, int added,
@@ -71910,11 +73361,11 @@ static int cp03_h_in_set(int edge, const int *set, int count)
     return 0;
 }
 
-static void cp03_h_fixed_moves(cp03_problem *p, int *chosen)
+static void cp03_h_fixed_moves(cp03_problem *p, int *chosen, int maxit)
 {
     int n = p->o.n;
     if (p->m < 2) return;
-    for (int iteration = 0; iteration < p->maxit; iteration++)
+    for (int iteration = 0; iteration < maxit; iteration++)
     {
         if (!(p->proposals % 256)) R_CheckUserInterrupt();
         p->proposals++;
@@ -71954,7 +73405,7 @@ static void cp03_h_fixed_moves(cp03_problem *p, int *chosen)
         }
         if (!valid || same) continue;
         double delta = (new_score - old_score) / p->m,
-               progress = 1 - (double)iteration / p->maxit,
+               progress = 1 - (double)iteration / maxit,
                temperature = .02 * progress * progress + 1e-6;
         int accept = delta < -64 * DBL_EPSILON *
                                   (1 + fabs(p->current_score));
@@ -71989,7 +73440,7 @@ static void cp03_heuristic(cp03_problem *p)
     {
         R_CheckUserInterrupt();
         p->completed_starts++;
-        int initialized = 0;
+        int initialized = 0, remaining = p->maxit;
         if (!start && p->have_best)
         {
             cp03_clear(p);
@@ -72000,10 +73451,189 @@ static void cp03_heuristic(cp03_problem *p)
             initialized = cp03_h_fixed_start(p, start, residual);
         else initialized = cp03_h_joint_start(p, start,
                                       desired_sum > 0 ? desired : NULL);
+        if (!initialized && p->fixed && !p->have_best)
+            initialized = cp03_h_fixed_fallback(p, residual, &remaining);
         if (!initialized || !cp03_h_selected(p, chosen)) continue;
         cp03_consider(p);
-        if (p->fixed) cp03_h_fixed_moves(p, chosen);
+        if (p->fixed) cp03_h_fixed_moves(p, chosen, remaining);
         else cp03_h_joint_moves(p, chosen, desired_sum > 0 ? desired : NULL);
+        cp03_consider(p);
+    }
+    st_work_reset(mark);
+}
+
+static int cp09_arc(cp03_problem *p, int a, int b)
+{
+    if (!p->roles) return p->lookup[a + (size_t)p->o.n * b];
+    int first = p->directed_lookup[a + (size_t)p->o.n * b],
+        second = p->directed_lookup[b + (size_t)p->o.n * a];
+    if (first >= 0 && second >= 0)
+        return cp03_random(p) & 1 ? first : second;
+    return first >= 0 ? first : second;
+}
+
+static double cp09_violation(cp03_problem *p, int *feasible)
+{
+    double violation = 0;
+    int valid = p->count == p->m;
+    for (int i = 0; i < p->o.n; i++)
+    {
+        int delta = p->degree[i] < p->lower_degree[i]
+            ? p->lower_degree[i] - p->degree[i]
+            : p->degree[i] > p->upper_degree[i]
+            ? p->degree[i] - p->upper_degree[i] : 0;
+        if (delta)
+        {
+            valid = 0;
+            violation += (double)delta / (2.0 * p->m);
+        }
+    }
+    double q = cp03_current_q(p),
+        scale = fmax(1e-12, fmax(fabs(q), fabs(p->theta)));
+    if (!(q <= p->theta + p->tolerance))
+    {
+        valid = 0;
+        violation += fmax(0, q - p->theta - p->tolerance) / scale;
+    }
+    if (p->diverse)
+    {
+        p->diversity_loss = cp05_plan_loss(p);
+        if (!(p->diversity_loss < p->diversity_max))
+        {
+            valid = 0;
+            violation += fmax(0, p->diversity_loss - p->diversity_max) + 1;
+        }
+    }
+    if (cp09_check(p) != 1)
+    {
+        valid = 0;
+        violation += 1;
+    }
+    *feasible = valid;
+    return violation;
+}
+
+static void cp09_heuristic(cp03_problem *p)
+{
+    void *mark = st_work_mark();
+    int n = p->o.n, *chosen = mvm_alloc(p->m, sizeof(int)),
+        *residual = mvm_alloc(n, sizeof(int));
+    double *desired = mvm_alloc(n, sizeof(double)), sum = 0;
+    for (int i = 0; i < n; i++)
+    {
+        sum += p->relax_start[i];
+        desired[i] = 2.0 * p->m * p->relax_start[i];
+    }
+    for (int start = 0; start < p->starts; start++)
+    {
+        R_CheckUserInterrupt();
+        p->completed_starts++;
+        int initialized = 0, remaining = p->maxit;
+        if (!start && p->have_best)
+        {
+            cp03_clear(p);
+            for (int i = 0; i < p->m; i++) cp03_change(p, p->best[i], 1);
+            initialized = 1;
+        }
+        else if (p->fixed)
+            initialized = cp03_h_fixed_start(p, start, residual);
+        else initialized = cp03_h_joint_start(p, start, sum > 0 ? desired : NULL);
+        if (!initialized && p->fixed && !p->have_best)
+            initialized = cp03_h_fixed_fallback(p, residual, &remaining);
+        if (!initialized || !cp03_h_selected(p, chosen)) continue;
+        if (p->roles && start)
+            for (int i = 0; i < p->m; i++)
+            {
+                cp03_edge old = p->edge[chosen[i]];
+                int next = cp09_arc(p, old.a, old.b);
+                if (next >= 0 && next != chosen[i])
+                {
+                    cp03_change(p, chosen[i], -1);
+                    cp03_change(p, next, 1);
+                    chosen[i] = next;
+                }
+            }
+        cp03_consider(p);
+        int feasible = 0;
+        double violation = cp09_violation(p, &feasible);
+        for (int iteration = 0; iteration < remaining; iteration++)
+        {
+            if (!(p->proposals % 256)) R_CheckUserInterrupt();
+            p->proposals++;
+            int count = p->m >= 3 && !(iteration % 3) ? 3 :
+                        p->m >= 2 && !(iteration % 2) ? 2 : 1;
+            int slot[3], removed[3], added[3], a[3], b[3], valid = 1;
+            for (int i = 0; i < count; i++)
+            {
+                do slot[i] = cp03_index(p, p->m);
+                while (cp03_h_in_set(slot[i], slot, i));
+                removed[i] = chosen[slot[i]];
+                a[i] = p->edge[removed[i]].a;
+                b[i] = p->edge[removed[i]].b;
+                if (cp03_random(p) & 1)
+                {
+                    int temporary = a[i];
+                    a[i] = b[i];
+                    b[i] = temporary;
+                }
+            }
+            int shift = count == 3 ? 1 + cp03_index(p, 2) : 1;
+            for (int i = 0; i < count; i++)
+            {
+                if (p->fixed || (count == 1 && p->roles && !(iteration % 5)))
+                    added[i] = cp09_arc(p, a[i], b[(i + shift) % count]);
+                else
+                {
+                    int prefix = !(iteration % 4) && p->m < (INT_MAX - 32) / 4
+                        ? 4 * p->m + 32 : p->ne;
+                    if (prefix > p->ne) prefix = p->ne;
+                    added[i] = cp03_index(p, prefix);
+                }
+                if (added[i] < 0) { valid = 0; break; }
+                int family = p->edge[added[i]].family;
+                for (int j = 0; j < i; j++)
+                    if (p->edge[added[j]].family == family) valid = 0;
+                int occupied = p->family_selected[family];
+                if (occupied && !cp03_h_in_set(occupied - 1, removed, count))
+                    valid = 0;
+                if (!valid) break;
+            }
+            if (!valid) continue;
+            double old_score = p->current_score;
+            for (int i = 0; i < count; i++) cp03_change(p, removed[i], -1);
+            for (int i = 0; i < count; i++) cp03_change(p, added[i], 1);
+            int next_feasible = 0;
+            double next_violation = cp09_violation(p, &next_feasible),
+                improvement = p->fixed ? old_score - p->current_score
+                                      : p->current_score - old_score,
+                progress = 1 - (double)iteration / remaining,
+                temperature = .02 * progress * progress + 1e-6;
+            int accept = feasible ? next_feasible &&
+                (improvement > 0 || cp03_h_uniform(p) <
+                    exp(fmin(0, improvement) / temperature)) :
+                next_feasible || next_violation < violation ||
+                (next_violation == violation &&
+                    (improvement > 0 || cp03_h_uniform(p) < .25)) ||
+                cp03_h_uniform(p) < .01 * progress;
+            if (accept)
+            {
+                for (int i = 0; i < count; i++) chosen[slot[i]] = added[i];
+                p->accepted++;
+                feasible = next_feasible;
+                violation = next_violation;
+                if (feasible) cp03_consider(p);
+            }
+            else
+            {
+                for (int i = 0; i < count; i++) cp03_change(p, added[i], -1);
+                for (int i = 0; i < count; i++) cp03_change(p, removed[i], 1);
+            }
+            if (!(iteration % 256))
+            {
+                cp03_consider(p);
+                violation = cp09_violation(p, &feasible);
+            }
+        }
         cp03_consider(p);
     }
     st_work_reset(mark);
@@ -72082,13 +73712,51 @@ static int cp03_pairs(SEXP pairs, SEXP *first, SEXP *second, int *matrix)
     return LENGTH(*first);
 }
 
+static int cp13_typed_edges(cp03_problem *p, int *edges)
+{
+    const st_cross_plan_override *o = p->point_override;
+    if (!o || !o->has_start || o->start.families != p->m || !o->start.first ||
+        !o->start.second || !o->start.produced) return 0;
+    cp03_clear(p);
+    for (int i = 0; i < p->m; i++)
+    {
+        int a = o->start.first[i], b = o->start.second[i];
+        if (a < 0 || b < 0 || a >= p->o.n || b >= p->o.n || a == b) goto invalid;
+        int e = p->roles ? p->directed_lookup[a + (size_t)p->o.n * b]
+                         : p->lookup[a + (size_t)p->o.n * b];
+        if (e < 0 || p->selected[e] ||
+            (p->family_selected && p->family_selected[p->edge[e].family])) goto invalid;
+        edges[i] = e;
+        cp03_change(p, e, 1);
+    }
+    return 1;
+invalid:
+    cp03_clear(p);
+    return 0;
+}
+
+static int cp13_typed_plain(cp03_problem *p)
+{
+    if (!p->point_override || !p->point_override->has_start) return 0;
+    int *edge = mvm_alloc(p->m, sizeof(int));
+    if (!cp13_typed_edges(p, edge)) return 0;
+    for (int i = 0; i < p->m; i++)
+        if (p->point_override->start.produced[i] != p->nprogeny)
+        { cp03_clear(p); return 0; }
+    if (!cp03_consider(p)) { cp03_clear(p); return 0; }
+    p->start_used = p->typed_start_used = 1;
+    return 1;
+}
+
 static void cp03_start(cp03_problem *p, SEXP start, SEXP names)
 {
+    if (cp13_typed_plain(p)) return;
     if (isNull(start)) return;
     SEXP table = inherits(start, "st.cross.plan")
                      ? mvm_get(start, "crosses") : start;
     if (TYPEOF(table) != VECSXP || !inherits(table, "data.frame"))
         error("st.cross.plan: start must be a plan or its crosses table");
+    cp03_names(getAttrib(table, R_NamesSymbol), R_NilValue, LENGTH(table), "start column");
     SEXP first = mvm_get(table, "P1Name"),
          second = mvm_get(table, "P2Name"),
          count = mvm_get(table, "n.progeny");
@@ -72097,6 +73765,39 @@ static void cp03_start(cp03_problem *p, SEXP start, SEXP names)
         !mvm_numeric(count) || inherits(count, "factor") ||
         LENGTH(count) != p->m)
         error("st.cross.plan: start must match the requested family counts");
+    SEXP direction_seed = R_NilValue, direction_pollen = R_NilValue,
+         direction_family = R_NilValue, table_family = R_NilValue;
+    int *direction_used = NULL;
+    if (p->roles && inherits(start, "st.cross.plan"))
+    {
+        SEXP directions = mvm_get(start, "directions");
+        if (TYPEOF(directions) != VECSXP || !inherits(directions, "data.frame"))
+            error("st.cross.plan: a role-aware start needs explicit keyed directions; legacy pair display is not direction provenance");
+        cp03_names(getAttrib(directions, R_NamesSymbol), R_NilValue, LENGTH(directions), "start direction column");
+        direction_seed = mvm_get(directions, "seed");
+        direction_pollen = mvm_get(directions, "pollen");
+        direction_family = mvm_get(directions, "family");
+        table_family = mvm_get(table, "family");
+        if (TYPEOF(direction_seed) != STRSXP ||
+            TYPEOF(direction_pollen) != STRSXP ||
+            LENGTH(direction_seed) != p->m || LENGTH(direction_pollen) != p->m ||
+            !mvm_numeric(direction_family) || LENGTH(direction_family) != p->m ||
+            !mvm_numeric(table_family) || LENGTH(table_family) != p->m ||
+            inherits(direction_family, "factor") || inherits(table_family, "factor"))
+            error("st.cross.plan: start directions must identify every actual family");
+        direction_used = mvm_alloc(p->m, sizeof(int));
+        for (int i = 0; i < p->m; i++)
+        {
+            double hint = mvm_num(direction_family, i),
+                actual = mvm_num(table_family, i);
+            if (!R_FINITE(hint) || !R_FINITE(actual) || hint < 1 || hint > p->m ||
+                actual < 1 || actual > p->m || hint != floor(hint) || actual != floor(actual))
+                error("st.cross.plan: start family hints must be supported display ordinals");
+            for (int j = 0; j < i; j++)
+                if (hint == mvm_num(direction_family, j) || actual == mvm_num(table_family, j))
+                    error("st.cross.plan: start family hints must be unique within each table");
+        }
+    }
     cp03_clear(p);
     for (int i = 0; i < p->m; i++)
     {
@@ -72104,8 +73805,31 @@ static void cp03_start(cp03_problem *p, SEXP start, SEXP names)
             b = cp03_parent(names, STRING_ELT(second, i));
         if (a == b)
             error("st.cross.plan: start must not contain self crosses");
-        int edge = p->lookup[a + (size_t)p->o.n * b];
-        if (edge < 0 || p->selected[edge])
+        int seed = a, pollen = b;
+        if (!isNull(direction_seed))
+        {
+            int matched = -1;
+            for (int j = 0; j < p->m; j++)
+            {
+                int x = cp03_parent(names, STRING_ELT(direction_seed, j)),
+                    y = cp03_parent(names, STRING_ELT(direction_pollen, j));
+                if ((x == a && y == b) || (x == b && y == a))
+                {
+                    if (matched >= 0 || direction_used[j])
+                        error("st.cross.plan: duplicate start direction family key");
+                    matched = j;
+                    seed = x;
+                    pollen = y;
+                }
+            }
+            if (matched < 0)
+                error("st.cross.plan: start direction key does not match its current crosses");
+            direction_used[matched] = 1;
+        }
+        int edge = p->roles ? p->directed_lookup[seed + (size_t)p->o.n * pollen]
+                           : p->lookup[a + (size_t)p->o.n * b];
+        if (edge < 0 || p->selected[edge] || (p->practical &&
+            p->family_selected[p->edge[edge].family]))
             error("st.cross.plan: start has duplicate or forbidden pairs");
         double number = mvm_num(count, i);
         if (!R_FINITE(number) || number != p->nprogeny)
@@ -72216,15 +73940,2902 @@ static void cp04_scores(cp03_problem *p, SEXP scores, SEXP names)
     }
 }
 
-static SEXP lmm_cross_plan(SEXP args)
+static void cp09_edges(cp03_problem *p, SEXP pairs, SEXP names)
+{
+    int n = p->o.n;
+    p->lookup = mvm_alloc((size_t)n * n, sizeof(int));
+    p->family_lookup = mvm_alloc((size_t)n * n, sizeof(int));
+    p->directed_lookup = mvm_alloc((size_t)n * n, sizeof(int));
+    for (size_t i = 0; i < (size_t)n * n; i++)
+        p->lookup[i] = p->family_lookup[i] = p->directed_lookup[i] = -1;
+    SEXP first = R_NilValue, second = R_NilValue;
+    int matrix = 0, rows = 0;
+    uint64_t capacity = 0;
+    if (isNull(pairs))
+    {
+        for (int a = 0; a < n; a++)
+            for (int b = p->roles ? 0 : a + 1; b < n; b++)
+                if (a != b && (!p->roles ||
+                    st_cross_practical_eligible(p->practical, a, b)))
+                    capacity++;
+        if (capacity > INT_MAX)
+            error("st.cross.plan: too many eligible directed parent pairs");
+    }
+    else
+    {
+        rows = cp03_pairs(pairs, &first, &second, &matrix);
+        capacity = (uint64_t)rows;
+    }
+    p->edge = mvm_alloc((size_t)capacity, sizeof(cp03_edge));
+    int ne = 0;
+    if (isNull(pairs))
+    {
+        for (int seed = 0; seed < n; seed++)
+            for (int pollen = p->roles ? 0 : seed + 1; pollen < n; pollen++)
+            {
+                if (seed == pollen || (p->roles &&
+                    !st_cross_practical_eligible(p->practical, seed, pollen)))
+                    continue;
+                int a = seed < pollen ? seed : pollen,
+                    b = seed < pollen ? pollen : seed,
+                    family = p->family_lookup[a + (size_t)n * b];
+                if (family < 0)
+                {
+                    family = p->nfamilies++;
+                    p->family_lookup[a + (size_t)n * b] =
+                        p->family_lookup[b + (size_t)n * a] = family;
+                }
+                p->edge[ne].a = a;
+                p->edge[ne].b = b;
+                p->edge[ne].family = family;
+                p->edge[ne].seed = seed;
+                p->edge[ne++].pollen = pollen;
+            }
+    }
+    else for (int row = 0; row < rows; row++)
+    {
+        int seed = cp03_parent(names, STRING_ELT(first, row)),
+            pollen = cp03_parent(names,
+                STRING_ELT(second, matrix ? row + rows : row));
+        if (seed == pollen)
+            error("st.cross.plan: self crosses are not allowed");
+        int a = seed < pollen ? seed : pollen,
+            b = seed < pollen ? pollen : seed;
+        if (p->roles)
+        {
+            if (p->directed_lookup[seed + (size_t)n * pollen] >= 0)
+                error("st.cross.plan: duplicate directed parent pair");
+            p->directed_lookup[seed + (size_t)n * pollen] = row;
+            if (!st_cross_practical_eligible(p->practical, seed, pollen))
+                continue;
+        }
+        else
+        {
+            if (p->family_lookup[a + (size_t)n * b] >= 0)
+                error("st.cross.plan: duplicate unordered parent pair");
+        }
+        int family = p->family_lookup[a + (size_t)n * b];
+        if (family < 0)
+        {
+            family = p->nfamilies++;
+            p->family_lookup[a + (size_t)n * b] =
+                p->family_lookup[b + (size_t)n * a] = family;
+        }
+        p->edge[ne].a = a;
+        p->edge[ne].b = b;
+        p->edge[ne].family = family;
+        p->edge[ne].seed = seed;
+        p->edge[ne++].pollen = pollen;
+    }
+    p->ne = ne;
+    p->family_selected = mvm_alloc(p->nfamilies, sizeof(int));
+    int rows_needed = p->m < ne ? p->m : ne;
+    p->check_seed = mvm_alloc(rows_needed, sizeof(int));
+    p->check_pollen = mvm_alloc(rows_needed, sizeof(int));
+    p->check_family = mvm_alloc(rows_needed, sizeof(int));
+    p->check_produced = mvm_alloc(rows_needed, sizeof(int64_t));
+    for (size_t i = 0; i < (size_t)n * n; i++) p->directed_lookup[i] = -1;
+}
+
+static void cp10_scores(cp03_problem *p, SEXP scores, SEXP names)
+{
+    if (TYPEOF(scores) != VECSXP || !inherits(scores, "data.frame"))
+        error("st.cross.plan: joint progeny allocation requires a keyed score table");
+    SEXP columns = getAttrib(scores, R_NamesSymbol);
+    if (TYPEOF(columns) != STRSXP || LENGTH(columns) != LENGTH(scores))
+        error("st.cross.plan: scores need unique complete column names");
+    for (int i = 0; i < LENGTH(columns); i++)
+    {
+        if (STRING_ELT(columns, i) == NA_STRING || !CHAR(STRING_ELT(columns, i))[0])
+            error("st.cross.plan: scores need unique complete column names");
+        for (int j = 0; j < i; j++)
+            if (!strcmp(translateCharUTF8(STRING_ELT(columns, i)),
+                        translateCharUTF8(STRING_ELT(columns, j))))
+                error("st.cross.plan: scores have duplicate column names");
+    }
+    SEXP first = mvm_get(scores, "P1Name"), second = mvm_get(scores, "P2Name"),
+        mu = mvm_get(scores, "mu"), va = mvm_get(scores, "va");
+    if (TYPEOF(first) != STRSXP || TYPEOF(second) != STRSXP ||
+        XLENGTH(first) > INT_MAX || XLENGTH(second) != XLENGTH(first) ||
+        !mvm_numeric(mu) || !mvm_numeric(va) || inherits(mu, "factor") ||
+        inherits(va, "factor") || XLENGTH(mu) != XLENGTH(first) ||
+        XLENGTH(va) != XLENGTH(first) || !isNull(getAttrib(first, R_DimSymbol)) ||
+        !isNull(getAttrib(second, R_DimSymbol)) || !isNull(getAttrib(mu, R_DimSymbol)) ||
+        !isNull(getAttrib(va, R_DimSymbol)))
+        error("st.cross.plan: scores require keyed character parents and numeric mu, va");
+    int n = p->o.n, rows = LENGTH(first), *index = mvm_alloc((size_t)n * n, sizeof(int));
+    for (size_t i = 0; i < (size_t)n * n; i++) index[i] = -1;
+    for (int row = 0; row < rows; row++)
+    {
+        int a = cp03_parent(names, STRING_ELT(first, row)),
+            b = cp03_parent(names, STRING_ELT(second, row));
+        if (a == b || index[a + (size_t)n * b] >= 0)
+            error("st.cross.plan: joint scores need unique non-self biological families");
+        index[a + (size_t)n * b] = index[b + (size_t)n * a] = row;
+        if (!R_FINITE(mvm_num(mu, row)) || !R_FINITE(mvm_num(va, row)) ||
+            mvm_num(va, row) < 0)
+            error("st.cross.plan: joint scores require finite mu and nonnegative finite va");
+    }
+    double minimum = INFINITY, maximum = -INFINITY;
+    for (int e = 0; e < p->ne; e++)
+    {
+        cp03_edge *edge = p->edge + e;
+        int row = index[edge->a + (size_t)n * edge->b];
+        if (row < 0) error("st.cross.plan: scores must cover every allowed biological family");
+        edge->mu = mvm_num(mu, row);
+        edge->va = mvm_num(va, row);
+        minimum = fmin(minimum, edge->mu);
+        maximum = fmax(maximum, edge->mu);
+    }
+    if (!p->ne) return;
+    p->score_offset = minimum * .5 + maximum * .5;
+    p->score_scale = 0;
+    for (int e = 0; e < p->ne; e++)
+        p->score_scale = fmax(p->score_scale, fabs(p->edge[e].mu - p->score_offset));
+    if (!p->score_scale) p->score_scale = 1;
+    for (int e = 0; e < p->ne; e++)
+        p->edge[e].score = (p->edge[e].mu - p->score_offset) / p->score_scale;
+}
+
+static double *cp09_candidate_matrix(SEXP matrix, SEXP merit, int n)
+{
+    SEXP dim = getAttrib(matrix, R_DimSymbol),
+         names = getAttrib(merit, R_NamesSymbol),
+         dn = getAttrib(matrix, R_DimNamesSymbol);
+    if (!mvm_numeric(matrix) || inherits(matrix, "factor") ||
+        TYPEOF(dim) != INTSXP || LENGTH(dim) != 2 ||
+        INTEGER(dim)[0] < 1 || INTEGER(dim)[0] != INTEGER(dim)[1] ||
+        (size_t)n > SIZE_MAX / (size_t)n / sizeof(double))
+        error("st.cross.plan: K must be a numeric square matrix");
+    int full = INTEGER(dim)[0];
+    if (full == n && (isNull(names) || isNull(dn))) return NULL;
+    if (isNull(names) || TYPEOF(dn) != VECSXP || LENGTH(dn) != 2 ||
+        isNull(VECTOR_ELT(dn, 0)) || isNull(VECTOR_ELT(dn, 1)))
+        error("st.cross.plan: an extended K reference requires named merit and complete K names");
+    cp03_names(names, R_NilValue, n, "merit");
+    SEXP row = VECTOR_ELT(dn, 0), column = VECTOR_ELT(dn, 1);
+    cp03_names(row, R_NilValue, full, "K row");
+    cp03_names(column, R_NilValue, full, "K column");
+    int *rows = mvm_alloc(n, sizeof(int)), *columns = mvm_alloc(n, sizeof(int));
+    for (int i = 0; i < n; i++)
+    {
+        rows[i] = cp03_parent(row, STRING_ELT(names, i));
+        columns[i] = cp03_parent(column, STRING_ELT(names, i));
+    }
+    double *selected = mvm_alloc((size_t)n * n, sizeof(double));
+    for (int j = 0; j < n; j++)
+        for (int i = 0; i < n; i++)
+            selected[i + (size_t)n * j] = mvm_num(matrix,
+                rows[i] + (R_xlen_t)full * columns[j]);
+    return selected;
+}
+
+static SEXP cp12_public_list(int count, const char *const *labels,
+    const cp03_problem *p, int kind, int *np)
+{
+    const char *names[40];
+    if (count < 0 || count > 32)
+        error("cross planning: invalid final public schema");
+    for (int i = 0; i < count; i++) names[i] = labels[i];
+    int future = p->future && p->future->objective;
+    if (kind == 0 && p->genetic)
+    {
+        names[count++] = "genetic.model";
+        names[count++] = "selected.contributions";
+        if (p->genetic->requirements & 2) names[count++] = "scenarios";
+        if (p->future) names[count++] = "future";
+    }
+    if (kind == 1)
+    {
+        if (p->genetic) names[count++] = "genetic";
+        if (future) names[count++] = "future.search";
+    }
+    if (kind == 2 && future) names[count++] = "scope";
+    if (kind == 3 && p->genetic) names[count++] = "genetic.model";
+    if (kind == 4 && p->frontier && p->point_override)
+    {
+        const st_cross_plan_override *o = p->point_override;
+        if ((o->has_start && p->typed_start_used) ||
+            (p->start_used && !p->typed_start_used && p->explicit_start))
+            names[count++] = "start";
+        if (o->has_start && !p->typed_start_used) names[count++] = "start.requested";
+        if (o->followup) names[count++] = "start.reason";
+        names[count++] = "frontier.metric";
+        names[count++] = "frontier.limit";
+    }
+    return lmm_keep(mvm_list(count, names), np);
+}
+
+static SEXP cp12_put(SEXP object, const char *name, SEXP value, int *np)
+{
+    (void)np;
+    SEXP names = getAttrib(object, R_NamesSymbol);
+    if (TYPEOF(object) != VECSXP || TYPEOF(names) != STRSXP ||
+        LENGTH(names) != LENGTH(object))
+        error("cross planning: invalid final public result");
+    for (int i = 0; i < LENGTH(object); i++)
+        if (!strcmp(CHAR(STRING_ELT(names, i)), name))
+        {
+            SET_VECTOR_ELT(object, i, value);
+            return object;
+        }
+    error("cross planning: missing final public field '%s'", name);
+    return R_NilValue;
+}
+
+static void cp12_prepare(cp03_problem *p, SEXP request, SEXP names, SEXP matrix)
+{
+    void *model = st_cross_genetic_prepare(R_NilValue, request, names, matrix);
+    cp12_plan *g = st_cross_genetic_scratch(model, 1, sizeof(*g));
+    if (!g) error("st.cross.plan: genetic model exceeds max.cells");
+    memset(g, 0, sizeof(*g));
+    g->model = model;
+    g->requirements = st_cross_genetic_requirements(model);
+    int capacity = p->m <= p->ne ? p->m : 1;
+    g->accuracy = st_cross_genetic_scratch(model, (size_t)capacity, sizeof(double));
+    if (!g->accuracy) error("st.cross.plan: genetic model exceeds max.cells");
+    for (int i = 0; i < capacity; i++) g->accuracy[i] = p->accuracy;
+    p->genetic = g;
+    for (int e = 0; e < p->ne; e++)
+    {
+        cp03_edge *edge = p->edge + e;
+        st_cross_genetic_validate_scores(model, 1, &edge->a, &edge->b,
+            &edge->mu, &edge->va);
+    }
+}
+
+static double cp12_fixed_intensity(void *context, int n, int r,
+    int refinement, double *estimated_error)
+{
+    return st_cross_joint_kernel(context, n, r, 0, refinement, estimated_error);
+}
+
+static int cp12_limited(const cp03_problem *p)
+{
+    return p->genetic && (p->genetic->requirements & 1) && !p->genetic->final &&
+        st_cross_genetic_limited(p->genetic->model);
+}
+
+static int cp12_check(cp03_problem *p, int families, const int64_t *retained)
+{
+    cp12_plan *g = p->genetic;
+    if (!g || !(g->requirements & 1) || g->final) return 1;
+    int state = st_cross_genetic_check(g->model, families,
+        p->check_seed, p->check_pollen, p->check_produced, retained,
+        g->accuracy, g->intensity, g->count_context);
+    if (st_cross_genetic_limited(g->model))
+    {
+        if (p->variable == 2) st_cross_variable_external_limit(g->count_context);
+        else st_cross_joint_external_limit(g->count_context);
+    }
+    return state == 1 ? 1 : state == -1 ? -1 : 0;
+}
+
+
+struct cp10_problem
+{
+    cp03_problem *p;
+    void *allocation;
+    st_cross_joint_parameters parameters;
+    int coupled, fixed_state, have_current, have_best, unresolved, limited;
+    int *current, *produced, *initial, *best_produced;
+    int64_t *retained;
+    double *variance, *intensity, *intensity_error, *response;
+    double *best_intensity, *best_error, *best_response;
+    long double baseline, baseline_error, last_score, last_response, last_upper;
+    long double best_score, best_lower, best_upper, best_baseline, best_response_mean;
+    long double closed_upper, relaxation_upper;
+    uint64_t subsets, inner_unresolved, infeasible_subsets, bound_pruned;
+    const char *reason, *last_algorithm;
+};
+
+static int cp10_limited(cp03_problem *p)
+{
+    if (p->variable == 2) return cp11_limited(p);
+    cp10_problem *s = p->joint;
+    return (s && st_cross_joint_limited(s->allocation)) || cp12_limited(p);
+}
+
+static void cp10_pruned(cp03_problem *p, double bound)
+{
+    cp10_problem *s = p->joint;
+    long double upper = (long double)bound * p->score_scale;
+    s->closed_upper = fmaxl(s->closed_upper, upper);
+    s->bound_pruned++;
+}
+
+static int cp10_prepare_set(cp10_problem *s)
+{
+    cp03_problem *p = s->p;
+    int n = p->o.n, count = 0;
+    memset(p->degree, 0, (size_t)n * sizeof(int));
+    memset(p->family_selected, 0, (size_t)p->nfamilies * sizeof(int));
+    long double baseline = 0, absolute = 0, score = 0;
+    int unique = 1;
+    for (int e = 0; e < p->ne; e++) if (p->selected[e])
+    {
+        if (count >= p->m) return -1;
+        cp03_edge *edge = p->edge + e;
+        s->current[count] = e;
+        s->variance[count] = edge->va;
+        s->retained[count] = s->parameters.retained;
+        p->check_seed[count] = p->roles ? edge->seed : edge->a;
+        p->check_pollen[count] = p->roles ? edge->pollen : edge->b;
+        p->check_family[count] = edge->family;
+        if (p->family_selected[edge->family]) unique = 0;
+        p->family_selected[edge->family] = e + 1;
+        p->degree[edge->a]++;
+        p->degree[edge->b]++;
+        long double centered = (long double)edge->mu - p->score_offset;
+        baseline += centered / p->m;
+        absolute += fabsl(centered) / p->m;
+        score += edge->score / p->m;
+        count++;
+    }
+    p->count = count;
+    p->current_score = (double)score;
+    for (int i = 0; i < n; i++) p->scratch[i] = p->degree[i] / (2.0 * p->m);
+    ocs_relatedness(&p->o, p->scratch, p->Kc);
+    s->baseline = baseline;
+    s->baseline_error = (8 * (long double)p->m + 16) * LDBL_EPSILON * absolute;
+    if (!unique || count != p->m) return s->fixed_state = -1;
+    for (int i = 0; i < n; i++)
+        if (p->degree[i] < p->lower_degree[i] || p->degree[i] > p->upper_degree[i])
+            return s->fixed_state = -1;
+    if (p->diverse)
+    {
+        p->diversity_loss = cp05_plan_loss(p);
+        if (!(p->diversity_loss < p->diversity_max)) return s->fixed_state = -1;
+    }
+    s->fixed_state = cp03_original_relation(p, p->degree,
+        &p->current_q_original, &p->current_q_error, &p->current_row_residual);
+    return s->fixed_state;
+}
+
+static int cp10_check(void *opaque, int families, const int *produced)
+{
+    cp10_problem *s = opaque;
+    cp03_problem *p = s->p;
+    if (families != p->m || !produced) return -1;
+    int64_t total = 0;
+    for (int i = 0; i < families; i++)
+    {
+        if (produced[i] < s->parameters.lower || produced[i] > s->parameters.upper)
+            return -1;
+        total += produced[i];
+        p->check_produced[i] = produced[i];
+    }
+    if (total != s->parameters.budget || s->fixed_state < 0) return -1;
+    int practical = p->practical ? st_cross_practical_check(p->practical, families,
+        p->check_seed, p->check_pollen, p->check_family,
+        p->check_produced, s->retained, NULL, p->roles) : 1;
+    if (practical == -2)
+        error("st.cross.plan: joint progeny constraints require unavailable information");
+    if (practical < 0) return -1;
+    int genetic = cp12_check(p, families, s->retained);
+    if (genetic < 0) return -1;
+    return !practical || !s->fixed_state || !genetic ? 0 : 1;
+}
+
+static int cp10_evaluate_set(cp10_problem *s, const int *initial)
+{
+    cp03_problem *p = s->p;
+    s->have_current = 0;
+    s->last_score = -INFINITY;
+    s->last_upper = INFINITY;
+    int fixed = cp10_prepare_set(s);
+    if (fixed < 0)
+    {
+        s->infeasible_subsets++;
+        s->last_upper = -INFINITY;
+        return 0;
+    }
+    st_cross_joint_solution solved = {0};
+    solved.criterion_upper = INFINITY;
+    st_cross_joint_solve(s->allocation, s->variance, p->accuracy, initial,
+        s->produced, s->intensity, s->intensity_error, s->response,
+        s->coupled, cp10_check, s, &solved);
+    s->subsets++;
+    s->last_algorithm = solved.algorithm;
+    s->last_upper = s->baseline + s->baseline_error + solved.criterion_upper;
+    if (p->joint_bound_known)
+    {
+        long double relaxed = 0;
+        for (int i = 0; i < p->m; i++)
+            relaxed += (long double)p->edge[s->current[i]].score / p->m;
+        s->last_upper = fminl(s->last_upper,
+            (relaxed + p->bound_error) * p->score_scale);
+    }
+    if (solved.proof_infeasible)
+    {
+        s->infeasible_subsets++;
+        s->last_upper = -INFINITY;
+    }
+    else s->closed_upper = fmaxl(s->closed_upper, s->last_upper);
+    if (!solved.complete || solved.unresolved)
+    {
+        if (!solved.proof_infeasible) s->inner_unresolved++;
+        if (solved.unresolved) s->unresolved = 1;
+    }
+    if (solved.limited || st_cross_joint_limited(s->allocation)) s->limited = 1;
+    if (!solved.has_incumbent) return 0;
+    if (cp10_check(s, p->m, s->produced) != 1)
+        error("st.cross.plan: joint inner incumbent failed original-input validation");
+    long double response = 0;
+    for (int i = 0; i < p->m; i++) response += (long double)s->response[i] / p->m;
+    s->last_score = s->baseline + (p->useful ? response : 0);
+    s->last_response = response;
+    s->have_current = 1;
+    long double improvement = (s->baseline - s->best_baseline) +
+        (p->useful ? response - s->best_response_mean : 0);
+    if (!s->have_best || improvement > 0)
+    {
+        s->have_best = p->have_best = 1;
+        s->best_score = s->last_score;
+        s->best_lower = s->baseline - s->baseline_error + solved.criterion_lower;
+        s->best_upper = s->baseline + s->baseline_error + solved.criterion_upper;
+        s->best_baseline = s->baseline;
+        s->best_response_mean = response;
+        p->best_score = (double)(s->best_score / p->score_scale);
+        for (int i = 0; i < p->m; i++)
+        {
+            p->best[i] = s->current[i];
+            s->best_produced[i] = s->produced[i];
+            s->best_intensity[i] = s->intensity[i];
+            s->best_error[i] = s->intensity_error[i];
+            s->best_response[i] = s->response[i];
+        }
+    }
+    return 1;
+}
+
+static int cp10_consider(cp03_problem *p)
+{
+    return cp10_evaluate_set(p->joint, NULL);
+}
+
+static void cp10_upper_scores(cp10_problem *s)
+{
+    cp03_problem *p = s->p;
+    int64_t feasible_last = (int64_t)s->parameters.budget -
+        (int64_t)(p->m - 1) * s->parameters.lower;
+    int last = feasible_last > s->parameters.upper ? s->parameters.upper :
+        feasible_last < 0 ? 0 : (int)feasible_last;
+    if (last > s->parameters.upper) last = s->parameters.upper;
+    double largest = 0;
+    int known = !p->useful || p->accuracy == 0;
+    int needed = 0;
+    for (int e = 0; e < p->ne; e++) needed |= p->edge[e].va > 0;
+    if (!needed) known = 1;
+    if (!known && last >= s->parameters.lower)
+    {
+        if (s->parameters.normal_mode)
+        {
+            double error = 0, value = st_cross_joint_kernel(s->allocation,
+                last, s->parameters.retained, 0, 1, &error);
+            if (R_FINITE(value) && R_FINITE(error) && error >= 0)
+            {
+                largest = nextafter(value + error, INFINITY);
+                known = R_FINITE(largest);
+            }
+        }
+        else if ((double)last - s->parameters.lower + 1 <=
+                    fmin(1000000, s->parameters.max_cells / 32))
+        {
+            known = 1;
+            for (int n = s->parameters.lower; ; n++)
+            {
+                double error = 0, value = st_cross_joint_kernel(s->allocation,
+                    n, s->parameters.retained, 0, 0, &error);
+                if (!R_FINITE(value) || !R_FINITE(error) || error < 0)
+                { known = 0; break; }
+                largest = fmax(largest, nextafter(value + error, INFINITY));
+                if (n == last) break;
+            }
+        }
+    }
+    p->joint_bound_known = known;
+    if (!known) { s->relaxation_upper = INFINITY; return; }
+    double scale = 0;
+    for (int e = 0; e < p->ne; e++)
+    {
+        long double centered = (long double)p->edge[e].mu - p->score_offset,
+            gain = p->useful ? (long double)p->accuracy * sqrt(p->edge[e].va) * largest : 0,
+            upper = centered + gain + 64 * DBL_EPSILON * (fabsl(centered) + fabsl(gain));
+        if (!isfinite(upper) || fabsl(upper) > DBL_MAX)
+        { p->joint_bound_known = 0; s->relaxation_upper = INFINITY; return; }
+        scale = fmax(scale, fmax((double)fabsl(centered), (double)fabsl(upper)));
+        p->edge[e].usefulness = (double)upper;
+        if ((long double)p->edge[e].usefulness < upper)
+            p->edge[e].usefulness = nextafter(p->edge[e].usefulness, INFINITY);
+    }
+    p->score_scale = scale ? scale : 1;
+    for (int e = 0; e < p->ne; e++)
+        p->edge[e].score = nextafter(p->edge[e].usefulness / p->score_scale, INFINITY);
+    qsort(p->edge, p->ne, sizeof(cp03_edge), p->roles ? cp09_edge_order_max : cp03_edge_order_max);
+    int n = p->o.n;
+    for (size_t i = 0; i < (size_t)n * n; i++)
+        p->lookup[i] = p->directed_lookup[i] = -1;
+    for (int e = 0; e < p->ne; e++)
+    {
+        cp03_edge *edge = p->edge + e;
+        if (p->lookup[edge->a + (size_t)n * edge->b] < 0)
+            p->lookup[edge->a + (size_t)n * edge->b] =
+                p->lookup[edge->b + (size_t)n * edge->a] = e;
+        p->directed_lookup[edge->seed + (size_t)n * edge->pollen] = e;
+    }
+    int count = 0, *used = mvm_alloc(p->nfamilies, sizeof(int));
+    long double upper = 0;
+    for (int e = 0; e < p->ne && count < p->m; e++)
+        if (!used[p->edge[e].family])
+        {
+            used[p->edge[e].family] = 1;
+            upper += (long double)p->edge[e].score / p->m;
+            count++;
+        }
+    s->relaxation_upper = count == p->m ?
+        (upper + p->bound_error) * p->score_scale : -INFINITY;
+}
+
+static int cp13_typed_fixed(cp10_problem *s)
+{
+    cp03_problem *p = s->p;
+    const st_cross_plan_override *o = p->point_override;
+    if (!o || !o->has_start || !o->start.retained) return 0;
+    int *edge = mvm_alloc(p->m, sizeof(int));
+    if (!cp13_typed_edges(p, edge) || cp10_prepare_set(s) < 0) goto invalid;
+    int64_t total = 0;
+    for (int i = 0; i < p->m; i++)
+    {
+        int row = 0;
+        while (row < p->m && edge[row] != s->current[i]) row++;
+        if (row == p->m || o->start.produced[row] < s->parameters.lower ||
+            o->start.produced[row] > s->parameters.upper ||
+            o->start.retained[row] != s->parameters.retained) goto invalid;
+        s->initial[i] = (int)o->start.produced[row];
+        total += s->initial[i];
+    }
+    if (total != s->parameters.budget || cp10_check(s, p->m, s->initial) != 1 ||
+        !cp10_evaluate_set(s, s->initial)) goto invalid;
+    p->start_used = p->typed_start_used = 1;
+    return 1;
+invalid:
+    cp03_clear(p);
+    return 0;
+}
+
+static void cp10_start(cp10_problem *s, SEXP start, SEXP names)
+{
+    if (cp13_typed_fixed(s)) return;
+    if (isNull(start)) return;
+    cp03_problem *p = s->p;
+    int object = inherits(start, "st.cross.plan") || inherits(start, "st.cross.allocation");
+    SEXP table = object ? mvm_get(start, "crosses") : start;
+    if (TYPEOF(table) != VECSXP || !inherits(table, "data.frame"))
+        error("st.cross.plan: a joint start must be a plan, allocation or actual-count table");
+    cp03_names(getAttrib(table, R_NamesSymbol), R_NilValue, LENGTH(table), "start column");
+    SEXP first = mvm_get(table, "P1Name"), second = mvm_get(table, "P2Name"),
+        counts = mvm_get(table, "n.progeny"), retained = mvm_get(table, "n.selected");
+    if (TYPEOF(first) != STRSXP || TYPEOF(second) != STRSXP ||
+        LENGTH(first) != p->m || LENGTH(second) != p->m ||
+        !mvm_numeric(counts) || inherits(counts, "factor") || LENGTH(counts) != p->m ||
+        (!isNull(retained) && (!mvm_numeric(retained) || inherits(retained, "factor") ||
+                              LENGTH(retained) != p->m)))
+        error("st.cross.plan: a joint start needs the actual requested family count and produced counts");
+    SEXP seed = R_NilValue, pollen = R_NilValue;
+    if (p->roles && object)
+    {
+        SEXP directions = mvm_get(start, "directions");
+        if (TYPEOF(directions) != VECSXP || !inherits(directions, "data.frame"))
+            error("st.cross.plan: a role-aware joint start needs explicit keyed directions");
+        cp03_names(getAttrib(directions, R_NamesSymbol), R_NilValue, LENGTH(directions), "start direction column");
+        seed = mvm_get(directions, "seed");
+        pollen = mvm_get(directions, "pollen");
+        SEXP hint = mvm_get(directions, "family");
+        if (TYPEOF(seed) != STRSXP || TYPEOF(pollen) != STRSXP ||
+            LENGTH(seed) != p->m || LENGTH(pollen) != p->m ||
+            !mvm_numeric(hint) || inherits(hint, "factor") || LENGTH(hint) != p->m)
+            error("st.cross.plan: invalid joint-start direction map");
+        for (int i = 0; i < p->m; i++)
+        {
+            double value = mvm_num(hint, i);
+            if (!R_FINITE(value) || value < 1 || value > p->m || value != floor(value))
+                error("st.cross.plan: invalid joint-start display ordinal");
+            for (int j = 0; j < i; j++) if (value == mvm_num(hint, j))
+                error("st.cross.plan: duplicate joint-start display ordinal");
+        }
+    }
+    int *edges = mvm_alloc(p->m, sizeof(int)), *actual = mvm_alloc(p->m, sizeof(int)),
+        *used = mvm_alloc(p->m, sizeof(int));
+    int64_t total = 0;
+    cp03_clear(p);
+    for (int row = 0; row < p->m; row++)
+    {
+        int a = cp03_parent(names, STRING_ELT(first, row)),
+            b = cp03_parent(names, STRING_ELT(second, row)), x = a, y = b;
+        if (a == b) error("st.cross.plan: a joint start cannot contain self families");
+        if (!isNull(seed))
+        {
+            int found = -1;
+            for (int j = 0; j < p->m; j++)
+            {
+                int i = cp03_parent(names, STRING_ELT(seed, j)),
+                    k = cp03_parent(names, STRING_ELT(pollen, j));
+                if ((i == a && k == b) || (i == b && k == a))
+                {
+                    if (found >= 0 || used[j])
+                        error("st.cross.plan: duplicate joint-start direction family key");
+                    found = j; x = i; y = k;
+                }
+            }
+            if (found < 0)
+                error("st.cross.plan: joint-start direction keys do not match actual current families");
+            used[found] = 1;
+        }
+        int edge = p->roles ? p->directed_lookup[x + (size_t)p->o.n * y]
+                           : p->lookup[a + (size_t)p->o.n * b];
+        if (edge < 0 || p->family_selected[p->edge[edge].family])
+            error("st.cross.plan: a joint start has a duplicate or forbidden biological family/direction");
+        double value = mvm_num(counts, row);
+        if (!R_FINITE(value) || value != floor(value) ||
+            value < s->parameters.lower || value > s->parameters.upper)
+            error("st.cross.plan: joint-start produced counts violate the requested domain");
+        if (!isNull(retained) && mvm_num(retained, row) != s->parameters.retained)
+            error("st.cross.plan: joint-start retained counts do not match the requested fixed r");
+        edges[row] = edge;
+        actual[row] = (int)value;
+        total += actual[row];
+        cp03_change(p, edge, 1);
+    }
+    if (total != s->parameters.budget)
+        error("st.cross.plan: joint-start actual production does not match the requested budget");
+    if (cp10_prepare_set(s) < 0)
+        error("st.cross.plan: joint-start families violate the original family-slot constraints");
+    for (int i = 0; i < p->m; i++)
+    {
+        int row = 0;
+        while (row < p->m && edges[row] != s->current[i]) row++;
+        if (row == p->m) error("st.cross.plan: invalid joint-start family alignment");
+        s->initial[i] = actual[row];
+    }
+    if (cp10_check(s, p->m, s->initial) != 1)
+        error("st.cross.plan: joint-start actual counts violate or cannot certify the current constraints");
+    if (!cp10_evaluate_set(s, s->initial))
+        error("st.cross.plan: the feasible joint start could not be numerically evaluated");
+    p->start_used = 1;
+}
+
+static void cp10_heuristic(cp10_problem *s)
+{
+    cp03_problem *p = s->p;
+    int n = p->o.n, *chosen = mvm_alloc(p->m, sizeof(int)),
+        *old_counts = mvm_alloc(p->m, sizeof(int)),
+        *old_current = mvm_alloc(p->m, sizeof(int));
+    double *desired = mvm_alloc(n, sizeof(double));
+    for (int i = 0; i < n; i++) desired[i] = 2.0 * p->m * p->relax_start[i];
+    for (int start = 0; start < p->starts; start++)
+    {
+        if (cp10_limited(p)) break;
+        R_CheckUserInterrupt();
+        p->completed_starts++;
+        int initialized = 0;
+        if (!start && s->have_best)
+        {
+            cp03_clear(p);
+            for (int i = 0; i < p->m; i++) cp03_change(p, p->best[i], 1);
+            initialized = 1;
+        }
+        else initialized = cp03_h_joint_start(p, start, desired);
+        if (!initialized || !cp03_h_selected(p, chosen)) continue;
+        cp10_evaluate_set(s, NULL);
+        int current_feasible = s->have_current;
+        long double current_baseline = s->baseline, current_response = s->last_response;
+        for (int iteration = 0; iteration < p->maxit && !cp10_limited(p); iteration++)
+        {
+            if (!(p->proposals % 128)) R_CheckUserInterrupt();
+            p->proposals++;
+            for (int i = 0; i < p->m; i++)
+            {
+                old_current[i] = s->current[i];
+                old_counts[i] = current_feasible ? s->produced[i] : 0;
+            }
+            int count = p->m >= 2 && !(iteration % 3) ? 2 : 1,
+                slot[2], removed[2], added[2], a[2], b[2], valid = 1;
+            for (int i = 0; i < count; i++)
+            {
+                do slot[i] = cp03_index(p, p->m);
+                while (cp03_h_in_set(slot[i], slot, i));
+                removed[i] = chosen[slot[i]];
+                a[i] = p->edge[removed[i]].a;
+                b[i] = p->edge[removed[i]].b;
+                if (cp03_random(p) & 1)
+                { int swap = a[i]; a[i] = b[i]; b[i] = swap; }
+            }
+            for (int i = 0; i < count; i++)
+            {
+                if ((count == 1 && p->roles && !(iteration % 5)) ||
+                    (count == 2 && !(iteration % 2)))
+                    added[i] = cp09_arc(p, a[i], b[(i + 1) % count]);
+                else
+                {
+                    int prefix = !(iteration % 4) && p->m < (INT_MAX - 32) / 4
+                        ? 4 * p->m + 32 : p->ne;
+                    if (prefix > p->ne) prefix = p->ne;
+                    added[i] = cp03_index(p, prefix);
+                }
+                if (added[i] < 0) { valid = 0; break; }
+                int family = p->edge[added[i]].family, occupied = p->family_selected[family];
+                if ((occupied && !cp03_h_in_set(occupied - 1, removed, count)) ||
+                    (i && p->edge[added[0]].family == family)) valid = 0;
+            }
+            if (!valid) continue;
+            int same = 1;
+            for (int i = 0; i < count; i++)
+                if (!cp03_h_in_set(added[i], removed, count)) same = 0;
+            if (same) continue;
+            for (int i = 0; i < count; i++) cp03_change(p, removed[i], -1);
+            for (int i = 0; i < count; i++) cp03_change(p, added[i], 1);
+            cp10_prepare_set(s);
+            const int *initial = NULL;
+            if (current_feasible)
+            {
+                for (int i = 0; i < p->m; i++)
+                {
+                    int previous = -1;
+                    for (int j = 0; j < p->m; j++)
+                        if (old_current[j] == s->current[i]) { previous = j; break; }
+                    if (previous < 0)
+                    {
+                        int at = 0;
+                        while (at < count && added[at] != s->current[i]) at++;
+                        if (at < count)
+                            for (int j = 0; j < p->m; j++)
+                                if (old_current[j] == removed[at]) { previous = j; break; }
+                    }
+                    s->initial[i] = previous >= 0 ? old_counts[previous] : s->parameters.lower;
+                }
+                initial = s->initial;
+            }
+            cp10_evaluate_set(s, initial);
+            int next_feasible = s->have_current;
+            long double improvement = (s->baseline - current_baseline) +
+                (p->useful ? s->last_response - current_response : 0);
+            double progress = 1 - (double)iteration / p->maxit,
+                temperature = p->score_scale * (.02 * progress * progress + 1e-8);
+            int accept = next_feasible && (!current_feasible || improvement >= 0 ||
+                (temperature > 0 && cp03_h_uniform(p) <
+                    exp((double)fmaxl(-700, improvement / temperature))));
+            if (!current_feasible && !next_feasible) accept = 1;
+            if (accept)
+            {
+                for (int i = 0; i < count; i++) chosen[slot[i]] = added[i];
+                p->accepted++;
+                current_feasible = next_feasible;
+                current_baseline = s->baseline;
+                current_response = s->last_response;
+            }
+            else
+            {
+                for (int i = 0; i < count; i++) cp03_change(p, added[i], -1);
+                for (int i = 0; i < count; i++) cp03_change(p, removed[i], 1);
+                cp10_prepare_set(s);
+                for (int i = 0; i < p->m; i++)
+                {
+                    int j = 0;
+                    while (j < p->m && old_current[j] != s->current[i]) j++;
+                    s->produced[i] = j < p->m ? old_counts[j] : s->parameters.lower;
+                }
+            }
+        }
+    }
+}
+
+static void cp10_refresh_best(cp10_problem *s)
+{
+    cp03_problem *p = s->p;
+    cp03_clear(p);
+    for (int i = 0; i < p->m; i++) cp03_change(p, p->best[i], 1);
+    if (cp10_prepare_set(s) < 0 || cp10_check(s, p->m, s->best_produced) != 1)
+        error("st.cross.plan: final joint incumbent failed original-input validation");
+    long double response = 0, uncertainty_sum = 0;
+    for (int i = 0; i < p->m; i++)
+    {
+        if (s->current[i] != p->best[i])
+            error("st.cross.plan: final joint family/count alignment is invalid");
+        cp03_edge *edge = p->edge + s->current[i];
+        double uncertainty = 0;
+        double intensity = s->best_produced[i] == s->parameters.retained ? 0 :
+            st_cross_joint_kernel(s->allocation, s->best_produced[i],
+                s->parameters.retained, 0, 0, &uncertainty);
+        if (!R_FINITE(intensity))
+            error("st.cross.plan: the final joint incumbent has no finite scoring value");
+        if (!R_FINITE(uncertainty) || uncertainty < 0)
+        { uncertainty = INFINITY; if (p->accuracy && edge->va) s->unresolved = 1; }
+        long double coefficient = (long double)p->accuracy * sqrt(edge->va),
+            gain = coefficient * intensity;
+        s->best_intensity[i] = intensity;
+        s->best_error[i] = uncertainty;
+        s->best_response[i] = (double)gain;
+        response += gain / p->m;
+        uncertainty_sum += coefficient ? coefficient * uncertainty / p->m : 0;
+    }
+    uncertainty_sum += (8 * (long double)p->m + 16) * LDBL_EPSILON * fabsl(response);
+    s->best_baseline = s->baseline;
+    s->best_response_mean = response;
+    s->best_score = s->baseline + (p->useful ? response : 0);
+    s->best_lower = s->best_score - s->baseline_error - (p->useful ? uncertainty_sum : 0);
+    s->best_upper = s->best_score + s->baseline_error + (p->useful ? uncertainty_sum : 0);
+    s->closed_upper = fmaxl(s->closed_upper, s->best_upper);
+}
+
+static SEXP cp10_result(cp10_problem *s, SEXP args, SEXP names,
+    SEXP original_matrix, SEXP practical_request, SEXP diversity, int *np)
+{
+    cp03_problem *p = s->p;
+    int n = p->o.n, rows = s->have_best ? p->m : 0;
+    if (p->genetic) p->genetic->final = 1;
+    if (s->have_best) cp10_refresh_best(s);
+    else
+    {
+        cp03_clear(p);
+        if (p->genetic) st_cross_genetic_no_incumbent(p->genetic->model);
+        if (p->practical)
+            st_cross_practical_check(p->practical, 0,
+                p->check_seed, p->check_pollen, p->check_family,
+                p->check_produced, s->retained, NULL, p->roles);
+    }
+    if (p->future && !p->future->objective)
+    {
+        cp13_plan *g = p->future;
+        for (int i = 0; s->have_best && i < p->m; i++)
+        {
+            g->n[i] = s->best_produced[i];
+            g->r[i] = s->parameters.retained;
+        }
+        cp13_final(p, s->have_best, p->best, g->n, g->r);
+    }
+    long double upper = p->complete ? s->closed_upper : s->relaxation_upper;
+    if (!p->complete && !isfinite(upper)) upper = INFINITY;
+    if (s->have_best) upper = fmaxl(upper, s->best_upper);
+    long double gap = s->have_best ? fmaxl(0, upper - s->best_lower) : NAN;
+    double target = s->parameters.tolerance * fmax(1, (double)fabsl(s->best_response_mean));
+    const char *status = p->infeasible ? "infeasible" : s->have_best
+        ? (isfinite(gap) && gap <= target
+            ? (s->parameters.normal_mode ? "numerically.optimal" : "optimal")
+            : p->complete && !s->inner_unresolved && s->unresolved
+            ? "numerically.unresolved" : "best.found")
+        : p->complete && !s->inner_unresolved && !s->unresolved ? "infeasible"
+        : st_cross_joint_limited(s->allocation) ? "resource.limit" : "search.limit";
+    const char *reason = p->infeasible ? p->reason :
+        !strcmp(status, "optimal") || !strcmp(status, "numerically.optimal") ? "joint.objective.gap.closed" :
+        p->genetic && (p->genetic->requirements & 1) &&
+            st_cross_genetic_limited(p->genetic->model) ? "cumulative.genetic.limit" :
+        st_cross_joint_limited(s->allocation) ? "cumulative.allocation.limit" :
+        !s->have_best && !strcmp(status, "infeasible") ? "completed.joint.enumeration" :
+        s->unresolved ? "joint.numerical.limit" : p->stopped ? "outer.node.limit" :
+        s->inner_unresolved ? "unfinished.inner.allocations" : "outer.search.limit";
+    if (p->future && p->future->objective)
+    {
+        status = p->future->status;
+        reason = p->future->reason;
+    }
+    const char *labels[] = {"crosses", "contributions", "parents", "gain", "relatedness",
+        "within.cross.relatedness", "mode", "status", "objective", "constraints", "diagnostics",
+        "control", "search", "inputs", "usefulness", "parent.gain", "criterion", "accuracy",
+        "population", "population.contributions", "feasibility", "diversity", "directions"};
+    const char *result_names[23];
+    for (int i = 0; i < 21; i++) result_names[i] = labels[i];
+    int count = 21;
+    if (p->diverse) result_names[count++] = "diversity";
+    if (p->roles) result_names[count++] = "directions";
+    SEXP result = cp12_public_list(count, result_names, p, 0, np);
+    const char *columns[] = {"family", "P1Name", "P2Name", "n.progeny", "n.selected",
+        "mu", "va", "accuracy", "intensity", "selected.mean", "response", "kinship"};
+    SEXP crosses = lmm_keep(lmm_dataframe(rows, 12, columns, np), np);
+    for (int j = 0; j < 12; j++)
+        SET_VECTOR_ELT(crosses, j, lmm_keep(allocVector(j == 1 || j == 2 ? STRSXP
+            : j < 5 ? INTSXP : REALSXP, rows), np));
+    SEXP directions = R_NilValue;
+    if (p->roles)
+    {
+        const char *direction_labels[] = {"family", "seed", "pollen"};
+        directions = lmm_keep(lmm_dataframe(rows, 3, direction_labels, np), np);
+        SET_VECTOR_ELT(directions, 0, lmm_keep(allocVector(INTSXP, rows), np));
+        SET_VECTOR_ELT(directions, 1, lmm_keep(allocVector(STRSXP, rows), np));
+        SET_VECTOR_ELT(directions, 2, lmm_keep(allocVector(STRSXP, rows), np));
+        SET_VECTOR_ELT(result, 21 + p->diverse, directions);
+    }
+    int at = 0;
+    long double within = 0;
+    for (int a = 0; a < n - 1; a++) for (int b = a + 1; b < n; b++)
+    {
+        int family = p->family_lookup[a + (size_t)n * b];
+        if (family < 0 || !p->family_selected[family]) continue;
+        int e = p->family_selected[family] - 1, index = 0;
+        while (index < p->m && p->best[index] != e) index++;
+        if (index == p->m || at >= rows) error("st.cross.plan: invalid joint output family map");
+        cp03_edge *edge = p->edge + e;
+        INTEGER(VECTOR_ELT(crosses, 0))[at] = at + 1;
+        SET_STRING_ELT(VECTOR_ELT(crosses, 1), at, STRING_ELT(names, a));
+        SET_STRING_ELT(VECTOR_ELT(crosses, 2), at, STRING_ELT(names, b));
+        INTEGER(VECTOR_ELT(crosses, 3))[at] = s->best_produced[index];
+        INTEGER(VECTOR_ELT(crosses, 4))[at] = s->parameters.retained;
+        REAL(VECTOR_ELT(crosses, 5))[at] = edge->mu;
+        REAL(VECTOR_ELT(crosses, 6))[at] = edge->va;
+        REAL(VECTOR_ELT(crosses, 7))[at] = p->accuracy;
+        REAL(VECTOR_ELT(crosses, 8))[at] = s->best_intensity[index];
+        long double selected = (long double)edge->mu + s->best_response[index];
+        if (!isfinite(selected) || fabsl(selected) > DBL_MAX)
+            error("st.cross.plan: selected family mean exceeds the finite numeric domain");
+        REAL(VECTOR_ELT(crosses, 9))[at] = (double)selected;
+        REAL(VECTOR_ELT(crosses, 10))[at] = s->best_response[index];
+        REAL(VECTOR_ELT(crosses, 11))[at] = p->original_K[a + (size_t)n * b];
+        within += (long double)p->original_K[a + (size_t)n * b] / p->m;
+        if (p->roles)
+        {
+            INTEGER(VECTOR_ELT(directions, 0))[at] = at + 1;
+            SET_STRING_ELT(VECTOR_ELT(directions, 1), at, STRING_ELT(names, edge->seed));
+            SET_STRING_ELT(VECTOR_ELT(directions, 2), at, STRING_ELT(names, edge->pollen));
+        }
+        at++;
+    }
+    SET_VECTOR_ELT(result, 0, crosses);
+    const char *parent_columns[] = {"parent", "uses", "contribution", "lower", "upper", "merit"};
+    SEXP parents = lmm_keep(lmm_dataframe(n, 6, parent_columns, np), np);
+    SET_VECTOR_ELT(parents, 0, names);
+    SET_VECTOR_ELT(parents, 1, lmm_keep(allocVector(INTSXP, n), np));
+    for (int j = 2; j < 6; j++) SET_VECTOR_ELT(parents, j, lmm_keep(allocVector(REALSXP, n), np));
+    long double parent_gain = 0;
+    for (int i = 0; i < n; i++)
+    {
+        double share = s->have_best ? p->degree[i] / (2.0 * p->m) : NA_REAL;
+        p->scratch[i] = share;
+        INTEGER(VECTOR_ELT(parents, 1))[i] = s->have_best ? p->degree[i] : NA_INTEGER;
+        REAL(VECTOR_ELT(parents, 2))[i] = share;
+        REAL(VECTOR_ELT(parents, 3))[i] = p->requested_lower[i];
+        REAL(VECTOR_ELT(parents, 4))[i] = p->requested_upper[i];
+        REAL(VECTOR_ELT(parents, 5))[i] = p->o.original_g[i];
+        if (s->have_best) parent_gain += (long double)p->o.original_g[i] *
+            p->degree[i] / (2.0L * p->m);
+    }
+    if (s->have_best) SET_VECTOR_ELT(result, 1, cp03_number_vector(p->scratch, n, names, np));
+    SET_VECTOR_ELT(result, 2, parents);
+    double baseline = s->have_best ? (double)((long double)p->score_offset + s->best_baseline) : NA_REAL,
+        response = s->have_best ? (double)s->best_response_mean : NA_REAL,
+        usefulness = s->have_best ? (double)((long double)p->score_offset + s->best_baseline + s->best_response_mean) : NA_REAL;
+    SET_VECTOR_ELT(result, 3, lmm_keep(ScalarReal(baseline), np));
+    SET_VECTOR_ELT(result, 4, lmm_keep(ScalarReal(s->have_best ? p->current_q_original : NA_REAL), np));
+    SET_VECTOR_ELT(result, 5, lmm_keep(ScalarReal(s->have_best ? (double)within : NA_REAL), np));
+    SET_VECTOR_ELT(result, 6, lmm_keep(mkString("joint"), np));
+    SET_VECTOR_ELT(result, 7, lmm_keep(mkString(status), np));
+    SET_VECTOR_ELT(result, 14, lmm_keep(ScalarReal(usefulness), np));
+    SET_VECTOR_ELT(result, 15, lmm_keep(ScalarReal(s->have_best ? (double)parent_gain : NA_REAL), np));
+    SET_VECTOR_ELT(result, 16, lmm_keep(mkString(p->future && p->future->objective ? "future" : p->useful ? "usefulness" : "mean"), np));
+    SET_VECTOR_ELT(result, 17, lmm_keep(ScalarReal(p->accuracy), np));
+    if (p->future && p->future->objective)
+        SET_VECTOR_ELT(result, 8, cp13_objective(p, np));
+    else
+    {
+    const char *objective_labels[] = {"criterion", "sense", "value", "bound", "gap", "bound.type",
+        "response", "unselected.mean", "numerical.qualification", "centered.value", "centered.bound", "mean.offset"};
+    SEXP objective = lmm_keep(mvm_list(12, objective_labels), np);
+    double reported_bound = isfinite(upper) ? (double)((long double)p->score_offset + upper)
+                                         : upper > 0 ? INFINITY : NA_REAL;
+    if (R_FINITE(reported_bound)) reported_bound = nextafter(reported_bound, INFINITY);
+    SET_VECTOR_ELT(objective, 0, lmm_keep(mkString(p->useful ? "usefulness" : "mean"), np));
+    SET_VECTOR_ELT(objective, 1, lmm_keep(mkString("max"), np));
+    SET_VECTOR_ELT(objective, 2, lmm_keep(ScalarReal(p->useful ? usefulness : baseline), np));
+    SET_VECTOR_ELT(objective, 3, lmm_keep(ScalarReal(reported_bound), np));
+    SET_VECTOR_ELT(objective, 4, lmm_keep(ScalarReal(s->have_best ? (double)gap : NA_REAL), np));
+    SET_VECTOR_ELT(objective, 5, lmm_keep(mkString(p->complete
+        ? "completed biological-set search and qualified inner bounds"
+        : p->joint_bound_known ? "family upper-score relaxation" : "unknown joint upper bound"), np));
+    SET_VECTOR_ELT(objective, 6, lmm_keep(ScalarReal(response), np));
+    SET_VECTOR_ELT(objective, 7, lmm_keep(ScalarReal(baseline), np));
+    SET_VECTOR_ELT(objective, 8, lmm_keep(mkString(s->parameters.normal_mode
+        ? "Finite-normal integration errors and objective bounds are estimated, not rigorous interval certificates."
+        : "Computed Burrows utilities with centered mean/response arithmetic qualification."), np));
+    SET_VECTOR_ELT(objective, 9, lmm_keep(ScalarReal(s->have_best ? (double)s->best_score : NA_REAL), np));
+    SET_VECTOR_ELT(objective, 10, lmm_keep(ScalarReal((double)upper), np));
+    SET_VECTOR_ELT(objective, 11, lmm_keep(ScalarReal(p->score_offset), np));
+    SET_VECTOR_ELT(result, 8, objective);
+    }
+    const char *constraint_labels[] = {"n.crosses", "total.progeny", "theta", "lower", "upper",
+        "degree.lower", "degree.upper", "allowed.pairs", "progeny", "theta.basis", "contribution.basis",
+        "diversity", "practical"};
+    const char *effective_labels[13];
+    for (int i = 0; i < 11; i++) effective_labels[i] = constraint_labels[i];
+    int nc = 11;
+    if (p->diverse) effective_labels[nc++] = "diversity";
+    if (p->practical) effective_labels[nc++] = "practical";
+    SEXP constraints = lmm_keep(mvm_list(nc, effective_labels), np),
+        normalized = lmm_keep(st_cross_joint_normalized(s->allocation), np);
+    SET_VECTOR_ELT(constraints, 0, lmm_keep(ScalarInteger(p->m), np));
+    SET_VECTOR_ELT(constraints, 1, lmm_keep(ScalarInteger(s->parameters.budget), np));
+    SET_VECTOR_ELT(constraints, 2, lmm_keep(ScalarReal(p->theta_original), np));
+    SET_VECTOR_ELT(constraints, 3, cp03_number_vector(p->requested_lower, n, names, np));
+    SET_VECTOR_ELT(constraints, 4, cp03_number_vector(p->requested_upper, n, names, np));
+    for (int j = 0; j < 2; j++)
+    {
+        SEXP degree = lmm_keep(allocVector(INTSXP, n), np);
+        memcpy(INTEGER(degree), j ? p->upper_degree : p->lower_degree, (size_t)n * sizeof(int));
+        setAttrib(degree, R_NamesSymbol, names); SET_VECTOR_ELT(constraints, 5 + j, degree);
+    }
+    SET_VECTOR_ELT(constraints, 7, lmm_keep(ScalarInteger(p->nfamilies), np));
+    SET_VECTOR_ELT(constraints, 8, normalized);
+    SET_VECTOR_ELT(constraints, 9, lmm_keep(mkString("family.slots"), np));
+    SET_VECTOR_ELT(constraints, 10, lmm_keep(mkString("family.slots"), np));
+    nc = 11;
+    if (p->diverse)
+    {
+        const char *dl[] = {"max", "sample"};
+        SEXP request = lmm_keep(mvm_list(2, dl), np);
+        SET_VECTOR_ELT(request, 0, lmm_keep(ScalarReal(p->diversity_max), np));
+        SET_VECTOR_ELT(request, 1, lmm_keep(mkString("family.slots"), np));
+        SET_VECTOR_ELT(constraints, nc++, request);
+    }
+    if (p->practical) SET_VECTOR_ELT(constraints, nc++, practical_request);
+    SET_VECTOR_ELT(result, 9, constraints);
+    const char *diagnostic_labels[] = {"reason", "nodes", "proposals", "accepted", "starts", "complete.search", "method",
+        "work.estimate", "start.used", "joint", "allocation", "practical", "primal.residual"};
+    const char *without_practical[] = {"reason", "nodes", "proposals", "accepted", "starts", "complete.search", "method",
+        "work.estimate", "start.used", "joint", "allocation", "primal.residual"};
+    SEXP diagnostics = cp12_public_list(p->practical ? 13 : 12,
+        p->practical ? diagnostic_labels : without_practical, p, 1, np);
+    SET_VECTOR_ELT(diagnostics, 0, lmm_keep(mkString(reason), np));
+    SET_VECTOR_ELT(diagnostics, 1, lmm_keep(ScalarReal((double)p->nodes), np));
+    SET_VECTOR_ELT(diagnostics, 2, lmm_keep(ScalarReal((double)p->proposals), np));
+    SET_VECTOR_ELT(diagnostics, 3, lmm_keep(ScalarReal((double)p->accepted), np));
+    SET_VECTOR_ELT(diagnostics, 4, lmm_keep(ScalarInteger(p->completed_starts), np));
+    SET_VECTOR_ELT(diagnostics, 5, lmm_keep(ScalarLogical(p->complete), np));
+    SET_VECTOR_ELT(diagnostics, 6, lmm_keep(mkString(p->method == 1 ? "exact" : "heuristic"), np));
+    SET_VECTOR_ELT(diagnostics, 7, lmm_keep(ScalarReal(p->work_estimate), np));
+    SET_VECTOR_ELT(diagnostics, 8, lmm_keep(ScalarLogical(p->start_used), np));
+    const char *jl[] = {"evaluated.sets", "inner.unresolved", "infeasible.sets", "bound.pruned", "candidate.arcs",
+        "biological.pairs", "coupled.allocation", "selection.method", "continuation", "gap.basis"};
+    SEXP joint = cp12_public_list(10, jl, p, 2, np);
+    SET_VECTOR_ELT(joint, 0, lmm_keep(ScalarReal((double)s->subsets), np));
+    SET_VECTOR_ELT(joint, 1, lmm_keep(ScalarReal((double)s->inner_unresolved), np));
+    SET_VECTOR_ELT(joint, 2, lmm_keep(ScalarReal((double)s->infeasible_subsets), np));
+    SET_VECTOR_ELT(joint, 3, lmm_keep(ScalarReal((double)s->bound_pruned), np));
+    SET_VECTOR_ELT(joint, 4, lmm_keep(ScalarInteger(p->ne), np));
+    SET_VECTOR_ELT(joint, 5, lmm_keep(ScalarInteger(p->nfamilies), np));
+    SET_VECTOR_ELT(joint, 6, lmm_keep(ScalarLogical(s->coupled), np));
+    SET_VECTOR_ELT(joint, 7, lmm_keep(mkString(s->parameters.normal_mode ? "order.statistics" : "burrows"), np));
+    SET_VECTOR_ELT(joint, 8, lmm_keep(mkString("A supplied plan is a new warm start; no exact frontier continuation is claimed."), np));
+    SET_VECTOR_ELT(joint, 9, lmm_keep(mkString("Centered criterion gap; the common mean offset is excluded from comparisons."), np));
+    SET_VECTOR_ELT(diagnostics, 9, joint);
+    SET_VECTOR_ELT(diagnostics, 10, lmm_keep(st_cross_joint_report(s->allocation), np));
+    if (p->practical)
+        SET_VECTOR_ELT(diagnostics, 11, lmm_keep(st_cross_practical_report(p->practical), np));
+    SET_VECTOR_ELT(diagnostics, p->practical ? 12 : 11,
+        lmm_keep(ScalarReal(s->have_best ? 0 : NA_REAL), np));
+    SET_VECTOR_ELT(result, 10, cp13_diagnostics(p, diagnostics, np));
+    const char *cl[] = {"method", "max.nodes", "maxit", "starts", "seed", "tolerance", "start.used"};
+    SEXP controls = cp12_public_list(7, cl, p, 4, np),
+        requested_method = mvm_get(mvm_get(args, "control"), "method");
+    SET_VECTOR_ELT(controls, 0, isNull(requested_method) ? lmm_keep(mkString("auto"), np) : requested_method);
+    SET_VECTOR_ELT(controls, 1, lmm_keep(ScalarReal((double)p->maxnodes), np));
+    SET_VECTOR_ELT(controls, 2, lmm_keep(ScalarInteger(p->maxit), np));
+    SET_VECTOR_ELT(controls, 3, lmm_keep(ScalarInteger(p->starts), np));
+    SET_VECTOR_ELT(controls, 4, lmm_keep(ScalarReal((double)p->seed), np));
+    SET_VECTOR_ELT(controls, 5, lmm_keep(ScalarReal(p->tolerance), np));
+    SET_VECTOR_ELT(controls, 6, lmm_keep(ScalarLogical(p->start_used), np));
+    SET_VECTOR_ELT(result, 11, controls);
+    const char *sl[] = {"seed", "state", "rng", "restart"};
+    SEXP search = lmm_keep(mvm_list(4, sl), np), state = lmm_keep(allocVector(RAWSXP, 8), np);
+    for (int i = 0; i < 8; i++) RAW(state)[i] = (unsigned char)(p->rng >> (8 * (7 - i)));
+    SET_VECTOR_ELT(search, 0, lmm_keep(ScalarReal((double)p->seed), np));
+    SET_VECTOR_ELT(search, 1, state);
+    SET_VECTOR_ELT(search, 2, lmm_keep(mkString("xorshift64star"), np));
+    SET_VECTOR_ELT(search, 3, lmm_keep(ScalarLogical(p->start_used), np));
+    SET_VECTOR_ELT(result, 12, search);
+    const char *il[] = {"merit", "K", "pairs", "scores", "progeny", "diversity", "practical"};
+    const char *effective_inputs[7];
+    for (int i = 0; i < 5; i++) effective_inputs[i] = il[i];
+    int ni = 5;
+    if (p->diverse) effective_inputs[ni++] = "diversity";
+    if (p->practical) effective_inputs[ni++] = "practical";
+    SEXP inputs = cp12_public_list(ni, effective_inputs, p, 3, np);
+    SET_VECTOR_ELT(inputs, 0, mvm_get(args, "merit"));
+    SET_VECTOR_ELT(inputs, 1, original_matrix);
+    SET_VECTOR_ELT(inputs, 2, mvm_get(args, "pairs"));
+    SET_VECTOR_ELT(inputs, 3, mvm_get(args, "scores"));
+    SET_VECTOR_ELT(inputs, 4, mvm_get(args, "progeny"));
+    ni = 5;
+    if (p->diverse) SET_VECTOR_ELT(inputs, ni++, diversity);
+    if (p->practical) SET_VECTOR_ELT(inputs, ni++, practical_request);
+    SET_VECTOR_ELT(result, 13, inputs);
+    if (p->diverse)
+    {
+        const char *dl[] = {"max", "sample", "loss", "feasible", "evaluation"};
+        SEXP achieved = lmm_keep(mvm_list(5, dl), np);
+        SET_VECTOR_ELT(achieved, 0, lmm_keep(ScalarReal(p->diversity_max), np));
+        SET_VECTOR_ELT(achieved, 1, lmm_keep(mkString("family.slots"), np));
+        SET_VECTOR_ELT(achieved, 2, lmm_keep(ScalarReal(s->have_best ? p->diversity_loss : NA_REAL), np));
+        SET_VECTOR_ELT(achieved, 3, lmm_keep(ScalarLogical(s->have_best), np));
+        if (s->have_best) SET_VECTOR_ELT(achieved, 4, cp05_result(&p->diversity, np));
+        SET_VECTOR_ELT(result, 21, achieved);
+    }
+    setAttrib(result, R_ClassSymbol, lmm_keep(mkString("st.cross.plan"), np));
+    if (p->genetic)
+        cp12_put(inputs, "genetic.model", mvm_get(args, "genetic.model"), np);
+    st_cross_joint_evaluate_plan(result, p->genetic ? p->genetic->model : NULL,
+        p->genetic ? p->genetic->intensity : NULL,
+        p->genetic ? p->genetic->count_context : NULL);
+    if (s->have_best && asLogical(mvm_get(mvm_get(result, "feasibility"), "feasible")) != TRUE)
+        error("st.cross.plan: final population evaluator did not certify the joint incumbent");
+    return result;
+}
+
+static SEXP cp10_run(cp03_problem *p, SEXP args, SEXP names,
+    SEXP original_matrix, SEXP practical_request, SEXP diversity, int *np)
+{
+    cp10_problem state = {0}, *s = &state;
+    s->p = p;
+    s->closed_upper = -INFINITY;
+    s->relaxation_upper = INFINITY;
+    double reserved = 16.0 * p->o.n * p->o.n +
+        (double)p->ne * sizeof(cp03_edge) / sizeof(double) +
+        20.0 * fmin(p->m, p->ne) + p->nfamilies;
+    if (p->practical)
+        reserved += st_cross_practical_workspace_cells(p->practical);
+    s->allocation = st_cross_joint_prepare(mvm_get(args, "progeny"), p->m, p->useful, reserved);
+    if (p->frontier && p->count_remaining >= 0)
+        st_cross_joint_work_limit(s->allocation, p->count_remaining);
+    st_cross_joint_parameters_get(s->allocation, &s->parameters);
+    p->count_workspace = s->allocation;
+    p->count_ceiling = s->parameters.max_transitions;
+    s->coupled = p->practical && (st_cross_practical_requirements(p->practical) & 8);
+    if (p->genetic)
+    {
+        cp12_plan *g = p->genetic;
+        g->count_context = s->allocation;
+        g->intensity = cp12_fixed_intensity;
+        st_cross_genetic_method_set(g->model, s->parameters.normal_mode);
+        if (g->requirements & 1)
+        {
+            s->coupled = 1;
+            if (st_cross_genetic_limited(g->model))
+                st_cross_joint_external_limit(s->allocation);
+        }
+    }
+    st_cross_joint_validate(s->allocation, s->coupled);
+    p->nprogeny = s->parameters.lower;
+    p->joint = s;
+    int capacity = p->m <= p->ne ? p->m : 1;
+    s->current = mvm_alloc(capacity, sizeof(int));
+    s->produced = mvm_alloc(capacity, sizeof(int));
+    s->initial = mvm_alloc(capacity, sizeof(int));
+    s->best_produced = mvm_alloc(capacity, sizeof(int));
+    s->retained = mvm_alloc(capacity, sizeof(int64_t));
+    s->variance = mvm_alloc(capacity, sizeof(double));
+    s->intensity = mvm_alloc(capacity, sizeof(double));
+    s->intensity_error = mvm_alloc(capacity, sizeof(double));
+    s->response = mvm_alloc(capacity, sizeof(double));
+    s->best_intensity = mvm_alloc(capacity, sizeof(double));
+    s->best_error = mvm_alloc(capacity, sizeof(double));
+    s->best_response = mvm_alloc(capacity, sizeof(double));
+    if (p->future) cp13_bind(p, s, s->parameters.budget,
+        (int64_t)p->m * s->parameters.retained);
+    cp13_seed_begin(p);
+    cp10_upper_scores(s);
+    SEXP start = mvm_get(mvm_get(args, "control"), "start");
+    cp10_start(s, start, names);
+    cp13_capture_fixed(s);
+    long double estimate = 1;
+    int smaller = p->m < p->ne - p->m ? p->m : p->ne - p->m;
+    if (smaller < 0) estimate = (long double)p->maxnodes + 1;
+    else for (int i = 1; i <= smaller; i++)
+    {
+        estimate *= (long double)(p->ne - smaller + i) / i;
+        if (estimate > p->maxnodes) break;
+    }
+    estimate *= (long double)p->ne + 1;
+    p->work_estimate = (double)fminl(estimate, (long double)p->maxnodes + 1);
+    if (!p->method) p->method = estimate <= p->maxnodes ? 1 : 2;
+    if (!p->infeasible && !st_cross_joint_limited(s->allocation))
+    {
+        if (p->method == 1) cp03_exact(p);
+        else cp10_heuristic(s);
+    }
+    if (p->future && p->future->objective)
+        return cp13_fixed(s, args, names, original_matrix, practical_request, diversity, np);
+    return cp10_result(s, args, names, original_matrix, practical_request, diversity, np);
+}
+
+typedef struct
+{
+    cp03_problem *p;
+    void *allocation;
+    st_cross_variable_parameters parameters;
+    int coupled, fixed_state, have_current, have_best, unresolved;
+    int closed_known, relaxation_known;
+    int *current, *family, *produced, *retained, *initial_n, *initial_r;
+    int *best_n, *best_r, *lower, *upper, *min_selected, *max_selected;
+    int64_t *retained64;
+    double *mu, *variance, *intensity, *intensity_error, *response;
+    double *best_intensity, *best_error, *best_response;
+    st_cross_variable_score last_value, best_value, best_lower, best_upper;
+    st_cross_variable_score closed_upper, relaxation_upper;
+    long double best_selected_response;
+    uint64_t subsets, inner_unresolved, numerical_unresolved, infeasible_subsets;
+    const char *last_algorithm;
+} cp11_problem;
+
+static st_cross_variable_score cp11_unknown_upper(void)
+{
+    st_cross_variable_score value = {0, 0, INFINITY};
+    return value;
+}
+
+static int cp11_limited(cp03_problem *p)
+{
+    cp11_problem *s = p->joint;
+    return (s && st_cross_variable_limited(s->allocation)) || cp12_limited(p);
+}
+
+static void cp11_record_upper(cp11_problem *s, st_cross_variable_score upper)
+{
+    if (!s->closed_known || st_cross_variable_compare(&upper, &s->closed_upper) > 0)
+        s->closed_upper = upper;
+    s->closed_known = 1;
+}
+
+static int cp11_prepare_set(cp11_problem *s)
+{
+    cp03_problem *p = s->p;
+    int n = p->o.n, count = 0, unique = 1;
+    memset(p->degree, 0, (size_t)n * sizeof(int));
+    memset(p->family_selected, 0, (size_t)p->nfamilies * sizeof(int));
+    for (int e = 0; e < p->ne; e++) if (p->selected[e])
+    {
+        if (count >= p->m) return s->fixed_state = -1;
+        cp03_edge *edge = p->edge + e;
+        s->current[count] = e;
+        s->family[count] = edge->family;
+        s->mu[count] = edge->mu;
+        s->variance[count] = edge->va;
+        st_cross_variable_bounds_get(s->allocation, edge->family,
+            s->lower + count, s->upper + count,
+            s->min_selected + count, s->max_selected + count);
+        p->check_seed[count] = p->roles ? edge->seed : edge->a;
+        p->check_pollen[count] = p->roles ? edge->pollen : edge->b;
+        p->check_family[count] = edge->family;
+        if (p->family_selected[edge->family]) unique = 0;
+        p->family_selected[edge->family] = e + 1;
+        p->degree[edge->a]++;
+        p->degree[edge->b]++;
+        count++;
+    }
+    p->count = count;
+    for (int i = 0; i < n; i++) p->scratch[i] = p->degree[i] / (2.0 * p->m);
+    ocs_relatedness(&p->o, p->scratch, p->Kc);
+    if (!unique || count != p->m) return s->fixed_state = -1;
+    for (int i = 0; i < n; i++)
+        if (p->degree[i] < p->lower_degree[i] || p->degree[i] > p->upper_degree[i])
+            return s->fixed_state = -1;
+    if (p->diverse)
+    {
+        p->diversity_loss = cp05_plan_loss(p);
+        if (!(p->diversity_loss < p->diversity_max)) return s->fixed_state = -1;
+    }
+    return s->fixed_state = cp03_original_relation(p, p->degree,
+        &p->current_q_original, &p->current_q_error, &p->current_row_residual);
+}
+
+static int cp11_check(void *opaque, int families,
+    const int *produced, const int *retained)
+{
+    cp11_problem *s = opaque;
+    cp03_problem *p = s->p;
+    if (families != p->m || !produced || !retained) return -1;
+    int64_t total_n = 0, total_r = 0;
+    for (int i = 0; i < families; i++)
+    {
+        if (produced[i] < s->lower[i] || produced[i] > s->upper[i] ||
+            retained[i] < s->min_selected[i] || retained[i] > s->max_selected[i] ||
+            retained[i] > produced[i]) return -1;
+        total_n += produced[i]; total_r += retained[i];
+        p->check_produced[i] = produced[i]; s->retained64[i] = retained[i];
+    }
+    if (total_n != s->parameters.budget || total_r != s->parameters.selected ||
+        s->fixed_state < 0) return -1;
+    int practical = p->practical ? st_cross_practical_check(p->practical, families,
+        p->check_seed, p->check_pollen, p->check_family,
+        p->check_produced, s->retained64, NULL, p->roles) : 1;
+    if (practical == -2)
+        error("st.cross.plan: variable retention requires unavailable planning information");
+    if (practical < 0) return -1;
+    int genetic = cp12_check(p, families, s->retained64);
+    if (genetic < 0) return -1;
+    return !practical || !s->fixed_state || !genetic ? 0 : 1;
+}
+
+static int cp11_evaluate_set(cp11_problem *s, const int *initial_n, const int *initial_r)
+{
+    cp03_problem *p = s->p;
+    s->have_current = 0;
+    if (cp11_prepare_set(s) < 0)
+    { s->infeasible_subsets++; return 0; }
+    st_cross_variable_solution solved = {0};
+    solved.upper = cp11_unknown_upper();
+    st_cross_variable_solve(s->allocation, s->family, s->mu, p->score_offset,
+        s->variance, p->accuracy, initial_n, initial_r,
+        s->produced, s->retained, s->intensity, s->intensity_error, s->response,
+        s->coupled, cp11_check, s, &solved);
+    s->subsets++;
+    s->last_algorithm = solved.algorithm;
+    if (solved.proof_infeasible) s->infeasible_subsets++;
+    else
+    {
+        st_cross_variable_score upper = solved.upper;
+        if (s->relaxation_known &&
+            st_cross_variable_compare(&s->relaxation_upper, &upper) < 0)
+            upper = s->relaxation_upper;
+        cp11_record_upper(s, upper);
+        if (!solved.complete) s->inner_unresolved++;
+        if (solved.unresolved) { s->unresolved = 1; s->numerical_unresolved++; }
+    }
+    if (!solved.has_incumbent) return 0;
+    if (cp11_check(s, p->m, s->produced, s->retained) != 1)
+        error("st.cross.plan: variable inner incumbent failed original-input validation");
+    s->have_current = 1;
+    s->last_value = solved.value;
+    if (!s->have_best || st_cross_variable_compare(&solved.value, &s->best_value) > 0)
+    {
+        s->have_best = p->have_best = 1;
+        s->best_value = solved.value;
+        s->best_lower = solved.lower;
+        s->best_upper = solved.upper;
+        s->best_selected_response = solved.selected_response;
+        p->best_score = st_cross_variable_total(&solved.value, 0, 1) / p->score_scale;
+        for (int i = 0; i < p->m; i++)
+        {
+            p->best[i] = s->current[i];
+            s->best_n[i] = s->produced[i]; s->best_r[i] = s->retained[i];
+            s->best_intensity[i] = s->intensity[i];
+            s->best_error[i] = s->intensity_error[i];
+            s->best_response[i] = s->response[i];
+        }
+    }
+    return 1;
+}
+
+static int cp11_consider(cp03_problem *p)
+{
+    return cp11_evaluate_set(p->joint, NULL, NULL);
+}
+
+static int cp13_typed_variable(cp11_problem *s)
+{
+    cp03_problem *p = s->p;
+    const st_cross_plan_override *o = p->point_override;
+    if (!o || !o->has_start || !o->start.retained) return 0;
+    int *edge = mvm_alloc(p->m, sizeof(int));
+    if (!cp13_typed_edges(p, edge) || cp11_prepare_set(s) < 0) goto invalid;
+    int64_t total_n = 0, total_r = 0;
+    for (int i = 0; i < p->m; i++)
+    {
+        int row = 0;
+        while (row < p->m && edge[row] != s->current[i]) row++;
+        if (row == p->m || o->start.produced[row] < s->lower[i] ||
+            o->start.produced[row] > s->upper[i] || o->start.retained[row] < s->min_selected[i] ||
+            o->start.retained[row] > s->max_selected[i] || o->start.retained[row] > o->start.produced[row]) goto invalid;
+        s->initial_n[i] = (int)o->start.produced[row];
+        s->initial_r[i] = (int)o->start.retained[row];
+        total_n += s->initial_n[i]; total_r += s->initial_r[i];
+    }
+    if (total_n != s->parameters.budget || total_r != s->parameters.selected ||
+        cp11_check(s, p->m, s->initial_n, s->initial_r) != 1 ||
+        !cp11_evaluate_set(s, s->initial_n, s->initial_r)) goto invalid;
+    p->start_used = p->typed_start_used = 1;
+    return 1;
+invalid:
+    cp03_clear(p);
+    return 0;
+}
+
+static void cp11_start(cp11_problem *s, SEXP start, SEXP names)
+{
+    if (cp13_typed_variable(s)) return;
+    if (isNull(start)) return;
+    cp03_problem *p = s->p;
+    int object = inherits(start, "st.cross.plan") || inherits(start, "st.cross.allocation");
+    SEXP table = object ? mvm_get(start, "crosses") : start;
+    if (TYPEOF(table) != VECSXP || !inherits(table, "data.frame"))
+        error("st.cross.plan: a variable start must contain actual produced and retained counts");
+    cp03_names(getAttrib(table, R_NamesSymbol), R_NilValue, LENGTH(table), "start column");
+    SEXP first = mvm_get(table, "P1Name"), second = mvm_get(table, "P2Name"),
+        produced = mvm_get(table, "n.progeny"), retained = mvm_get(table, "n.selected");
+    if (TYPEOF(first) != STRSXP || TYPEOF(second) != STRSXP ||
+        LENGTH(first) != p->m || LENGTH(second) != p->m ||
+        !mvm_numeric(produced) || !mvm_numeric(retained) ||
+        inherits(produced, "factor") || inherits(retained, "factor") ||
+        LENGTH(produced) != p->m || LENGTH(retained) != p->m)
+        error("st.cross.plan: a variable start requires actual n and r for every requested family");
+    SEXP seed = R_NilValue, pollen = R_NilValue;
+    if (p->roles && object)
+    {
+        SEXP directions = mvm_get(start, "directions");
+        if (TYPEOF(directions) != VECSXP || !inherits(directions, "data.frame"))
+            error("st.cross.plan: variable-start reproductive directions are unavailable");
+        cp03_names(getAttrib(directions, R_NamesSymbol), R_NilValue, LENGTH(directions), "start direction column");
+        seed = mvm_get(directions, "seed"); pollen = mvm_get(directions, "pollen");
+        SEXP hint = mvm_get(directions, "family");
+        if (TYPEOF(seed) != STRSXP || TYPEOF(pollen) != STRSXP ||
+            LENGTH(seed) != p->m || LENGTH(pollen) != p->m ||
+            !mvm_numeric(hint) || inherits(hint, "factor") || LENGTH(hint) != p->m)
+            error("st.cross.plan: invalid variable-start keyed direction map");
+        for (int i = 0; i < p->m; i++)
+        {
+            double value = mvm_num(hint, i);
+            if (!R_FINITE(value) || value < 1 || value > p->m || value != floor(value))
+                error("st.cross.plan: invalid variable-start display ordinal");
+            for (int j = 0; j < i; j++) if (value == mvm_num(hint, j))
+                error("st.cross.plan: duplicate variable-start display ordinal");
+        }
+    }
+    int *edge_index = mvm_alloc(p->m, sizeof(int)),
+        *actual_n = mvm_alloc(p->m, sizeof(int)), *actual_r = mvm_alloc(p->m, sizeof(int)),
+        *used = mvm_alloc(p->m, sizeof(int));
+    int64_t total_n = 0, total_r = 0;
+    cp03_clear(p);
+    for (int row = 0; row < p->m; row++)
+    {
+        int a = cp03_parent(names, STRING_ELT(first, row)),
+            b = cp03_parent(names, STRING_ELT(second, row)), x = a, y = b;
+        if (a == b) error("st.cross.plan: variable starts cannot contain self families");
+        if (!isNull(seed))
+        {
+            int found = -1;
+            for (int j = 0; j < p->m; j++)
+            {
+                int i = cp03_parent(names, STRING_ELT(seed, j)),
+                    k = cp03_parent(names, STRING_ELT(pollen, j));
+                if ((i == a && k == b) || (i == b && k == a))
+                {
+                    if (found >= 0 || used[j])
+                        error("st.cross.plan: duplicate variable-start direction family key");
+                    found = j; x = i; y = k;
+                }
+            }
+            if (found < 0) error("st.cross.plan: variable-start direction key is stale");
+            used[found] = 1;
+        }
+        int edge = p->roles ? p->directed_lookup[x + (size_t)p->o.n * y]
+                           : p->lookup[a + (size_t)p->o.n * b];
+        if (edge < 0 || p->family_selected[p->edge[edge].family])
+            error("st.cross.plan: variable start has duplicate or forbidden families/directions");
+        int lower, upper, min_selected, max_selected;
+        st_cross_variable_bounds_get(s->allocation, p->edge[edge].family,
+            &lower, &upper, &min_selected, &max_selected);
+        double nv = mvm_num(produced, row), rv = mvm_num(retained, row);
+        if (!R_FINITE(nv) || !R_FINITE(rv) || nv != floor(nv) || rv != floor(rv) ||
+            nv < lower || nv > upper || rv < min_selected || rv > max_selected || rv > nv)
+            error("st.cross.plan: variable-start actual counts violate keyed bounds");
+        edge_index[row] = edge; actual_n[row] = (int)nv; actual_r[row] = (int)rv;
+        total_n += actual_n[row]; total_r += actual_r[row];
+        cp03_change(p, edge, 1);
+    }
+    if (total_n != s->parameters.budget || total_r != s->parameters.selected)
+        error("st.cross.plan: variable-start actual counts do not match both budgets");
+    if (cp11_prepare_set(s) < 0)
+        error("st.cross.plan: variable-start families violate family-slot restrictions");
+    for (int i = 0; i < p->m; i++)
+    {
+        int row = 0;
+        while (row < p->m && edge_index[row] != s->current[i]) row++;
+        if (row == p->m) error("st.cross.plan: invalid variable-start family alignment");
+        s->initial_n[i] = actual_n[row]; s->initial_r[i] = actual_r[row];
+    }
+    if (cp11_check(s, p->m, s->initial_n, s->initial_r) != 1)
+        error("st.cross.plan: variable-start counts violate or cannot certify original constraints");
+    if (!cp11_evaluate_set(s, s->initial_n, s->initial_r))
+        error("st.cross.plan: the feasible variable start could not be numerically evaluated");
+    p->start_used = 1;
+}
+
+static void cp11_heuristic(cp11_problem *s)
+{
+    cp03_problem *p = s->p;
+    int *chosen = mvm_alloc(p->m, sizeof(int)),
+        *old_current = mvm_alloc(p->m, sizeof(int)),
+        *old_n = mvm_alloc(p->m, sizeof(int)), *old_r = mvm_alloc(p->m, sizeof(int));
+    double *desired = mvm_alloc(p->o.n, sizeof(double));
+    for (int i = 0; i < p->o.n; i++) desired[i] = 2.0 * p->m * p->relax_start[i];
+    for (int start = 0; start < p->starts; start++)
+    {
+        if (cp11_limited(p)) break;
+        R_CheckUserInterrupt(); p->completed_starts++;
+        int initialized = 0;
+        if (!start && s->have_best)
+        {
+            cp03_clear(p);
+            for (int i = 0; i < p->m; i++) cp03_change(p, p->best[i], 1);
+            initialized = 1;
+        }
+        else initialized = cp03_h_joint_start(p, start, desired);
+        if (!initialized || !cp03_h_selected(p, chosen)) continue;
+        cp11_evaluate_set(s, NULL, NULL);
+        int current_feasible = s->have_current;
+        st_cross_variable_score current_value = s->last_value;
+        for (int iteration = 0; iteration < p->maxit && !cp11_limited(p); iteration++)
+        {
+            if (!(p->proposals % 128)) R_CheckUserInterrupt();
+            p->proposals++;
+            for (int i = 0; i < p->m; i++)
+            {
+                old_current[i] = s->current[i];
+                old_n[i] = current_feasible ? s->produced[i] : 0;
+                old_r[i] = current_feasible ? s->retained[i] : 0;
+            }
+            int count = p->m >= 2 && !(iteration % 3) ? 2 : 1,
+                slot[2], removed[2], added[2], a[2], b[2], valid = 1;
+            for (int i = 0; i < count; i++)
+            {
+                do slot[i] = cp03_index(p, p->m);
+                while (cp03_h_in_set(slot[i], slot, i));
+                removed[i] = chosen[slot[i]];
+                a[i] = p->edge[removed[i]].a; b[i] = p->edge[removed[i]].b;
+                if (cp03_random(p) & 1)
+                { int swap = a[i]; a[i] = b[i]; b[i] = swap; }
+            }
+            for (int i = 0; i < count; i++)
+            {
+                if ((count == 1 && p->roles && !(iteration % 5)) ||
+                    (count == 2 && !(iteration % 2)))
+                    added[i] = cp09_arc(p, a[i], b[(i + 1) % count]);
+                else
+                {
+                    int prefix = !(iteration % 4) && p->m < (INT_MAX - 32) / 4
+                        ? 4 * p->m + 32 : p->ne;
+                    if (prefix > p->ne) prefix = p->ne;
+                    added[i] = cp03_index(p, prefix);
+                }
+                if (added[i] < 0) { valid = 0; break; }
+                int family = p->edge[added[i]].family,
+                    occupied = p->family_selected[family];
+                if ((occupied && !cp03_h_in_set(occupied - 1, removed, count)) ||
+                    (i && p->edge[added[0]].family == family)) valid = 0;
+            }
+            if (!valid) continue;
+            int same = 1;
+            for (int i = 0; i < count; i++)
+                if (!cp03_h_in_set(added[i], removed, count)) same = 0;
+            if (same) continue;
+            for (int i = 0; i < count; i++) cp03_change(p, removed[i], -1);
+            for (int i = 0; i < count; i++) cp03_change(p, added[i], 1);
+            cp11_prepare_set(s);
+            const int *initial_n = NULL, *initial_r = NULL;
+            if (current_feasible)
+            {
+                for (int i = 0; i < p->m; i++)
+                {
+                    int previous = -1;
+                    for (int j = 0; j < p->m; j++)
+                        if (old_current[j] == s->current[i]) { previous = j; break; }
+                    if (previous < 0)
+                    {
+                        int at = 0;
+                        while (at < count && added[at] != s->current[i]) at++;
+                        if (at < count)
+                            for (int j = 0; j < p->m; j++)
+                                if (old_current[j] == removed[at]) { previous = j; break; }
+                    }
+                    s->initial_n[i] = previous >= 0 ? old_n[previous] : s->lower[i];
+                    s->initial_r[i] = previous >= 0 ? old_r[previous] : s->min_selected[i];
+                }
+                initial_n = s->initial_n; initial_r = s->initial_r;
+            }
+            cp11_evaluate_set(s, initial_n, initial_r);
+            int next_feasible = s->have_current;
+            long double improvement = st_cross_variable_difference(&s->last_value, &current_value);
+            double progress = 1 - (double)iteration / p->maxit,
+                temperature = p->score_scale * (.02 * progress * progress + 1e-8);
+            int accept = next_feasible && (!current_feasible || improvement >= 0 ||
+                (temperature > 0 && cp03_h_uniform(p) <
+                    exp((double)fmaxl(-700, improvement / temperature))));
+            if (!current_feasible && !next_feasible) accept = 1;
+            if (accept)
+            {
+                for (int i = 0; i < count; i++) chosen[slot[i]] = added[i];
+                p->accepted++;
+                current_feasible = next_feasible; current_value = s->last_value;
+            }
+            else
+            {
+                for (int i = 0; i < count; i++) cp03_change(p, added[i], -1);
+                for (int i = 0; i < count; i++) cp03_change(p, removed[i], 1);
+                cp11_prepare_set(s);
+                for (int i = 0; i < p->m; i++)
+                {
+                    int j = 0;
+                    while (j < p->m && old_current[j] != s->current[i]) j++;
+                    s->produced[i] = j < p->m ? old_n[j] : s->lower[i];
+                    s->retained[i] = j < p->m ? old_r[j] : s->min_selected[i];
+                }
+            }
+        }
+    }
+}
+
+static void cp11_refresh_best(cp11_problem *s)
+{
+    cp03_problem *p = s->p;
+    cp03_clear(p);
+    for (int i = 0; i < p->m; i++) cp03_change(p, p->best[i], 1);
+    if (cp11_prepare_set(s) < 0 || cp11_check(s, p->m, s->best_n, s->best_r) != 1)
+        error("st.cross.plan: final variable incumbent failed original-input validation");
+    for (int i = 0; i < p->m; i++)
+        if (s->current[i] != p->best[i])
+            error("st.cross.plan: final variable counts are not aligned to actual family keys");
+    st_cross_variable_solution evaluated = {0};
+    st_cross_variable_rescore(s->allocation, s->family, s->mu, p->score_offset,
+        s->variance, p->accuracy, s->best_n, s->best_r,
+        s->best_intensity, s->best_error, s->best_response, &evaluated);
+    s->best_value = evaluated.value;
+    s->best_lower = evaluated.lower;
+    s->best_upper = evaluated.upper;
+    s->best_selected_response = evaluated.selected_response;
+    if (evaluated.unresolved) s->unresolved = 1;
+    cp11_record_upper(s, evaluated.upper);
+}
+
+static SEXP cp11_score_object(const st_cross_variable_score *score, int *np)
+{
+    SEXP value = lmm_keep(allocVector(REALSXP, 3), np),
+        names = lmm_keep(allocVector(STRSXP, 3), np);
+    const char *labels[] = {"baseline", "tail", "response"};
+    for (int i = 0; i < 3; i++) SET_STRING_ELT(names, i, mkChar(labels[i]));
+    REAL(value)[0] = (double)score->baseline;
+    REAL(value)[1] = (double)score->tail;
+    REAL(value)[2] = (double)score->response;
+    setAttrib(value, R_NamesSymbol, names);
+    return value;
+}
+
+static SEXP cp11_result(cp11_problem *s, SEXP args, SEXP names,
+    SEXP original_matrix, SEXP practical_request, SEXP diversity, int *np)
+{
+    cp03_problem *p = s->p;
+    int n = p->o.n, rows = s->have_best ? p->m : 0;
+    if (p->genetic) p->genetic->final = 1;
+    if (s->have_best) cp11_refresh_best(s);
+    else
+    {
+        cp03_clear(p);
+        if (p->genetic) st_cross_genetic_no_incumbent(p->genetic->model);
+        if (p->practical)
+            st_cross_practical_check(p->practical, 0,
+                p->check_seed, p->check_pollen, p->check_family,
+                p->check_produced, s->retained64, NULL, p->roles);
+    }
+    if (p->future && !p->future->objective)
+    {
+        cp13_plan *g = p->future;
+        for (int i = 0; s->have_best && i < p->m; i++)
+        {
+            g->n[i] = s->best_n[i];
+            g->r[i] = s->best_r[i];
+        }
+        cp13_final(p, s->have_best, p->best, g->n, g->r);
+    }
+    st_cross_variable_score upper = p->complete && s->closed_known ? s->closed_upper :
+        s->relaxation_known ? s->relaxation_upper : cp11_unknown_upper();
+    if (s->relaxation_known && st_cross_variable_compare(&s->relaxation_upper, &upper) < 0)
+        upper = s->relaxation_upper;
+    if (s->have_best && st_cross_variable_compare(&s->best_upper, &upper) > 0) upper = s->best_upper;
+    double gap = s->have_best ? st_cross_variable_gap(&upper, &s->best_lower) : NA_REAL,
+        target = s->parameters.tolerance * fmax(1, (double)fabsl(s->best_selected_response));
+    const char *status = p->infeasible ? "infeasible" : s->have_best
+        ? (R_FINITE(gap) && gap <= target
+            ? (s->parameters.normal_mode ? "numerically.optimal" : "optimal")
+            : p->complete && !s->inner_unresolved && s->unresolved
+            ? "numerically.unresolved" : "best.found")
+        : p->complete && !s->inner_unresolved && !s->unresolved ? "infeasible"
+        : st_cross_variable_limited(s->allocation) ? "resource.limit" : "search.limit";
+    const char *reason = p->infeasible ? p->reason :
+        !strcmp(status, "optimal") || !strcmp(status, "numerically.optimal") ? "variable.objective.gap.closed" :
+        p->genetic && (p->genetic->requirements & 1) &&
+            st_cross_genetic_limited(p->genetic->model) ? "cumulative.genetic.limit" :
+        st_cross_variable_limited(s->allocation) ? "cumulative.allocation.limit" :
+        !s->have_best && !strcmp(status, "infeasible") ? "completed.variable.enumeration" :
+        s->unresolved ? "variable.numerical.limit" : p->stopped ? "outer.node.limit" :
+        s->inner_unresolved ? "unfinished.inner.allocations" : "outer.search.limit";
+    if (p->future && p->future->objective)
+    {
+        status = p->future->status;
+        reason = p->future->reason;
+    }
+    const char *labels[] = {"crosses", "contributions", "parents", "gain", "relatedness",
+        "within.cross.relatedness", "mode", "status", "objective", "constraints", "diagnostics",
+        "control", "search", "inputs", "usefulness", "parent.gain", "criterion", "accuracy",
+        "population", "population.contributions", "feasibility", "population.relatedness", "diversity", "directions"};
+    const char *result_names[24];
+    for (int i = 0; i < 22; i++) result_names[i] = labels[i];
+    int count = 22;
+    if (p->diverse) result_names[count++] = "diversity";
+    if (p->roles) result_names[count++] = "directions";
+    SEXP result = cp12_public_list(count, result_names, p, 0, np);
+    const char *columns[] = {"family", "P1Name", "P2Name", "n.progeny", "n.selected",
+        "mu", "va", "accuracy", "intensity", "selected.mean", "response", "kinship", "selection.reason"};
+    SEXP crosses = lmm_keep(lmm_dataframe(rows, 13, columns, np), np);
+    for (int j = 0; j < 13; j++)
+        SET_VECTOR_ELT(crosses, j, lmm_keep(allocVector(j == 1 || j == 2 || j == 12 ? STRSXP
+            : j < 5 ? INTSXP : REALSXP, rows), np));
+    SEXP directions = R_NilValue;
+    if (p->roles)
+    {
+        const char *direction_labels[] = {"family", "seed", "pollen"};
+        directions = lmm_keep(lmm_dataframe(rows, 3, direction_labels, np), np);
+        SET_VECTOR_ELT(directions, 0, lmm_keep(allocVector(INTSXP, rows), np));
+        SET_VECTOR_ELT(directions, 1, lmm_keep(allocVector(STRSXP, rows), np));
+        SET_VECTOR_ELT(directions, 2, lmm_keep(allocVector(STRSXP, rows), np));
+        SET_VECTOR_ELT(result, 22 + p->diverse, directions);
+    }
+    int at = 0, retained_families = 0;
+    long double within = 0;
+    for (int a = 0; a < n - 1; a++) for (int b = a + 1; b < n; b++)
+    {
+        int family = p->family_lookup[a + (size_t)n * b];
+        if (family < 0 || !p->family_selected[family]) continue;
+        int e = p->family_selected[family] - 1, index = 0;
+        while (index < p->m && p->best[index] != e) index++;
+        if (index == p->m || at >= rows) error("st.cross.plan: invalid joint output family map");
+        cp03_edge *edge = p->edge + e;
+        INTEGER(VECTOR_ELT(crosses, 0))[at] = at + 1;
+        SET_STRING_ELT(VECTOR_ELT(crosses, 1), at, STRING_ELT(names, a));
+        SET_STRING_ELT(VECTOR_ELT(crosses, 2), at, STRING_ELT(names, b));
+        INTEGER(VECTOR_ELT(crosses, 3))[at] = s->best_n[index];
+        INTEGER(VECTOR_ELT(crosses, 4))[at] = s->best_r[index];
+        if (s->best_r[index]) retained_families++;
+        REAL(VECTOR_ELT(crosses, 5))[at] = edge->mu;
+        REAL(VECTOR_ELT(crosses, 6))[at] = edge->va;
+        REAL(VECTOR_ELT(crosses, 7))[at] = p->accuracy;
+        REAL(VECTOR_ELT(crosses, 8))[at] = s->best_r[index] ? s->best_intensity[index] : NA_REAL;
+        long double selected = s->best_r[index] ? (long double)edge->mu + s->best_response[index] : 0;
+        if (s->best_r[index] && (!isfinite(selected) || fabsl(selected) > DBL_MAX))
+            error("st.cross.plan: selected family mean exceeds the finite numeric domain");
+        REAL(VECTOR_ELT(crosses, 9))[at] = s->best_r[index] ? (double)selected : NA_REAL;
+        REAL(VECTOR_ELT(crosses, 10))[at] = s->best_r[index] ? s->best_response[index] : NA_REAL;
+        SET_STRING_ELT(VECTOR_ELT(crosses, 12), at, mkChar(s->best_r[index]
+            ? "available" : "No descendants are retained from this produced family."));
+        REAL(VECTOR_ELT(crosses, 11))[at] = p->original_K[a + (size_t)n * b];
+        within += (long double)p->original_K[a + (size_t)n * b] / p->m;
+        if (p->roles)
+        {
+            INTEGER(VECTOR_ELT(directions, 0))[at] = at + 1;
+            SET_STRING_ELT(VECTOR_ELT(directions, 1), at, STRING_ELT(names, edge->seed));
+            SET_STRING_ELT(VECTOR_ELT(directions, 2), at, STRING_ELT(names, edge->pollen));
+        }
+        at++;
+    }
+    SET_VECTOR_ELT(result, 0, crosses);
+    const char *parent_columns[] = {"parent", "uses", "contribution", "lower", "upper", "merit"};
+    SEXP parents = lmm_keep(lmm_dataframe(n, 6, parent_columns, np), np);
+    SET_VECTOR_ELT(parents, 0, names);
+    SET_VECTOR_ELT(parents, 1, lmm_keep(allocVector(INTSXP, n), np));
+    for (int j = 2; j < 6; j++) SET_VECTOR_ELT(parents, j, lmm_keep(allocVector(REALSXP, n), np));
+    long double parent_gain = 0;
+    for (int i = 0; i < n; i++)
+    {
+        double share = s->have_best ? p->degree[i] / (2.0 * p->m) : NA_REAL;
+        p->scratch[i] = share;
+        INTEGER(VECTOR_ELT(parents, 1))[i] = s->have_best ? p->degree[i] : NA_INTEGER;
+        REAL(VECTOR_ELT(parents, 2))[i] = share;
+        REAL(VECTOR_ELT(parents, 3))[i] = p->requested_lower[i];
+        REAL(VECTOR_ELT(parents, 4))[i] = p->requested_upper[i];
+        REAL(VECTOR_ELT(parents, 5))[i] = p->o.original_g[i];
+        if (s->have_best) parent_gain += (long double)p->o.original_g[i] *
+            p->degree[i] / (2.0L * p->m);
+    }
+    if (s->have_best) SET_VECTOR_ELT(result, 1, cp03_number_vector(p->scratch, n, names, np));
+    SET_VECTOR_ELT(result, 2, parents);
+    st_cross_variable_score selected_value = s->best_value;
+    selected_value.response = s->best_selected_response;
+    double baseline = s->have_best ? st_cross_variable_total(&s->best_value, p->score_offset, 0) : NA_REAL,
+        response = s->have_best ? (double)s->best_selected_response : NA_REAL,
+        usefulness = s->have_best ? st_cross_variable_total(&selected_value, p->score_offset, 1) : NA_REAL;
+    SET_VECTOR_ELT(result, 3, lmm_keep(ScalarReal(baseline), np));
+    SET_VECTOR_ELT(result, 4, lmm_keep(ScalarReal(s->have_best ? p->current_q_original : NA_REAL), np));
+    SET_VECTOR_ELT(result, 5, lmm_keep(ScalarReal(s->have_best ? (double)within : NA_REAL), np));
+    SET_VECTOR_ELT(result, 6, lmm_keep(mkString("joint"), np));
+    SET_VECTOR_ELT(result, 7, lmm_keep(mkString(status), np));
+    SET_VECTOR_ELT(result, 14, lmm_keep(ScalarReal(usefulness), np));
+    SET_VECTOR_ELT(result, 15, lmm_keep(ScalarReal(s->have_best ? (double)parent_gain : NA_REAL), np));
+    SET_VECTOR_ELT(result, 16, lmm_keep(mkString(p->future && p->future->objective ? "future" : p->useful ? "usefulness" : "mean"), np));
+    SET_VECTOR_ELT(result, 17, lmm_keep(ScalarReal(p->accuracy), np));
+    if (p->future && p->future->objective)
+        SET_VECTOR_ELT(result, 8, cp13_objective(p, np));
+    else
+    {
+    const char *objective_labels[] = {"criterion", "sense", "value", "bound", "gap", "bound.type",
+        "response", "unselected.mean", "numerical.qualification", "centered.value", "centered.bound", "mean.offset",
+        "centered.baseline", "baseline.tail", "criterion.response", "bound.components", "lower.components"};
+    SEXP objective = lmm_keep(mvm_list(17, objective_labels), np);
+    double reported_bound = st_cross_variable_total(&upper, p->score_offset, 1);
+    if (R_FINITE(reported_bound)) reported_bound = nextafter(reported_bound, INFINITY);
+    SET_VECTOR_ELT(objective, 0, lmm_keep(mkString(p->useful ? "usefulness" : "mean"), np));
+    SET_VECTOR_ELT(objective, 1, lmm_keep(mkString("max"), np));
+    SET_VECTOR_ELT(objective, 2, lmm_keep(ScalarReal(p->useful ? usefulness : baseline), np));
+    SET_VECTOR_ELT(objective, 3, lmm_keep(ScalarReal(reported_bound), np));
+    SET_VECTOR_ELT(objective, 4, lmm_keep(ScalarReal(s->have_best ? (double)gap : NA_REAL), np));
+    SET_VECTOR_ELT(objective, 5, lmm_keep(mkString(p->complete
+        ? "completed biological-set search and qualified inner bounds"
+        : s->relaxation_known ? "maximum positive-retention individual-score relaxation" : "unknown variable upper bound"), np));
+    SET_VECTOR_ELT(objective, 6, lmm_keep(ScalarReal(response), np));
+    SET_VECTOR_ELT(objective, 7, lmm_keep(ScalarReal(baseline), np));
+    SET_VECTOR_ELT(objective, 8, lmm_keep(mkString(s->parameters.normal_mode
+        ? "Finite-normal integration and weighted objective bounds are estimated, not rigorous interval certificates."
+        : "Computed Burrows utilities with compensated retained-weight mean/response arithmetic qualification."), np));
+    SET_VECTOR_ELT(objective, 9, lmm_keep(ScalarReal(s->have_best ? st_cross_variable_total(&s->best_value, 0, 1) : NA_REAL), np));
+    SET_VECTOR_ELT(objective, 10, lmm_keep(ScalarReal(st_cross_variable_total(&upper, 0, 1)), np));
+    SET_VECTOR_ELT(objective, 11, lmm_keep(ScalarReal(p->score_offset), np));
+    SET_VECTOR_ELT(objective, 12, lmm_keep(ScalarReal(s->have_best ? (double)s->best_value.baseline : NA_REAL), np));
+    SET_VECTOR_ELT(objective, 13, lmm_keep(ScalarReal(s->have_best ? (double)s->best_value.tail : NA_REAL), np));
+    SET_VECTOR_ELT(objective, 14, lmm_keep(ScalarReal(s->have_best ? (double)s->best_value.response : NA_REAL), np));
+    SET_VECTOR_ELT(objective, 15, cp11_score_object(&upper, np));
+    SET_VECTOR_ELT(objective, 16, s->have_best ? cp11_score_object(&s->best_lower, np) : R_NilValue);
+    SET_VECTOR_ELT(result, 8, objective);
+    }
+    const char *constraint_labels[] = {"n.crosses", "total.progeny", "theta", "lower", "upper",
+        "degree.lower", "degree.upper", "allowed.pairs", "progeny", "theta.basis", "contribution.basis",
+        "diversity", "practical"};
+    const char *effective_labels[13];
+    for (int i = 0; i < 11; i++) effective_labels[i] = constraint_labels[i];
+    int nc = 11;
+    if (p->diverse) effective_labels[nc++] = "diversity";
+    if (p->practical) effective_labels[nc++] = "practical";
+    SEXP constraints = lmm_keep(mvm_list(nc, effective_labels), np),
+        normalized = lmm_keep(st_cross_variable_normalized(s->allocation), np);
+    SET_VECTOR_ELT(constraints, 0, lmm_keep(ScalarInteger(p->m), np));
+    SET_VECTOR_ELT(constraints, 1, lmm_keep(ScalarInteger(s->parameters.budget), np));
+    SET_VECTOR_ELT(constraints, 2, lmm_keep(ScalarReal(p->theta_original), np));
+    SET_VECTOR_ELT(constraints, 3, cp03_number_vector(p->requested_lower, n, names, np));
+    SET_VECTOR_ELT(constraints, 4, cp03_number_vector(p->requested_upper, n, names, np));
+    for (int j = 0; j < 2; j++)
+    {
+        SEXP degree = lmm_keep(allocVector(INTSXP, n), np);
+        memcpy(INTEGER(degree), j ? p->upper_degree : p->lower_degree, (size_t)n * sizeof(int));
+        setAttrib(degree, R_NamesSymbol, names); SET_VECTOR_ELT(constraints, 5 + j, degree);
+    }
+    SET_VECTOR_ELT(constraints, 7, lmm_keep(ScalarInteger(p->nfamilies), np));
+    SET_VECTOR_ELT(constraints, 8, normalized);
+    SET_VECTOR_ELT(constraints, 9, lmm_keep(mkString("family.slots"), np));
+    SET_VECTOR_ELT(constraints, 10, lmm_keep(mkString("family.slots"), np));
+    nc = 11;
+    if (p->diverse)
+    {
+        const char *dl[] = {"max", "sample"};
+        SEXP request = lmm_keep(mvm_list(2, dl), np);
+        SET_VECTOR_ELT(request, 0, lmm_keep(ScalarReal(p->diversity_max), np));
+        SET_VECTOR_ELT(request, 1, lmm_keep(mkString("family.slots"), np));
+        SET_VECTOR_ELT(constraints, nc++, request);
+    }
+    if (p->practical) SET_VECTOR_ELT(constraints, nc++, practical_request);
+    SET_VECTOR_ELT(result, 9, constraints);
+    const char *diagnostic_labels[] = {"reason", "nodes", "proposals", "accepted", "starts", "complete.search", "method",
+        "work.estimate", "start.used", "joint", "allocation", "practical", "primal.residual"};
+    const char *without_practical[] = {"reason", "nodes", "proposals", "accepted", "starts", "complete.search", "method",
+        "work.estimate", "start.used", "joint", "allocation", "primal.residual"};
+    SEXP diagnostics = cp12_public_list(p->practical ? 13 : 12,
+        p->practical ? diagnostic_labels : without_practical, p, 1, np);
+    SET_VECTOR_ELT(diagnostics, 0, lmm_keep(mkString(reason), np));
+    SET_VECTOR_ELT(diagnostics, 1, lmm_keep(ScalarReal((double)p->nodes), np));
+    SET_VECTOR_ELT(diagnostics, 2, lmm_keep(ScalarReal((double)p->proposals), np));
+    SET_VECTOR_ELT(diagnostics, 3, lmm_keep(ScalarReal((double)p->accepted), np));
+    SET_VECTOR_ELT(diagnostics, 4, lmm_keep(ScalarInteger(p->completed_starts), np));
+    SET_VECTOR_ELT(diagnostics, 5, lmm_keep(ScalarLogical(p->complete), np));
+    SET_VECTOR_ELT(diagnostics, 6, lmm_keep(mkString(p->method == 1 ? "exact" : "heuristic"), np));
+    SET_VECTOR_ELT(diagnostics, 7, lmm_keep(ScalarReal(p->work_estimate), np));
+    SET_VECTOR_ELT(diagnostics, 8, lmm_keep(ScalarLogical(p->start_used), np));
+    const char *jl[] = {"evaluated.sets", "inner.unresolved", "infeasible.sets", "invalid.average.prefix.pruning.disabled", "candidate.arcs",
+        "biological.pairs", "coupled.allocation", "selection.method", "continuation", "gap.basis",
+        "variable.retention", "total.selected", "retained.families", "numerical.unresolved.sets"};
+    SEXP joint = cp12_public_list(14, jl, p, 2, np);
+    SET_VECTOR_ELT(joint, 0, lmm_keep(ScalarReal((double)s->subsets), np));
+    SET_VECTOR_ELT(joint, 1, lmm_keep(ScalarReal((double)s->inner_unresolved), np));
+    SET_VECTOR_ELT(joint, 2, lmm_keep(ScalarReal((double)s->infeasible_subsets), np));
+    SET_VECTOR_ELT(joint, 3, lmm_keep(ScalarLogical(TRUE), np));
+    SET_VECTOR_ELT(joint, 4, lmm_keep(ScalarInteger(p->ne), np));
+    SET_VECTOR_ELT(joint, 5, lmm_keep(ScalarInteger(p->nfamilies), np));
+    SET_VECTOR_ELT(joint, 6, lmm_keep(ScalarLogical(s->coupled), np));
+    SET_VECTOR_ELT(joint, 7, lmm_keep(mkString(s->parameters.normal_mode ? "order.statistics" : "burrows"), np));
+    SET_VECTOR_ELT(joint, 8, lmm_keep(mkString("A supplied plan is a new warm start; no exact frontier continuation is claimed."), np));
+    SET_VECTOR_ELT(joint, 9, lmm_keep(mkString("Centered criterion gap; the common mean offset is excluded from comparisons."), np));
+    SET_VECTOR_ELT(joint, 10, lmm_keep(ScalarLogical(TRUE), np));
+    SET_VECTOR_ELT(joint, 11, lmm_keep(ScalarInteger(s->parameters.selected), np));
+    SET_VECTOR_ELT(joint, 12, lmm_keep(ScalarInteger(retained_families), np));
+    SET_VECTOR_ELT(joint, 13, lmm_keep(ScalarReal((double)s->numerical_unresolved), np));
+    SET_VECTOR_ELT(diagnostics, 9, joint);
+    SET_VECTOR_ELT(diagnostics, 10, lmm_keep(st_cross_variable_report(s->allocation), np));
+    if (p->practical)
+        SET_VECTOR_ELT(diagnostics, 11, lmm_keep(st_cross_practical_report(p->practical), np));
+    SET_VECTOR_ELT(diagnostics, p->practical ? 12 : 11,
+        lmm_keep(ScalarReal(s->have_best ? 0 : NA_REAL), np));
+    SET_VECTOR_ELT(result, 10, cp13_diagnostics(p, diagnostics, np));
+    const char *cl[] = {"method", "max.nodes", "maxit", "starts", "seed", "tolerance", "start.used"};
+    SEXP controls = cp12_public_list(7, cl, p, 4, np),
+        requested_method = mvm_get(mvm_get(args, "control"), "method");
+    SET_VECTOR_ELT(controls, 0, isNull(requested_method) ? lmm_keep(mkString("auto"), np) : requested_method);
+    SET_VECTOR_ELT(controls, 1, lmm_keep(ScalarReal((double)p->maxnodes), np));
+    SET_VECTOR_ELT(controls, 2, lmm_keep(ScalarInteger(p->maxit), np));
+    SET_VECTOR_ELT(controls, 3, lmm_keep(ScalarInteger(p->starts), np));
+    SET_VECTOR_ELT(controls, 4, lmm_keep(ScalarReal((double)p->seed), np));
+    SET_VECTOR_ELT(controls, 5, lmm_keep(ScalarReal(p->tolerance), np));
+    SET_VECTOR_ELT(controls, 6, lmm_keep(ScalarLogical(p->start_used), np));
+    SET_VECTOR_ELT(result, 11, controls);
+    const char *sl[] = {"seed", "state", "rng", "restart"};
+    SEXP search = lmm_keep(mvm_list(4, sl), np), state = lmm_keep(allocVector(RAWSXP, 8), np);
+    for (int i = 0; i < 8; i++) RAW(state)[i] = (unsigned char)(p->rng >> (8 * (7 - i)));
+    SET_VECTOR_ELT(search, 0, lmm_keep(ScalarReal((double)p->seed), np));
+    SET_VECTOR_ELT(search, 1, state);
+    SET_VECTOR_ELT(search, 2, lmm_keep(mkString("xorshift64star"), np));
+    SET_VECTOR_ELT(search, 3, lmm_keep(ScalarLogical(p->start_used), np));
+    SET_VECTOR_ELT(result, 12, search);
+    const char *il[] = {"merit", "K", "pairs", "scores", "progeny", "diversity", "practical"};
+    const char *effective_inputs[7];
+    for (int i = 0; i < 5; i++) effective_inputs[i] = il[i];
+    int ni = 5;
+    if (p->diverse) effective_inputs[ni++] = "diversity";
+    if (p->practical) effective_inputs[ni++] = "practical";
+    SEXP inputs = cp12_public_list(ni, effective_inputs, p, 3, np);
+    SET_VECTOR_ELT(inputs, 0, mvm_get(args, "merit"));
+    SET_VECTOR_ELT(inputs, 1, original_matrix);
+    SET_VECTOR_ELT(inputs, 2, mvm_get(args, "pairs"));
+    SET_VECTOR_ELT(inputs, 3, mvm_get(args, "scores"));
+    SET_VECTOR_ELT(inputs, 4, mvm_get(args, "progeny"));
+    ni = 5;
+    if (p->diverse) SET_VECTOR_ELT(inputs, ni++, diversity);
+    if (p->practical) SET_VECTOR_ELT(inputs, ni++, practical_request);
+    SET_VECTOR_ELT(result, 13, inputs);
+    if (p->diverse)
+    {
+        const char *dl[] = {"max", "sample", "loss", "feasible", "evaluation"};
+        SEXP achieved = lmm_keep(mvm_list(5, dl), np);
+        SET_VECTOR_ELT(achieved, 0, lmm_keep(ScalarReal(p->diversity_max), np));
+        SET_VECTOR_ELT(achieved, 1, lmm_keep(mkString("family.slots"), np));
+        SET_VECTOR_ELT(achieved, 2, lmm_keep(ScalarReal(s->have_best ? p->diversity_loss : NA_REAL), np));
+        SET_VECTOR_ELT(achieved, 3, lmm_keep(ScalarLogical(s->have_best), np));
+        if (s->have_best) SET_VECTOR_ELT(achieved, 4, cp05_result(&p->diversity, np));
+        SET_VECTOR_ELT(result, 22, achieved);
+    }
+    setAttrib(result, R_ClassSymbol, lmm_keep(mkString("st.cross.plan"), np));
+    if (p->genetic)
+        cp12_put(inputs, "genetic.model", mvm_get(args, "genetic.model"), np);
+    st_cross_joint_evaluate_plan(result, p->genetic ? p->genetic->model : NULL,
+        p->genetic ? p->genetic->intensity : NULL,
+        p->genetic ? p->genetic->count_context : NULL);
+    if (s->have_best && asLogical(mvm_get(mvm_get(result, "feasibility"), "feasible")) != TRUE)
+        error("st.cross.plan: final population evaluator did not certify the joint incumbent");
+    return result;
+}
+
+
+static void *cp13_alloc(cp03_problem *p, size_t count, size_t width)
+{
+    void *out = st_cross_genetic_scratch(p->genetic->model, count, width);
+    if (count && width && !out)
+        error("st.cross.plan: future planning exceeds max.cells");
+    return out;
+}
+
+static void cp13_prepare(cp03_problem *p, SEXP args, int objective)
+{
+    SEXP request = mvm_get(mvm_get(args, "genetic.model"), "future");
+    if (!objective && isNull(request)) return;
+    if (!p->genetic || !p->variable)
+        error("st.cross.plan: future assessment requires genetic.model and explicit progeny counts");
+    cp13_plan *g = cp13_alloc(p, 1, sizeof(*g));
+    memset(g, 0, sizeof(*g));
+    p->future = g;
+    g->context = st_cross_future_prepare(p->genetic->model, R_NilValue, request, objective);
+    g->objective = objective;
+    g->variable = p->variable;
+    g->planned_points = 1;
+    SEXP limits = mvm_get(args, "limits");
+    if (!isNull(limits)) g->planned_points = LENGTH(limits);
+    g->m = p->m;
+    g->nparents = p->o.n;
+    int capacity = p->m <= p->ne ? p->m : 1;
+    int families = p->nfamilies > 0 ? p->nfamilies : 1;
+    g->edge = cp13_alloc(p, capacity, sizeof(int));
+    g->best_edge = cp13_alloc(p, capacity, sizeof(int));
+    g->reference_edge = cp13_alloc(p, capacity, sizeof(int));
+    g->warm_edge = cp13_alloc(p, capacity, sizeof(int));
+    g->first = cp13_alloc(p, capacity, sizeof(int));
+    g->second = cp13_alloc(p, capacity, sizeof(int));
+    g->degree = cp13_alloc(p, p->o.n, sizeof(int));
+    g->used_family = cp13_alloc(p, families, sizeof(int));
+    g->lower = cp13_alloc(p, families, sizeof(int));
+    g->upper = cp13_alloc(p, families, sizeof(int));
+    g->min_retained = cp13_alloc(p, families, sizeof(int));
+    g->max_retained = cp13_alloc(p, families, sizeof(int));
+    g->n = cp13_alloc(p, capacity, sizeof(int64_t));
+    g->r = cp13_alloc(p, capacity, sizeof(int64_t));
+    g->best_n = cp13_alloc(p, capacity, sizeof(int64_t));
+    g->best_r = cp13_alloc(p, capacity, sizeof(int64_t));
+    g->reference_n = cp13_alloc(p, capacity, sizeof(int64_t));
+    g->reference_r = cp13_alloc(p, capacity, sizeof(int64_t));
+    g->warm_n = cp13_alloc(p, capacity, sizeof(int64_t));
+    g->warm_r = cp13_alloc(p, capacity, sizeof(int64_t));
+    g->accuracy = cp13_alloc(p, capacity, sizeof(double));
+    g->base_edge = cp13_alloc(p, capacity, sizeof(int));
+    g->base_n = cp13_alloc(p, capacity, sizeof(int64_t));
+    g->base_r = cp13_alloc(p, capacity, sizeof(int64_t));
+    g->final_first = cp13_alloc(p, (size_t)capacity * 2, sizeof(int));
+    g->final_second = cp13_alloc(p, (size_t)capacity * 2, sizeof(int));
+    for (int i = 0; i < capacity; i++) g->accuracy[i] = p->accuracy;
+    g->status = "search.limit";
+    g->reason = "future.search.not.started";
+}
+
+static int cp13_design_check(void *opaque, const st_cross_future_design *d, int mandatory)
+{
+    cp03_problem *p = opaque;
+    cp13_plan *g = p->future;
+    if (!d || d->families != p->m || p->m > p->ne || !d->first || !d->second ||
+        !d->produced || !d->retained || !d->accuracy) return -1;
+    memset(g->degree, 0, (size_t)p->o.n * sizeof(int));
+    if (p->nfamilies) memset(g->used_family, 0, (size_t)p->nfamilies * sizeof(int));
+    int64_t total_n = 0, total_r = 0;
+    for (int i = 0; i < d->families; i++)
+    {
+        int a = d->first[i], b = d->second[i];
+        if (a < 0 || b < 0 || a >= p->o.n || b >= p->o.n || a == b) return -1;
+        int f = p->family_lookup[a + (size_t)p->o.n * b];
+        if (f < 0 || g->used_family[f]) return -1;
+        g->used_family[f] = 1;
+        if (d->produced[i] < g->lower[f] || d->produced[i] > g->upper[f] ||
+            d->retained[i] < g->min_retained[f] || d->retained[i] > g->max_retained[f] ||
+            d->retained[i] > d->produced[i] ||
+            d->produced[i] > INT64_MAX - total_n || d->retained[i] > INT64_MAX - total_r ||
+            !R_FINITE(d->accuracy[i]) || d->accuracy[i] != p->accuracy) return -1;
+        total_n += d->produced[i];
+        total_r += d->retained[i];
+        g->degree[a]++;
+        g->degree[b]++;
+    }
+    if (total_n != g->budget || total_r != g->retained) return -1;
+    for (int i = 0; i < p->o.n; i++)
+        if (g->degree[i] < p->lower_degree[i] || g->degree[i] > p->upper_degree[i]) return -1;
+    if (p->diverse)
+    {
+        memset(p->diversity.counts, 0, (size_t)p->diversity.n * sizeof(double));
+        for (int i = 0; i < p->o.n; i++) p->diversity.counts[p->diversity_map[i]] = g->degree[i];
+        cp05_moments selected = cp05_evaluate(&p->diversity);
+        if (!(cp05_loss(&p->diversity, selected) < p->diversity_max)) return -1;
+    }
+    double q = 0, error_estimate = 0, residual = 0;
+    int state = cp03_original_relation(p, g->degree, &q, &error_estimate, &residual);
+    if (state == -1) return -1;
+    const st_cross_future_operations *operations = d->operation_view;
+    if (operations && operations->rows)
+    {
+        for (int j = 0; j < operations->rows; j++)
+        {
+            int a = operations->seed[j], b = operations->pollen[j];
+            if (a < 0 || b < 0 || a >= p->o.n || b >= p->o.n || a == b ||
+                p->family_lookup[a + (size_t)p->o.n * b] < 0) return -1;
+            if (p->roles && operations->direction_known &&
+                p->directed_lookup[a + (size_t)p->o.n * b] < 0) return -1;
+        }
+    }
+    if (p->practical)
+    {
+        int practical = operations ? st_cross_practical_check(p->practical,
+            operations->rows, operations->seed, operations->pollen, operations->family_hint,
+            operations->produced, operations->retained,
+            operations->operations_known ? operations->operations : NULL,
+            operations->direction_known) : st_cross_practical_check(p->practical,
+            d->families, d->first, d->second, NULL, d->produced, d->retained, NULL, 0);
+        if (practical == -1) return -1;
+        if (practical != 1) state = practical == -2 ? -2 : 0;
+    }
+    if (p->genetic && (p->genetic->requirements & 1))
+    {
+        int genetic = st_cross_genetic_check_mode(p->genetic->model, d->families,
+            d->first, d->second, d->produced, d->retained, d->accuracy,
+            p->genetic->intensity, p->genetic->count_context, mandatory);
+        if (genetic == -1) return -1;
+        if (genetic != 1) state = genetic == -2 ? -2 : 0;
+    }
+    return state;
+}
+
+static void cp13_bind(cp03_problem *p, void *count_problem, int64_t budget, int64_t retained)
+{
+    cp13_plan *g = p->future;
+    if (!g) return;
+    g->count_problem = count_problem;
+    g->budget = budget;
+    g->retained = retained;
+    if (g->objective && (retained < 2 || retained % 2))
+        error("st.cross.plan: future criterion requires an even retained total of at least two");
+    for (int f = 0; f < p->nfamilies; f++)
+    {
+        if (p->variable == 2)
+            st_cross_variable_bounds_get(((cp11_problem *)count_problem)->allocation, f,
+                g->lower + f, g->upper + f, g->min_retained + f, g->max_retained + f);
+        else
+        {
+            cp10_problem *s = count_problem;
+            g->lower[f] = s->parameters.lower;
+            g->upper[f] = s->parameters.upper;
+            g->min_retained[f] = g->max_retained[f] = s->parameters.retained;
+        }
+    }
+    st_cross_future_contract contract;
+    contract.families = p->m;
+    contract.produced = budget;
+    contract.retained = retained;
+    contract.planned_points = g->planned_points;
+    contract.automatic_references = g->objective;
+    contract.check = cp13_design_check;
+    contract.opaque = p;
+    st_cross_future_bind(g->context, &contract);
+    st_cross_future_kernel_set(g->context, p->genetic->intensity, p->genetic->count_context);
+}
+
+static st_cross_future_design cp13_design(cp03_problem *p,
+    const int *edge, const int64_t *n, const int64_t *r,
+    st_cross_future_operations *operations)
+{
+    cp13_plan *g = p->future;
+    for (int i = 0; i < p->m; i++)
+    {
+        const cp03_edge *e = p->edge + edge[i];
+        g->first[i] = p->roles ? e->seed : e->a;
+        g->second[i] = p->roles ? e->pollen : e->b;
+    }
+    operations->rows = p->m;
+    operations->direction_known = p->roles;
+    operations->operations_known = 0;
+    operations->seed = g->first;
+    operations->pollen = g->second;
+    operations->family_hint = NULL;
+    operations->produced = n;
+    operations->retained = r;
+    operations->operations = NULL;
+    st_cross_future_design d;
+    d.families = p->m;
+    d.first = g->first;
+    d.second = g->second;
+    d.produced = n;
+    d.retained = r;
+    d.accuracy = g->accuracy;
+    d.operation_view = operations;
+    return d;
+}
+
+static void cp13_sort(int count, int *edge, int64_t *n, int64_t *r)
+{
+    for (int i = 1; i < count; i++)
+    {
+        int e = edge[i], j = i;
+        int64_t produced = n[i], retained = r[i];
+        while (j > 0 && edge[j - 1] > e)
+        {
+            edge[j] = edge[j - 1]; n[j] = n[j - 1]; r[j] = r[j - 1]; j--;
+        }
+        edge[j] = e; n[j] = produced; r[j] = retained;
+    }
+}
+
+static int cp13_stopped(cp03_problem *p)
+{
+    cp13_plan *g = p->future;
+    if (g->limited || st_cross_future_limited(g->context)) { g->limited = 1; return 1; }
+    if (g->seed_nodes >= p->maxnodes || g->count_nodes >= p->maxnodes - g->seed_nodes) { g->reason = "future.node.limit"; return 1; }
+    return 0;
+}
+
+static int cp13_evaluate(cp03_problem *p, st_cross_future_value *value)
+{
+    cp13_plan *g = p->future;
+    memset(value, 0, sizeof(*value));
+    if (cp13_stopped(p)) return 0;
+    g->count_nodes++;
+    if (!(g->count_nodes % 256)) R_CheckUserInterrupt();
+    st_cross_future_operations operations;
+    st_cross_future_design design = cp13_design(p, g->edge, g->n, g->r, &operations);
+    int result = st_cross_future_training(g->context, &design, value);
+    g->evaluations++;
+    if (result != 1 || !value->complete || value->g1_state != 1)
+    {
+        if (value->g1_state != -1) g->unknown = 1;
+        if (value->limited || st_cross_future_limited(g->context)) g->limited = 1;
+        g->rejected++;
+        return 0;
+    }
+    if (!g->have_best || st_cross_future_compare(&value->score, &g->best_score) > 0)
+    {
+        g->have_best = 1;
+        g->best_score = value->score;
+        g->best_value = *value;
+        memcpy(g->best_edge, g->edge, (size_t)p->m * sizeof(int));
+        memcpy(g->best_n, g->n, (size_t)p->m * sizeof(int64_t));
+        memcpy(g->best_r, g->r, (size_t)p->m * sizeof(int64_t));
+        cp13_sort(p->m, g->best_edge, g->best_n, g->best_r);
+        g->accepted++;
+    }
+    return 1;
+}
+
+static void cp13_seed_begin(cp03_problem *p)
+{
+    cp13_plan *g = p->future;
+    if (!g || !g->objective) return;
+    g->original_method = p->method;
+    g->original_maxnodes = p->maxnodes;
+    g->original_maxit = p->maxit;
+    g->original_starts = p->starts;
+    if (p->maxnodes > 5000) p->maxnodes = 5000;
+    if (p->maxit > 200) p->maxit = 200;
+    if (p->starts > 4) p->starts = 4;
+}
+
+static void cp13_seed_end(cp03_problem *p)
+{
+    cp13_plan *g = p->future;
+    if (!g || !g->objective) return;
+    g->seed_nodes = p->nodes;
+    p->method = g->original_method;
+    p->maxnodes = g->original_maxnodes;
+    p->maxit = g->original_maxit;
+    p->starts = g->original_starts;
+    p->nodes = p->proposals = p->accepted = 0;
+    p->completed_starts = p->stopped = p->complete = 0;
+}
+
+static void cp13_capture_fixed(cp10_problem *s)
+{
+    cp03_problem *p = s->p;
+    cp13_plan *g = p->future;
+    if (!g || !g->objective || !p->start_used) return;
+    for (int i = 0; i < p->m; i++)
+    {
+        g->warm_edge[i] = s->current[i];
+        g->warm_n[i] = s->initial[i];
+        g->warm_r[i] = s->parameters.retained;
+    }
+    g->have_warm = 1;
+}
+
+static void cp13_capture_variable(cp11_problem *s)
+{
+    cp03_problem *p = s->p;
+    cp13_plan *g = p->future;
+    if (!g || !g->objective || !p->start_used) return;
+    for (int i = 0; i < p->m; i++)
+    {
+        g->warm_edge[i] = s->current[i];
+        g->warm_n[i] = s->initial_n[i];
+        g->warm_r[i] = s->initial_r[i];
+    }
+    g->have_warm = 1;
+}
+
+static void cp13_counts(cp03_problem *p, int at, int64_t used_n, int64_t used_r)
+{
+    cp13_plan *g = p->future;
+    if (cp13_stopped(p)) return;
+    if (at == p->m)
+    {
+        if (used_n == g->budget && used_r == g->retained)
+        {
+            st_cross_future_value value;
+            cp13_evaluate(p, &value);
+        }
+        return;
+    }
+    g->count_nodes++;
+    int f = p->edge[g->edge[at]].family;
+    int64_t min_n = 0, max_n = 0, min_r = 0, max_r = 0;
+    for (int j = at + 1; j < p->m; j++)
+    {
+        int next = p->edge[g->edge[j]].family;
+        min_n = min_n > g->budget - g->lower[next] ? g->budget + 1 : min_n + g->lower[next];
+        max_n = max_n > g->budget - g->upper[next] ? g->budget + 1 : max_n + g->upper[next];
+        min_r = min_r > g->retained - g->min_retained[next] ? g->retained + 1 : min_r + g->min_retained[next];
+        max_r = max_r > g->retained - g->max_retained[next] ? g->retained + 1 : max_r + g->max_retained[next];
+    }
+    int64_t lo_n = g->lower[f], hi_n = g->upper[f];
+    if (lo_n < g->budget - used_n - max_n) lo_n = g->budget - used_n - max_n;
+    if (hi_n > g->budget - used_n - min_n) hi_n = g->budget - used_n - min_n;
+    int64_t lo_r = g->min_retained[f], hi_r = g->max_retained[f];
+    if (lo_r < g->retained - used_r - max_r) lo_r = g->retained - used_r - max_r;
+    if (hi_r > g->retained - used_r - min_r) hi_r = g->retained - used_r - min_r;
+    if (at == p->m - 1)
+    {
+        lo_n = hi_n = g->budget - used_n;
+        lo_r = hi_r = g->retained - used_r;
+    }
+    if (lo_n < g->lower[f] || hi_n > g->upper[f] || lo_r < g->min_retained[f] ||
+        hi_r > g->max_retained[f] || lo_n > hi_n || lo_r > hi_r) return;
+    for (int64_t n = lo_n; n <= hi_n && !cp13_stopped(p); n++)
+    {
+        int64_t limit = hi_r < n ? hi_r : n;
+        g->n[at] = n;
+        for (int64_t r = lo_r; r <= limit && !cp13_stopped(p); r++)
+        {
+            g->r[at] = r;
+            cp13_counts(p, at + 1, used_n + n, used_r + r);
+        }
+    }
+}
+
+static void cp13_subsets(cp03_problem *p, int at, int first)
+{
+    cp13_plan *g = p->future;
+    if (cp13_stopped(p)) return;
+    if (at == p->m)
+    {
+        g->sets++;
+        cp13_counts(p, 0, 0, 0);
+        return;
+    }
+    for (int e = first; e <= p->ne - (p->m - at) && !cp13_stopped(p); e++)
+    {
+        int duplicate = 0;
+        for (int i = 0; i < at; i++)
+            if (p->edge[g->edge[i]].family == p->edge[e].family) duplicate = 1;
+        if (duplicate) continue;
+        g->edge[at] = e;
+        cp13_subsets(p, at + 1, e + 1);
+    }
+}
+
+static int cp13_repair(cp03_problem *p)
+{
+    cp13_plan *g = p->future;
+    cp03_clear(p);
+    for (int i = 0; i < p->m; i++)
+    {
+        if (g->edge[i] < 0 || g->edge[i] >= p->ne || p->selected[g->edge[i]]) return 0;
+        p->selected[g->edge[i]] = 1;
+    }
+    if (p->variable == 2)
+    {
+        cp11_problem *s = g->count_problem;
+        if (cp11_prepare_set(s) < 0) return 0;
+        for (int i = 0; i < p->m; i++)
+        {
+            int at = 0;
+            while (at < p->m && g->edge[at] != s->current[i]) at++;
+            if (at == p->m || g->n[at] < 0 || g->n[at] > INT_MAX ||
+                g->r[at] < 0 || g->r[at] > INT_MAX) return 0;
+            s->initial_n[i] = (int)g->n[at];
+            s->initial_r[i] = (int)g->r[at];
+        }
+        if (!cp11_evaluate_set(s, s->initial_n, s->initial_r)) return 0;
+        for (int i = 0; i < p->m; i++)
+        {
+            g->edge[i] = s->current[i]; g->n[i] = s->produced[i]; g->r[i] = s->retained[i];
+        }
+    }
+    else
+    {
+        cp10_problem *s = g->count_problem;
+        if (cp10_prepare_set(s) < 0) return 0;
+        for (int i = 0; i < p->m; i++)
+        {
+            int at = 0;
+            while (at < p->m && g->edge[at] != s->current[i]) at++;
+            if (at == p->m || g->n[at] < 0 || g->n[at] > INT_MAX) return 0;
+            s->initial[i] = (int)g->n[at];
+        }
+        if (!cp10_evaluate_set(s, s->initial)) return 0;
+        for (int i = 0; i < p->m; i++)
+        {
+            g->edge[i] = s->current[i]; g->n[i] = s->produced[i]; g->r[i] = s->parameters.retained;
+        }
+    }
+    return 1;
+}
+
+static int cp13_proposal(cp03_problem *p, st_cross_future_score *current)
+{
+    st_cross_future_value value;
+    if (!cp13_evaluate(p, &value)) return 0;
+    if (st_cross_future_compare(&value.score, current) <= 0) return 0;
+    *current = value.score;
+    return 1;
+}
+
+static void cp13_local(cp03_problem *p)
+{
+    cp13_plan *g = p->future;
+    st_cross_future_value initial;
+    if (!cp13_evaluate(p, &initial))
+    {
+        if (!cp13_repair(p) || !cp13_evaluate(p, &initial)) return;
+    }
+    st_cross_future_score current = initial.score;
+    int *base_edge = g->base_edge;
+    int64_t *base_n = g->base_n, *base_r = g->base_r;
+    int64_t largest = g->budget > g->retained ? g->budget : g->retained;
+    int64_t initial_step = 1;
+    while (initial_step <= largest / 2) initial_step *= 2;
+    for (int iteration = 0; iteration < p->maxit && !cp13_stopped(p); iteration++)
+    {
+        memcpy(base_edge, g->edge, (size_t)p->m * sizeof(int));
+        memcpy(base_n, g->n, (size_t)p->m * sizeof(int64_t));
+        memcpy(base_r, g->r, (size_t)p->m * sizeof(int64_t));
+        for (int64_t step = initial_step; step > 0 && !cp13_stopped(p); step /= 2)
+            for (int i = 0; i < p->m && !cp13_stopped(p); i++)
+                for (int j = 0; j < p->m && !cp13_stopped(p); j++) if (i != j)
+                    for (int kind = 0; kind < (p->variable == 2 ? 4 : 1) && !cp13_stopped(p); kind++)
+                    {
+                        memcpy(g->edge, base_edge, (size_t)p->m * sizeof(int));
+                        memcpy(g->n, base_n, (size_t)p->m * sizeof(int64_t));
+                        memcpy(g->r, base_r, (size_t)p->m * sizeof(int64_t));
+                        if (kind != 1) { g->n[i] += step; g->n[j] -= step; }
+                        if (kind != 0) { g->r[i] += kind == 3 ? -step : step; g->r[j] -= kind == 3 ? -step : step; }
+                        if (cp13_proposal(p, &current)) goto cp13_improved;
+                    }
+        if (p->variable == 2)
+            for (int i = 0; i < p->m && !cp13_stopped(p); i++)
+                for (int j = i + 1; j < p->m && !cp13_stopped(p); j++)
+                    for (int dn = -2; dn <= 2 && !cp13_stopped(p); dn++)
+                        for (int dr = -2; dr <= 2 && !cp13_stopped(p); dr++)
+                        {
+                            if (!dn || !dr) continue;
+                            memcpy(g->edge, base_edge, (size_t)p->m * sizeof(int));
+                            memcpy(g->n, base_n, (size_t)p->m * sizeof(int64_t));
+                            memcpy(g->r, base_r, (size_t)p->m * sizeof(int64_t));
+                            g->n[i] += dn; g->n[j] -= dn;
+                            g->r[i] += dr; g->r[j] -= dr;
+                            if (cp13_proposal(p, &current)) goto cp13_improved;
+                        }
+        for (int i = 0; i < p->m && !cp13_stopped(p); i++)
+            for (int e = 0; e < p->ne && !cp13_stopped(p); e++)
+            {
+                memcpy(g->edge, base_edge, (size_t)p->m * sizeof(int));
+                memcpy(g->n, base_n, (size_t)p->m * sizeof(int64_t));
+                memcpy(g->r, base_r, (size_t)p->m * sizeof(int64_t));
+                if (e == g->edge[i]) continue;
+                g->edge[i] = e;
+                if (cp13_proposal(p, &current)) goto cp13_improved;
+                if (!cp13_stopped(p) && cp13_repair(p) && cp13_proposal(p, &current)) goto cp13_improved;
+            }
+        for (int i = 0; i < p->m && !cp13_stopped(p); i++)
+            for (int j = i + 1; j < p->m && !cp13_stopped(p); j++)
+                for (int variant = 0; variant < 2 && !cp13_stopped(p); variant++)
+                {
+                    cp03_edge a = p->edge[base_edge[i]], b = p->edge[base_edge[j]];
+                    int first = cp09_arc(p, a.a, variant ? b.b : b.a),
+                        second = cp09_arc(p, a.b, variant ? b.a : b.b);
+                    if (first < 0 || second < 0 || first == second) continue;
+                    memcpy(g->edge, base_edge, (size_t)p->m * sizeof(int));
+                    memcpy(g->n, base_n, (size_t)p->m * sizeof(int64_t));
+                    memcpy(g->r, base_r, (size_t)p->m * sizeof(int64_t));
+                    g->edge[i] = first; g->edge[j] = second;
+                    if (cp13_proposal(p, &current)) goto cp13_improved;
+                    if (!cp13_stopped(p) && cp13_repair(p) && cp13_proposal(p, &current)) goto cp13_improved;
+                }
+        memcpy(g->edge, base_edge, (size_t)p->m * sizeof(int));
+        memcpy(g->n, base_n, (size_t)p->m * sizeof(int64_t));
+        memcpy(g->r, base_r, (size_t)p->m * sizeof(int64_t));
+        break;
+cp13_improved:
+        p->accepted++;
+    }
+}
+
+static void cp13_search(cp03_problem *p)
+{
+    cp13_plan *g = p->future;
+    if (p->infeasible)
+    {
+        g->status = "infeasible"; g->reason = p->reason; g->complete = 1; return;
+    }
+    long double estimate = 1;
+    for (int i = 1; i <= p->m && estimate <= p->maxnodes; i++)
+        estimate *= (long double)(p->ne - p->m + i) / i;
+    int64_t width_n = 1, width_r = 1;
+    for (int f = 0; f < p->nfamilies; f++)
+    {
+        int64_t n = (int64_t)g->upper[f] - g->lower[f] + 1,
+            r = (int64_t)g->max_retained[f] - g->min_retained[f] + 1;
+        if (n > width_n) width_n = n;
+        if (r > width_r) width_r = r;
+    }
+    for (int i = 0; i < p->m && estimate <= p->maxnodes; i++) estimate *= (long double)width_n * width_r;
+    if (!p->method) p->method = estimate <= p->maxnodes && p->m <= 128 ? 1 : 2;
+    if (g->have_warm)
+    {
+        memcpy(g->edge, g->warm_edge, (size_t)p->m * sizeof(int));
+        memcpy(g->n, g->warm_n, (size_t)p->m * sizeof(int64_t));
+        memcpy(g->r, g->warm_r, (size_t)p->m * sizeof(int64_t));
+        st_cross_future_value value; cp13_evaluate(p, &value);
+    }
+    if (g->have_reference)
+    {
+        memcpy(g->edge, g->reference_edge, (size_t)p->m * sizeof(int));
+        memcpy(g->n, g->reference_n, (size_t)p->m * sizeof(int64_t));
+        memcpy(g->r, g->reference_r, (size_t)p->m * sizeof(int64_t));
+        st_cross_future_value value; cp13_evaluate(p, &value);
+    }
+    if (p->method == 1)
+    {
+        if (p->m > 256) { g->limited = 1; g->reason = "future.exact.depth.limit"; }
+        else cp13_subsets(p, 0, 0);
+        g->complete = !cp13_stopped(p);
+    }
+    else for (int start = 0; start < p->starts && !cp13_stopped(p); start++)
+    {
+        g->count_nodes++;
+        if (start == 0 && g->have_reference)
+        {
+            memcpy(g->edge, g->reference_edge, (size_t)p->m * sizeof(int));
+            memcpy(g->n, g->reference_n, (size_t)p->m * sizeof(int64_t));
+            memcpy(g->r, g->reference_r, (size_t)p->m * sizeof(int64_t));
+        }
+        else if (start == 1 && g->have_warm)
+        {
+            memcpy(g->edge, g->warm_edge, (size_t)p->m * sizeof(int));
+            memcpy(g->n, g->warm_n, (size_t)p->m * sizeof(int64_t));
+            memcpy(g->r, g->warm_r, (size_t)p->m * sizeof(int64_t));
+        }
+        else
+        {
+            int chosen = 0;
+            for (int attempt = 0; chosen < p->m && attempt < 10000 && !cp13_stopped(p); attempt++)
+            {
+                g->count_nodes++;
+                int e = cp03_index(p, p->ne), duplicate = 0;
+                for (int i = 0; i < chosen; i++)
+                    if (p->edge[g->edge[i]].family == p->edge[e].family) duplicate = 1;
+                if (!duplicate) g->edge[chosen++] = e;
+            }
+            if (chosen < p->m) continue;
+            for (int i = 0; i < p->m; i++)
+            {
+                int f = p->edge[g->edge[i]].family;
+                g->n[i] = g->lower[f]; g->r[i] = g->min_retained[f];
+            }
+            if (!cp13_repair(p)) continue;
+        }
+        cp13_local(p);
+        p->completed_starts++;
+    }
+    if (g->have_best)
+        g->status = g->complete && !g->unknown ? "bank.optimal" : "best.found";
+    else g->status = g->complete && !g->unknown ? "infeasible"
+        : g->limited ? "resource.limit" : g->unknown ? "numerically.unresolved" : "search.limit";
+    g->reason = g->complete && !g->unknown ? "complete.training.bank.enumeration"
+        : g->limited ? "future.training.limit" : g->unknown ? "future.unresolved.alternatives"
+        : g->count_nodes >= p->maxnodes ? "future.node.limit" : "bounded.future.search";
+    p->nodes = g->count_nodes; p->proposals = g->evaluations; p->accepted = g->accepted;
+    p->complete = g->complete && !g->unknown;
+    p->have_best = g->have_best;
+}
+
+static void cp13_final(cp03_problem *p, int have, const int *edge,
+    const int64_t *n, const int64_t *r)
+{
+    cp13_plan *g = p->future;
+    if (!g) return;
+    if (!have)
+    {
+        st_cross_future_final(g->context, 0, NULL, NULL);
+        return;
+    }
+    int count = g->objective && g->have_reference ? 2 : 1;
+    int *first = g->final_first, *second = g->final_second;
+    st_cross_future_operations operations[2];
+    st_cross_future_design design[2];
+    const char *names[] = {"selected", "G1.reference"};
+    for (int j = 0; j < count; j++)
+    {
+        const int *chosen = j ? g->reference_edge : edge;
+        for (int i = 0; i < p->m; i++)
+        {
+            const cp03_edge *e = p->edge + chosen[i];
+            first[(size_t)j * p->m + i] = p->roles ? e->seed : e->a;
+            second[(size_t)j * p->m + i] = p->roles ? e->pollen : e->b;
+        }
+        design[j].families = p->m;
+        design[j].first = first + (size_t)j * p->m;
+        design[j].second = second + (size_t)j * p->m;
+        design[j].produced = j ? g->reference_n : n;
+        design[j].retained = j ? g->reference_r : r;
+        design[j].accuracy = g->accuracy;
+        operations[j].rows = p->m;
+        operations[j].direction_known = p->roles;
+        operations[j].operations_known = 0;
+        operations[j].seed = design[j].first;
+        operations[j].pollen = design[j].second;
+        operations[j].family_hint = NULL;
+        operations[j].produced = design[j].produced;
+        operations[j].retained = design[j].retained;
+        operations[j].operations = NULL;
+        design[j].operation_view = operations + j;
+    }
+    if (g->objective) st_cross_future_chosen(g->context, design, &g->best_value);
+    st_cross_future_final(g->context, count, design, names);
+}
+
+static SEXP cp13_objective(cp03_problem *p, int *np)
+{
+    cp13_plan *g = p->future;
+    const char *labels[] = {"criterion", "sense", "horizon", "value", "bound", "gap",
+        "bound.type", "g1.selected.mean", "g2.response", "components", "numerical.qualification"};
+    SEXP out = lmm_keep(mvm_list(11, labels), np);
+    SET_VECTOR_ELT(out, 0, lmm_keep(mkString("future"), np));
+    SET_VECTOR_ELT(out, 1, lmm_keep(mkString("max"), np));
+    SET_VECTOR_ELT(out, 2, lmm_keep(ScalarInteger(2), np));
+    double point = g->have_best ? st_cross_future_total(g->context, &g->best_score, 2) : NA_REAL;
+    SET_VECTOR_ELT(out, 3, lmm_keep(ScalarReal(point), np));
+    SET_VECTOR_ELT(out, 4, lmm_keep(ScalarReal(g->have_best && g->complete && !g->unknown ? point : NA_REAL), np));
+    SET_VECTOR_ELT(out, 5, lmm_keep(ScalarReal(g->have_best && g->complete && !g->unknown ? 0 : NA_REAL), np));
+    SET_VECTOR_ELT(out, 6, lmm_keep(mkString(g->complete && !g->unknown
+        ? "exhaustive.training.bank.enumeration" : "unknown.future.global.bound"), np));
+    SET_VECTOR_ELT(out, 7, lmm_keep(ScalarReal(g->have_best
+        ? st_cross_future_total(g->context, &g->best_score, 1) : NA_REAL), np));
+    SET_VECTOR_ELT(out, 8, lmm_keep(ScalarReal(g->have_best ? (double)g->best_score.g2_response : NA_REAL), np));
+    const char *component_names[] = {"centered.baseline", "baseline.tail", "g1.response", "g2.response"};
+    SEXP components = lmm_keep(allocVector(REALSXP, 4), np), names = lmm_keep(allocVector(STRSXP, 4), np);
+    long double values[] = {g->best_score.baseline, g->best_score.tail, g->best_score.g1_response, g->best_score.g2_response};
+    for (int i = 0; i < 4; i++)
+    {
+        REAL(components)[i] = g->have_best ? (double)values[i] : NA_REAL;
+        SET_STRING_ELT(names, i, mkChar(component_names[i]));
+    }
+    setAttrib(components, R_NamesSymbol, names);
+    SET_VECTOR_ELT(out, 9, components);
+    SET_VECTOR_ELT(out, 10, lmm_keep(mkString(
+        "Actual finite training-bank G2 outcome; a bank optimum is not an expectation-level optimum."), np));
+    return out;
+}
+
+static SEXP cp13_diagnostics(cp03_problem *p, SEXP diagnostics, int *np)
+{
+    cp13_plan *g = p->future;
+    if (!g || !g->objective) return diagnostics;
+    const char *labels[] = {"target", "evaluations", "count.nodes", "family.sets", "accepted",
+        "complete.enumeration", "unresolved", "limited", "reason"};
+    SEXP search = lmm_keep(mvm_list(9, labels), np);
+    SET_VECTOR_ELT(search, 0, lmm_keep(mkString("actual.selected.G2.training.bank"), np));
+    SET_VECTOR_ELT(search, 1, lmm_keep(ScalarReal((double)g->evaluations), np));
+    SET_VECTOR_ELT(search, 2, lmm_keep(ScalarReal((double)g->count_nodes), np));
+    SET_VECTOR_ELT(search, 3, lmm_keep(ScalarReal((double)g->sets), np));
+    SET_VECTOR_ELT(search, 4, lmm_keep(ScalarReal((double)g->accepted), np));
+    SET_VECTOR_ELT(search, 5, lmm_keep(ScalarLogical(g->complete), np));
+    SET_VECTOR_ELT(search, 6, lmm_keep(ScalarLogical(g->unknown), np));
+    SET_VECTOR_ELT(search, 7, lmm_keep(ScalarLogical(g->limited), np));
+    SET_VECTOR_ELT(search, 8, lmm_keep(mkString(g->reason), np));
+    SEXP joint = mvm_get(diagnostics, "joint");
+    if (!isNull(joint)) diagnostics = cp12_put(diagnostics, "joint", cp12_put(joint,
+        "scope", lmm_keep(mkString("G1.seeds.and.feasibility.repairs.only"), np), np), np);
+    return cp12_put(diagnostics, "future.search", search, np);
+}
+
+static SEXP cp13_fixed(cp10_problem *s, SEXP args, SEXP names,
+    SEXP matrix, SEXP practical, SEXP diversity, int *np)
+{
+    cp03_problem *p = s->p;
+    cp13_plan *g = p->future;
+    if (s->have_best)
+    {
+        g->have_reference = 1;
+        for (int i = 0; i < p->m; i++)
+        {
+            g->reference_edge[i] = p->best[i];
+            g->reference_n[i] = s->best_produced[i];
+            g->reference_r[i] = s->parameters.retained;
+        }
+    }
+    cp13_seed_end(p);
+    cp13_search(p);
+    s->have_best = g->have_best;
+    for (int i = 0; g->have_best && i < p->m; i++)
+    {
+        p->best[i] = g->best_edge[i]; s->best_produced[i] = (int)g->best_n[i];
+    }
+    cp13_final(p, g->have_best, g->best_edge, g->best_n, g->best_r);
+    return cp10_result(s, args, names, matrix, practical, diversity, np);
+}
+
+static SEXP cp13_variable(cp11_problem *s, SEXP args, SEXP names,
+    SEXP matrix, SEXP practical, SEXP diversity, int *np)
+{
+    cp03_problem *p = s->p;
+    cp13_plan *g = p->future;
+    if (s->have_best)
+    {
+        g->have_reference = 1;
+        for (int i = 0; i < p->m; i++)
+        {
+            g->reference_edge[i] = p->best[i]; g->reference_n[i] = s->best_n[i];
+            g->reference_r[i] = s->best_r[i];
+        }
+    }
+    cp13_seed_end(p);
+    cp13_search(p);
+    s->have_best = g->have_best;
+    for (int i = 0; g->have_best && i < p->m; i++)
+    {
+        p->best[i] = g->best_edge[i]; s->best_n[i] = (int)g->best_n[i]; s->best_r[i] = (int)g->best_r[i];
+    }
+    cp13_final(p, g->have_best, g->best_edge, g->best_n, g->best_r);
+    return cp11_result(s, args, names, matrix, practical, diversity, np);
+}
+
+static SEXP cp11_run(cp03_problem *p, SEXP args, SEXP names,
+    SEXP original_matrix, SEXP practical_request, SEXP diversity, int *np)
+{
+    cp11_problem state = {0}, *s = &state;
+    s->p = p;
+    s->relaxation_upper = cp11_unknown_upper();
+    s->closed_upper = cp11_unknown_upper();
+    int nf = p->nfamilies;
+    int *family_first = mvm_alloc(nf, sizeof(int)),
+        *family_second = mvm_alloc(nf, sizeof(int)),
+        *all_family = mvm_alloc(nf, sizeof(int));
+    double *all_mu = mvm_alloc(nf, sizeof(double)),
+        *all_variance = mvm_alloc(nf, sizeof(double));
+    for (int e = 0; e < p->ne; e++)
+    {
+        cp03_edge *edge = p->edge + e;
+        int f = edge->family;
+        family_first[f] = edge->a; family_second[f] = edge->b;
+        all_family[f] = f; all_mu[f] = edge->mu; all_variance[f] = edge->va;
+    }
+    double reserved = 16.0 * p->o.n * p->o.n +
+        (double)p->ne * sizeof(cp03_edge) / sizeof(double) +
+        36.0 * fmin(p->m, p->ne) + 6.0 * nf;
+    if (p->practical)
+        reserved += st_cross_practical_workspace_cells(p->practical);
+    s->allocation = st_cross_variable_prepare(mvm_get(args, "progeny"), p->m,
+        names, nf, family_first, family_second, p->useful, reserved);
+    if (p->frontier && p->count_remaining >= 0)
+        st_cross_variable_work_limit(s->allocation, p->count_remaining);
+    st_cross_variable_parameters_get(s->allocation, &s->parameters);
+    p->count_workspace = s->allocation;
+    p->count_ceiling = s->parameters.max_transitions;
+    s->coupled = p->practical && (st_cross_practical_requirements(p->practical) & (2 | 8));
+    if (p->genetic)
+    {
+        cp12_plan *g = p->genetic;
+        g->count_context = s->allocation;
+        g->intensity = st_cross_variable_kernel;
+        st_cross_genetic_method_set(g->model, s->parameters.normal_mode);
+        if (g->requirements & 1)
+        {
+            s->coupled = 1;
+            if (st_cross_genetic_limited(g->model))
+                st_cross_variable_external_limit(s->allocation);
+        }
+    }
+    st_cross_variable_validate(s->allocation, s->coupled);
+    p->joint = s;
+    p->joint_bound_known = 0;
+    if (!st_cross_variable_necessary(s->allocation))
+    {
+        p->infeasible = 1;
+        if (!strcmp(p->reason, "none")) p->reason = "variable.budget.bounds";
+    }
+    int capacity = p->m <= p->ne ? p->m : 1;
+    s->current = mvm_alloc(capacity, sizeof(int));
+    s->family = mvm_alloc(capacity, sizeof(int));
+    s->produced = mvm_alloc(capacity, sizeof(int));
+    s->retained = mvm_alloc(capacity, sizeof(int));
+    s->initial_n = mvm_alloc(capacity, sizeof(int));
+    s->initial_r = mvm_alloc(capacity, sizeof(int));
+    s->best_n = mvm_alloc(capacity, sizeof(int));
+    s->best_r = mvm_alloc(capacity, sizeof(int));
+    s->lower = mvm_alloc(capacity, sizeof(int));
+    s->upper = mvm_alloc(capacity, sizeof(int));
+    s->min_selected = mvm_alloc(capacity, sizeof(int));
+    s->max_selected = mvm_alloc(capacity, sizeof(int));
+    s->retained64 = mvm_alloc(capacity, sizeof(int64_t));
+    s->mu = mvm_alloc(capacity, sizeof(double));
+    s->variance = mvm_alloc(capacity, sizeof(double));
+    s->intensity = mvm_alloc(capacity, sizeof(double));
+    s->intensity_error = mvm_alloc(capacity, sizeof(double));
+    s->response = mvm_alloc(capacity, sizeof(double));
+    s->best_intensity = mvm_alloc(capacity, sizeof(double));
+    s->best_error = mvm_alloc(capacity, sizeof(double));
+    s->best_response = mvm_alloc(capacity, sizeof(double));
+    if (p->future) cp13_bind(p, s, s->parameters.budget, s->parameters.selected);
+    cp13_seed_begin(p);
+    SEXP start = mvm_get(mvm_get(args, "control"), "start");
+    cp11_start(s, start, names);
+    cp13_capture_variable(s);
+    if (!p->infeasible)
+        s->relaxation_upper = st_cross_variable_bound(s->allocation, nf,
+            all_family, all_mu, p->score_offset, all_variance, p->accuracy,
+            &s->relaxation_known);
+    long double estimate = 1;
+    int smaller = p->m < p->ne - p->m ? p->m : p->ne - p->m;
+    if (smaller < 0) estimate = (long double)p->maxnodes + 1;
+    else for (int i = 1; i <= smaller; i++)
+    {
+        estimate *= (long double)(p->ne - smaller + i) / i;
+        if (estimate > p->maxnodes) break;
+    }
+    estimate *= (long double)p->ne + 1;
+    p->work_estimate = (double)fminl(estimate, (long double)p->maxnodes + 1);
+    if (!p->method) p->method = estimate <= p->maxnodes ? 1 : 2;
+    if (!p->infeasible && !st_cross_variable_limited(s->allocation))
+    {
+        if (p->method == 1) cp03_exact(p);
+        else cp11_heuristic(s);
+    }
+    if (p->future && p->future->objective)
+        return cp13_variable(s, args, names, original_matrix, practical_request, diversity, np);
+    return cp11_result(s, args, names, original_matrix, practical_request, diversity, np);
+}
+
+typedef struct
+{
+    cp03_problem base, active;
+    SEXP args, names, matrix, original_matrix, practical, diversity;
+    cp03_edge *edge;
+    int np, frontier, points;
+    uint64_t nodes;
+    double count_remaining, count_ceiling, count_used;
+} cp13_prepared;
+
+void *st_cross_plan_prepare(SEXP args)
 {
     int np = 0;
+    SEXP action = mvm_get(args, "action");
+    int frontier = TYPEOF(action) == STRSXP && LENGTH(action) == 1 &&
+        !strcmp(CHAR(STRING_ELT(action, 0)), "cross.frontier");
     SEXP merit = mvm_get(args, "merit"), matrix = mvm_get(args, "K"),
          pairs = mvm_get(args, "pairs"),
          scores = mvm_get(args, "scores"),
          contributions = mvm_get(args, "contributions"),
-         control = mvm_get(args, "control");
+         control = mvm_get(args, "control"),
+         practical_request = mvm_get(args, "constraints"),
+         original_matrix = matrix;
     cp03_problem p = {0};
+    p.variable = !isNull(mvm_get(args, "progeny"));
+    if (!isNull(mvm_get(args, "genetic.model")) && !p.variable)
+        error("st.cross.plan: genetic.model requires progeny with explicit production and retention counts");
+    if (p.variable)
+    {
+        SEXP group_names = getAttrib(mvm_get(args, "progeny"), R_NamesSymbol);
+        if (TYPEOF(group_names) == STRSXP)
+            for (R_xlen_t i = 0; i < XLENGTH(group_names); i++)
+                if (STRING_ELT(group_names, i) != NA_STRING)
+                {
+                    const char *name = CHAR(STRING_ELT(group_names, i));
+                    if (!strcmp(name, "total.selected") || !strcmp(name, "min.selected") ||
+                        !strcmp(name, "max.selected") || !strcmp(name, "bounds"))
+                        p.variable = 2;
+                }
+        SEXP supplied = mvm_get(args, "n.progeny.supplied");
+        if (!isNull(supplied) && (TYPEOF(supplied) != LGLSXP || LENGTH(supplied) != 1 ||
+            LOGICAL(supplied)[0] == NA_LOGICAL))
+            error("st.cross.plan: invalid n.progeny ambiguity flag");
+        if (!isNull(supplied) && LOGICAL(supplied)[0])
+            error("st.cross.plan: explicit n.progeny cannot be combined with progeny");
+    }
     p.tolerance = 1e-8;
     p.maxnodes = UINT64_C(1000000);
     p.maxit = 20000;
@@ -72235,9 +76846,12 @@ static SEXP lmm_cross_plan(SEXP args)
     p.scored = !isNull(scores);
     const char *criterion = cp03_text(mvm_get(args, "criterion"),
                                          "criterion");
-    if (!strcmp(criterion, "usefulness")) p.useful = 1;
+    int future_requested = !strcmp(criterion, "future");
+    if (!strcmp(criterion, "usefulness") || future_requested) p.useful = 1;
     else if (strcmp(criterion, "mean"))
-        error("st.cross.plan: criterion must be mean or usefulness");
+        error("st.cross.plan: criterion must be mean, usefulness or future");
+    if (future_requested && (!p.variable || isNull(mvm_get(args, "genetic.model"))))
+        error("st.cross.plan: future criterion requires genetic.model and explicit progeny");
     p.accuracy = cp03_scalar(mvm_get(args, "accuracy"), "accuracy");
     if (p.accuracy < 0 || p.accuracy > 1)
         error("st.cross.plan: accuracy must be in [0,1]");
@@ -72249,14 +76863,17 @@ static SEXP lmm_cross_plan(SEXP args)
         error("st.cross.plan: merit must contain at least two parents");
     int n = LENGTH(merit);
     p.o.n = n;
+    double *candidate_K = NULL;
+    if (!isNull(practical_request) || p.variable)
+        candidate_K = cp09_candidate_matrix(matrix, merit, n);
     SEXP dim = getAttrib(matrix, R_DimSymbol);
     if (!mvm_numeric(matrix) || inherits(matrix, "factor") ||
         TYPEOF(dim) != INTSXP || LENGTH(dim) != 2 ||
-        INTEGER(dim)[0] != n || INTEGER(dim)[1] != n ||
+        (!candidate_K && (INTEGER(dim)[0] != n || INTEGER(dim)[1] != n)) ||
         (size_t)n > SIZE_MAX / (size_t)n / sizeof(double))
         error("st.cross.plan: K must be square and match merit");
     double m = cp03_scalar(mvm_get(args, "n.crosses"), "n.crosses"),
-           progeny = cp03_scalar(mvm_get(args, "n.progeny"), "n.progeny"),
+           progeny = p.variable ? 1 : cp03_scalar(mvm_get(args, "n.progeny"), "n.progeny"),
            theta_original = cp03_scalar(mvm_get(args, "theta"), "theta");
     if (m < 1 || m > INT_MAX || m != floor(m) ||
         progeny < 1 || progeny > INT_MAX || progeny != floor(progeny) ||
@@ -72268,6 +76885,8 @@ static SEXP lmm_cross_plan(SEXP args)
     if (!strcmp(mode, "fixed")) p.fixed = 1;
     else if (strcmp(mode, "joint"))
         error("st.cross.plan: mode must be joint or fixed");
+    if (p.variable && (p.fixed || !p.scored))
+        error("st.cross.plan: progeny requires joint mode and keyed mu, va scores");
     if (p.fixed && p.scored)
         error("st.cross.plan: scores are supported only in joint mode");
     if ((p.fixed && isNull(contributions)) ||
@@ -72326,9 +76945,10 @@ static SEXP lmm_cross_plan(SEXP args)
             else error("st.cross.plan: unknown control option '%s'", name);
         }
     }
+    p.explicit_start = !isNull(start);
     p.rng = p.seed ? p.seed : UINT64_C(88172645463325252);
     SEXP names = getAttrib(merit, R_NamesSymbol),
-         matrix_names = getAttrib(matrix, R_DimNamesSymbol);
+         matrix_names = candidate_K ? R_NilValue : getAttrib(matrix, R_DimNamesSymbol);
     if (!isNull(names)) cp03_names(names, R_NilValue, n, "merit");
     if (!isNull(matrix_names))
     {
@@ -72351,7 +76971,7 @@ static SEXP lmm_cross_plan(SEXP args)
         for (int i = 0; i < n; i++)
         {
             char value[64];
-            snprintf(value, sizeof(value), "%d", i + 1);
+            st_text_write(value, sizeof(value), "%d", i + 1);
             SET_STRING_ELT(names, i, mkChar(value));
         }
     }
@@ -72521,9 +77141,9 @@ static SEXP lmm_cross_plan(SEXP args)
                 p.reason = "nonintegral.parent.usage";
         }
     }
-    for (R_xlen_t i = 0; i < XLENGTH(matrix); i++)
+    for (size_t i = 0; i < (size_t)n * n; i++)
     {
-        double value = mvm_num(matrix, i);
+        double value = candidate_K ? candidate_K[i] : mvm_num(matrix, (R_xlen_t)i);
         if (!R_FINITE(value)) error("st.cross.plan: K must be finite");
         p.o.scale = fmax(p.o.scale, fabs(value));
     }
@@ -72531,8 +77151,10 @@ static SEXP lmm_cross_plan(SEXP args)
     for (int j = 0; j < n; j++)
         for (int i = 0; i < n; i++)
         {
-            double original_a = mvm_num(matrix, i + (R_xlen_t)n * j),
-                   original_b = mvm_num(matrix, j + (R_xlen_t)n * i),
+            double original_a = candidate_K ? candidate_K[i + (size_t)n * j]
+                       : mvm_num(matrix, i + (R_xlen_t)n * j),
+                   original_b = candidate_K ? candidate_K[j + (size_t)n * i]
+                       : mvm_num(matrix, j + (R_xlen_t)n * i),
                    a = original_a / p.o.scale,
                    b = original_b / p.o.scale;
             if (fabs(a - b) > 256 * DBL_EPSILON * n)
@@ -72555,13 +77177,48 @@ static SEXP lmm_cross_plan(SEXP args)
     double largest = fmax(1, p.o.eigenvalues[n - 1]);
     if (p.o.eigenvalues[0] < -64 * DBL_EPSILON * n * largest)
         error("st.cross.plan: K must be positive semidefinite");
-    p.theta = theta_original / p.o.scale;
+    if (ocs_shift_relation(&p.o, p.original_K))
+    {
+        p.conversion_error = 0;
+        for (size_t i = 0; i < (size_t)n * n; i++)
+        {
+            long double original = (long double)p.original_K[i] -
+                                   p.o.relation_offset,
+                converted = (long double)p.o.K[i] * p.o.scale;
+            if (p.o.relation_linear)
+                converted += ((long double)p.o.relation_linear[i % n] +
+                    p.o.relation_linear[i / n]) * p.o.scale;
+            long double uncertainty = fabsl(converted - original) +
+                    4 * LDBL_EPSILON * (fabsl(converted) + fabsl(original));
+            p.conversion_error = fmaxl(p.conversion_error, uncertainty);
+        }
+    }
+    ocs_face_prepare(&p.o);
+    p.theta = (double)(((long double)theta_original -
+                        p.o.relation_offset) / p.o.scale);
     p.theta_original = theta_original;
-    if (theta_original < 0)
+    if (theta_original < 0 && !frontier)
     {
         p.infeasible = 1;
         p.reason = "negative.PSD.bound";
     }
+    if (!isNull(practical_request))
+    {
+        p.practical = st_cross_practical_prepare(practical_request, names,
+            original_matrix, p.tolerance, 1);
+        int requirements = st_cross_practical_requirements(p.practical);
+        if ((requirements & 2) && !p.variable)
+            error("st.cross.plan: retained practical constraints need explicitly identified retained counts");
+        if (requirements & 4)
+            error("st.cross.plan: operation constraints need explicitly identified crossing-operation counts");
+        p.roles = st_cross_practical_roles(p.practical);
+    }
+    if (p.practical || p.variable)
+    {
+        cp09_edges(&p, pairs, names);
+    }
+    else
+    {
     SEXP first = R_NilValue, second = R_NilValue;
     int pair_matrix = 0;
     if (isNull(pairs))
@@ -72598,6 +77255,7 @@ static SEXP lmm_cross_plan(SEXP args)
         p.edge[e].a = a;
         p.edge[e].b = b;
     }
+    }
     for (int e = 0; e < p.ne; e++)
         p.cost_scale = fmax(p.cost_scale,
             fabs(p.original_K[p.edge[e].a + (size_t)n * p.edge[e].b]));
@@ -72609,18 +77267,28 @@ static SEXP lmm_cross_plan(SEXP args)
                                        p.cost_scale
                                     : (p.o.g[a] + p.o.g[b]) * .5;
     }
-    if (p.scored) cp04_scores(&p, scores, names);
-    qsort(p.edge, p.ne, sizeof(cp03_edge),
-           p.fixed ? cp03_edge_order_min : cp03_edge_order_max);
+    if (p.variable) cp10_scores(&p, scores, names);
+    else if (p.scored) cp04_scores(&p, scores, names);
+    if (!isNull(mvm_get(args, "genetic.model")))
+        cp12_prepare(&p, mvm_get(args, "genetic.model"), names, original_matrix);
+    cp13_prepare(&p, args, future_requested);
+    qsort(p.edge, p.ne, sizeof(cp03_edge), p.roles
+        ? (p.fixed ? cp09_edge_order_min : cp09_edge_order_max)
+        : (p.fixed ? cp03_edge_order_min : cp03_edge_order_max));
     long double operations = 4 * (long double)p.ne + 4,
                 gamma = operations * LDBL_EPSILON /
                         (1 - operations * LDBL_EPSILON);
-    p.bound_error = (double)(gamma * (2 * (long double)p.ne + 2 * p.m) /
+    p.bound_error = (double)(gamma * (2 * (long double)p.ne +
+                                    2 * (long double)p.m) /
                              p.m) + 32 * DBL_EPSILON;
     for (int e = 0; e < p.ne; e++)
     {
         int a = p.edge[e].a, b = p.edge[e].b;
-        p.lookup[a + (size_t)n * b] = p.lookup[b + (size_t)n * a] = e;
+        if (!p.family_selected || p.lookup[a + (size_t)n * b] < 0)
+            p.lookup[a + (size_t)n * b] = p.lookup[b + (size_t)n * a] = e;
+        if (p.family_selected)
+            p.directed_lookup[p.edge[e].seed +
+                (size_t)n * p.edge[e].pollen] = e;
     }
     p.selected = mvm_alloc(p.ne, sizeof(unsigned char));
     p.best = mvm_alloc(p.m < p.ne ? p.m : p.ne, sizeof(int));
@@ -72635,145 +77303,266 @@ static SEXP lmm_cross_plan(SEXP args)
             p.reason = "diversity.limit";
         }
     }
-    if (!cp03_graph_possible(&p))
+    if ((p.family_selected && p.nfamilies < p.m) || !cp03_graph_possible(&p))
     {
         p.infeasible = 1;
         if (!strcmp(p.reason, "none")) p.reason = "parent.usage.capacity";
     }
-    if (!p.infeasible) cp03_relaxation(&p);
-    if (p.m <= p.ne)
+    cp13_prepared *prepared = mvm_alloc(1, sizeof(cp13_prepared));
+    prepared->base = p;
+    prepared->args = args;
+    prepared->names = names;
+    prepared->matrix = matrix;
+    prepared->original_matrix = original_matrix;
+    prepared->practical = practical_request;
+    prepared->diversity = diversity;
+    prepared->np = np;
+    prepared->frontier = frontier;
+    prepared->count_remaining = -1;
+    prepared->points = frontier ? LENGTH(mvm_get(args, "limits")) : 1;
+    if (frontier)
+    {
+        prepared->edge = mvm_alloc(p.ne, sizeof(cp03_edge));
+        memcpy(prepared->edge, p.edge, (size_t)p.ne * sizeof(cp03_edge));
+    }
+    (void)start;
+    return prepared;
+}
+
+static SEXP cp13_plan_point_internal(cp13_prepared *prepared,
+    const st_cross_plan_override *override, int *np)
+{
+    prepared->active = prepared->base;
+    cp03_problem *p = &prepared->active;
+    SEXP args = prepared->args, names = prepared->names,
+        matrix = prepared->matrix, original_matrix = prepared->original_matrix,
+        practical_request = prepared->practical, diversity = prepared->diversity,
+        merit = mvm_get(args, "merit"), scores = mvm_get(args, "scores"),
+        pairs = mvm_get(args, "pairs"), control = mvm_get(args, "control"),
+        start = mvm_get(control, "start");
+    const char *criterion = cp03_text(mvm_get(args, "criterion"), "criterion"),
+        *mode = cp03_text(mvm_get(args, "mode"), "mode"),
+        *requested_method = isNull(mvm_get(control, "method")) ? "auto" :
+            cp03_text(mvm_get(control, "method"), "method");
+    int n = p->o.n;
+    double m = p->m, progeny = p->nprogeny;
+    double theta_original = p->theta_original;
+    p->point_override = override;
+    p->frontier = prepared->frontier;
+    p->count_remaining = prepared->count_remaining;
+    if (prepared->frontier)
+        p->maxnodes = prepared->nodes < p->maxnodes ? p->maxnodes - prepared->nodes : 0;
+    if (prepared->frontier)
+    {
+        memcpy(p->edge, prepared->edge, (size_t)p->ne * sizeof(cp03_edge));
+        for (size_t i = 0; i < (size_t)n * n; i++) p->lookup[i] = -1;
+        for (int e = 0; e < p->ne; e++)
+        {
+            int a = p->edge[e].a, b = p->edge[e].b;
+            if (p->lookup[a + (size_t)n * b] < 0)
+                p->lookup[a + (size_t)n * b] = p->lookup[b + (size_t)n * a] = e;
+            if (p->roles) p->directed_lookup[p->edge[e].seed + (size_t)n * p->edge[e].pollen] = e;
+        }
+    }
+    cp03_clear(p);
+    if (override && override->has_limit)
+    {
+        p->seed = override->seed;
+        p->rng = p->seed ? p->seed : UINT64_C(88172645463325252);
+        if (override->limit_kind == 1)
+        {
+            theta_original = p->theta_original = override->limit;
+            p->theta = (double)(((long double)theta_original -
+                                 p->o.relation_offset) / p->o.scale);
+        }
+    }
+    if (prepared->frontier && p->genetic)
+    {
+        st_cross_genetic_point_begin(p->genetic->model,
+            override && override->has_limit && override->limit_kind == 2,
+            override ? override->limit : 0);
+        p->genetic->requirements = st_cross_genetic_requirements(p->genetic->model);
+        p->genetic->final = 0;
+        p->genetic->count_context = NULL;
+        p->genetic->intensity = NULL;
+    }
+    if (p->future)
+    {
+        cp13_plan *g = p->future;
+        g->have_best = g->have_reference = g->have_warm = g->complete = g->unknown = g->limited = 0;
+        g->evaluations = g->rejected = g->accepted = g->sets = g->count_nodes = g->seed_nodes = 0;
+        g->override = override;
+    }
+    if (prepared->frontier && theta_original < 0)
+    {
+        p->infeasible = 1;
+        p->reason = "negative.relatedness.limit";
+    }
+    if (!p->infeasible) cp03_relaxation(p);
+    if (p->variable)
+    {
+        SEXP result = p->variable == 2
+            ? cp11_run(p, args, names, original_matrix, practical_request, diversity, np)
+            : cp10_run(p, args, names, original_matrix, practical_request, diversity, np);
+            return result;
+    }
+    if (p->m <= p->ne)
     {
         long double bound = 0;
-        for (int i = 0; i < p.m; i++) bound += p.edge[i].score;
-        p.objective_bound = (double)(bound / p.m) +
-                           (p.fixed ? -p.bound_error : p.bound_error);
-        if (p.fixed)
+        for (int i = 0; i < p->m; i++) bound += p->edge[i].score;
+        p->objective_bound = (double)(bound / p->m) +
+                           (p->fixed ? -p->bound_error : p->bound_error);
+        if (p->fixed)
         {
             long double degree_bound = 0;
             for (int i = 0; i < n; i++)
             {
-                int need = p.lower_degree[i];
-                for (int e = 0; e < p.ne && need; e++)
-                    if (p.edge[e].a == i || p.edge[e].b == i)
+                int need = p->lower_degree[i];
+                for (int e = 0; e < p->ne && need; e++)
+                    if (p->edge[e].a == i || p->edge[e].b == i)
                     {
-                        degree_bound += p.edge[e].score;
+                        degree_bound += p->edge[e].score;
                         need--;
                     }
             }
-            p.objective_bound = fmax(p.objective_bound,
-                (double)(degree_bound / (2.0 * p.m)) - p.bound_error);
+            p->objective_bound = fmax(p->objective_bound,
+                (double)(degree_bound / (2.0 * p->m)) - p->bound_error);
         }
-        p.edge_bound = p.objective_bound;
-        if (!p.fixed && R_FINITE(p.gain_upper))
-            p.objective_bound = fmin(p.objective_bound, p.gain_upper);
+        p->edge_bound = p->objective_bound;
+        if (!p->fixed && R_FINITE(p->gain_upper))
+            p->objective_bound = fmin(p->objective_bound, p->gain_upper);
     }
-    else p.edge_bound = p.objective_bound = NA_REAL;
-    p.bound_type = p.fixed ? "degree and edge relaxation" :
-                  p.scored ? "edge relaxation"
+    else p->edge_bound = p->objective_bound = NA_REAL;
+    p->bound_type = p->fixed ? "degree and edge relaxation" :
+                  p->scored ? "edge relaxation"
                           : "contribution and edge relaxation";
-    cp03_start(&p, start, names);
+    cp03_start(p, start, names);
     long double estimate = 1;
-    int smaller = p.m < p.ne - p.m ? p.m : p.ne - p.m;
-    if (smaller < 0) estimate = (long double)p.maxnodes + 1;
+    int smaller = p->m < p->ne - p->m ? p->m : p->ne - p->m;
+    if (smaller < 0) estimate = (long double)p->maxnodes + 1;
     else for (int i = 1; i <= smaller; i++)
     {
-        estimate *= (long double)(p.ne - smaller + i) / i;
-        if (estimate > (long double)p.maxnodes) break;
+        estimate *= (long double)(p->ne - smaller + i) / i;
+        if (estimate > (long double)p->maxnodes) break;
     }
-    estimate *= (long double)p.ne + 1;
-    p.work_estimate = (double)fminl(estimate, (long double)p.maxnodes + 1);
-    if (!p.method) p.method = estimate <= p.maxnodes ? 1 : 2;
-    if (!p.infeasible)
+    estimate *= (long double)p->ne + 1;
+    p->work_estimate = (double)fminl(estimate, (long double)p->maxnodes + 1);
+    if (!p->method) p->method = estimate <= p->maxnodes ? 1 : 2;
+    if (!p->infeasible)
     {
-        if (p.method == 1) cp03_exact(&p);
-        else cp03_heuristic(&p);
+        if (p->method == 1) cp03_exact(p);
+        else if (p->practical) cp09_heuristic(p);
+        else cp03_heuristic(p);
     }
-    const char *status = p.infeasible ? "infeasible" :
-        p.complete ? (p.have_best ? "optimal" :
-                      p.uncertain_leaves ? "search.limit" : "infeasible") :
-        p.have_best ? "best.found" : "search.limit";
-    if (p.complete && !p.have_best)
-        p.reason = p.uncertain_leaves ? "relatedness.numerical.limit"
+    const char *status = p->infeasible ? "infeasible" :
+        p->complete ? (p->have_best ? "optimal" :
+                      p->uncertain_leaves ? "search.limit" : "infeasible") :
+        p->have_best ? "best.found" : "search.limit";
+    if (p->complete && !p->have_best)
+        p->reason = p->uncertain_leaves ? (p->practical
+            ? "constraint.numerical.limit" : "relatedness.numerical.limit")
                                       : "exhaustive.search";
-    if (!p.infeasible && !p.complete && !p.have_best)
-        p.reason = "no.feasible.plan.found";
-    cp03_clear(&p);
-    if (p.have_best)
+    if (!p->infeasible && !p->complete && !p->have_best)
+        p->reason = "no.feasible.plan.found";
+    cp03_clear(p);
+    if (p->have_best)
     {
-        for (int i = 0; i < p.m; i++) cp03_change(&p, p.best[i], 1);
-        if (!cp03_consider(&p))
+        for (int i = 0; i < p->m; i++) cp03_change(p, p->best[i], 1);
+        if (!cp03_consider(p))
             error("st.cross.plan: internal incumbent failed validation");
-        if (p.complete)
+        if (p->complete)
         {
-            p.bound_type = "completed exact search";
-            double centre = p.best_score;
-            if (p.uncertain_leaves)
-                centre = p.fixed ? fmin(centre, p.uncertain_score)
-                                 : fmax(centre, p.uncertain_score);
-            p.objective_bound = centre +
-                (p.fixed ? -p.bound_error : p.bound_error);
-            if (p.bound_error + fabs(centre - p.best_score) > p.tolerance)
+            p->bound_type = "completed exact search";
+            double centre = p->best_score;
+            if (p->uncertain_leaves)
+                centre = p->fixed ? fmin(centre, p->uncertain_score)
+                                 : fmax(centre, p->uncertain_score);
+            p->objective_bound = centre +
+                (p->fixed ? -p->bound_error : p->bound_error);
+            if (p->bound_error + fabs(centre - p->best_score) > p->tolerance)
             {
                 status = "best.found";
-                p.reason = p.uncertain_leaves ? "relatedness.numerical.limit"
+                p->reason = p->uncertain_leaves ? (p->practical
+                    ? "constraint.numerical.limit" : "relatedness.numerical.limit")
                                              : "objective.numerical.limit";
             }
         }
-        else if (p.fixed ? p.objective_bound > p.best_score
-                         : p.objective_bound < p.best_score)
-            p.objective_bound = p.edge_bound;
+        else if (p->fixed ? p->objective_bound > p->best_score
+                         : p->objective_bound < p->best_score)
+            p->objective_bound = p->edge_bound;
     }
     const char *result_names[] = {"crosses", "contributions", "parents",
         "gain", "relatedness", "within.cross.relatedness", "mode", "status",
         "objective", "constraints", "diagnostics", "control", "search",
         "inputs", "usefulness", "parent.gain", "criterion", "accuracy"};
-    const char *extended_result_names[19];
-    int base_result_count = p.scored ? 18 : 14;
+    const char *extended_result_names[20];
+    int base_result_count = p->scored ? 18 : 14;
     for (int i = 0; i < base_result_count; i++) extended_result_names[i] = result_names[i];
     extended_result_names[base_result_count] = "diversity";
-    SEXP result = lmm_keep(mvm_list(base_result_count + p.diverse,
-                                   extended_result_names), &np);
-    int rows = p.have_best ? p.m : 0;
+    if (p->roles) extended_result_names[base_result_count + p->diverse] = "directions";
+    SEXP result = lmm_keep(mvm_list(base_result_count + p->diverse + p->roles,
+                                   extended_result_names), np);
+    int rows = p->have_best ? p->m : 0;
     const char *cross_columns[] = {"family", "P1Name", "P2Name", "n.progeny",
                                     "mu", "kinship", "va", "es",
                                     "usefulness"};
-    int ncross_columns = p.scored ? 9 : 6;
+    int ncross_columns = p->scored ? 9 : 6;
     SEXP crosses = lmm_keep(lmm_dataframe(rows, ncross_columns,
-                                            cross_columns, &np), &np);
+                                            cross_columns, np), np);
     for (int j = 0; j < ncross_columns; j++)
         SET_VECTOR_ELT(crosses, j, lmm_keep(allocVector(
-            j == 1 || j == 2 ? STRSXP : j < 4 ? INTSXP : REALSXP, rows), &np));
+            j == 1 || j == 2 ? STRSXP : j < 4 ? INTSXP : REALSXP, rows), np));
+    SEXP directions = R_NilValue;
+    if (p->roles)
+    {
+        const char *labels[] = {"family", "seed", "pollen"};
+        directions = lmm_keep(lmm_dataframe(rows, 3, labels, np), np);
+        SET_VECTOR_ELT(directions, 0, lmm_keep(allocVector(INTSXP, rows), np));
+        SET_VECTOR_ELT(directions, 1, lmm_keep(allocVector(STRSXP, rows), np));
+        SET_VECTOR_ELT(directions, 2, lmm_keep(allocVector(STRSXP, rows), np));
+        SET_VECTOR_ELT(result, base_result_count + p->diverse, directions);
+    }
     int at = 0;
     for (int a = 0; a < n - 1; a++)
         for (int b = a + 1; b < n; b++)
         {
-            int e = p.lookup[a + (size_t)n * b];
-            if (e < 0 || !p.selected[e]) continue;
+            int e = p->lookup[a + (size_t)n * b];
+            if (e >= 0 && p->practical)
+                e = p->family_selected[p->edge[e].family] - 1;
+            if (e < 0 || !p->selected[e]) continue;
             INTEGER(VECTOR_ELT(crosses, 0))[at] = at + 1;
             SET_STRING_ELT(VECTOR_ELT(crosses, 1), at, STRING_ELT(names, a));
             SET_STRING_ELT(VECTOR_ELT(crosses, 2), at, STRING_ELT(names, b));
-            INTEGER(VECTOR_ELT(crosses, 3))[at] = p.nprogeny;
+            INTEGER(VECTOR_ELT(crosses, 3))[at] = p->nprogeny;
             REAL(VECTOR_ELT(crosses, 4))[at] =
-                p.scored ? p.edge[e].mu :
-                p.o.original_g[a] * .5 + p.o.original_g[b] * .5;
+                p->scored ? p->edge[e].mu :
+                p->o.original_g[a] * .5 + p->o.original_g[b] * .5;
             REAL(VECTOR_ELT(crosses, 5))[at] =
-                p.original_K[a + (size_t)n * b];
-            if (p.scored)
+                p->original_K[a + (size_t)n * b];
+            if (p->scored)
             {
-                REAL(VECTOR_ELT(crosses, 6))[at] = p.edge[e].va;
-                REAL(VECTOR_ELT(crosses, 7))[at] = p.edge[e].es;
-                REAL(VECTOR_ELT(crosses, 8))[at] = p.edge[e].usefulness;
+                REAL(VECTOR_ELT(crosses, 6))[at] = p->edge[e].va;
+                REAL(VECTOR_ELT(crosses, 7))[at] = p->edge[e].es;
+                REAL(VECTOR_ELT(crosses, 8))[at] = p->edge[e].usefulness;
+            }
+            if (p->roles)
+            {
+                INTEGER(VECTOR_ELT(directions, 0))[at] = at + 1;
+                SET_STRING_ELT(VECTOR_ELT(directions, 1), at,
+                    STRING_ELT(names, p->edge[e].seed));
+                SET_STRING_ELT(VECTOR_ELT(directions, 2), at,
+                    STRING_ELT(names, p->edge[e].pollen));
             }
             at++;
         }
     SET_VECTOR_ELT(result, 0, crosses);
     const char *parent_columns[] = {"parent", "uses", "contribution",
                                      "lower", "upper", "merit"};
-    SEXP parents = lmm_keep(lmm_dataframe(n, 6, parent_columns, &np), &np);
+    SEXP parents = lmm_keep(lmm_dataframe(n, 6, parent_columns, np), np);
     SET_VECTOR_ELT(parents, 0, names);
-    SET_VECTOR_ELT(parents, 1, lmm_keep(allocVector(INTSXP, n), &np));
+    SET_VECTOR_ELT(parents, 1, lmm_keep(allocVector(INTSXP, n), np));
     for (int j = 2; j < 6; j++)
-        SET_VECTOR_ELT(parents, j, lmm_keep(allocVector(REALSXP, n), &np));
+        SET_VECTOR_ELT(parents, j, lmm_keep(allocVector(REALSXP, n), np));
     double gain = NA_REAL, parent_gain = NA_REAL, usefulness = NA_REAL,
            relatedness = NA_REAL, within = NA_REAL,
            lower_residual = NA_REAL, upper_residual = NA_REAL,
@@ -72782,129 +77571,138 @@ static SEXP lmm_cross_plan(SEXP args)
     for (int i = 0; i < n; i++)
     {
         INTEGER(VECTOR_ELT(parents, 1))[i] =
-            p.have_best ? p.degree[i] : NA_INTEGER;
-        p.scratch[i] = p.have_best ? p.degree[i] / (2.0 * p.m) : NA_REAL;
-        REAL(VECTOR_ELT(parents, 2))[i] = p.scratch[i];
-        REAL(VECTOR_ELT(parents, 3))[i] = p.requested_lower[i];
-        REAL(VECTOR_ELT(parents, 4))[i] = p.requested_upper[i];
-        REAL(VECTOR_ELT(parents, 5))[i] = p.o.original_g[i];
+            p->have_best ? p->degree[i] : NA_INTEGER;
+        p->scratch[i] = p->have_best ? p->degree[i] / (2.0 * p->m) : NA_REAL;
+        REAL(VECTOR_ELT(parents, 2))[i] = p->scratch[i];
+        REAL(VECTOR_ELT(parents, 3))[i] = p->requested_lower[i];
+        REAL(VECTOR_ELT(parents, 4))[i] = p->requested_upper[i];
+        REAL(VECTOR_ELT(parents, 5))[i] = p->o.original_g[i];
     }
-    if (p.have_best)
+    if (p->have_best)
     {
-        SET_VECTOR_ELT(result, 1, cp03_number_vector(p.scratch, n, names, &np));
-        long double gain_sum = 0;
+        SET_VECTOR_ELT(result, 1, cp03_number_vector(p->scratch, n, names, np));
+        long double gain_sum = 0, gain_correction = 0;
         for (int i = 0; i < n; i++)
-            gain_sum += (long double)p.o.original_g[i] *
-                        ((long double)p.degree[i] / (2.0L * p.m));
-        gain = (double)gain_sum;
+            ocs_accumulate((long double)p->o.original_g[i] *
+                ((long double)p->degree[i] / (2.0L * p->m)),
+                &gain_sum, &gain_correction);
+        gain = (double)(gain_sum + gain_correction);
         parent_gain = gain;
-        if (p.scored)
+        if (p->scored)
         {
             long double mean_sum = 0, usefulness_sum = 0;
-            for (int i = 0; i < p.m; i++)
+            for (int i = 0; i < p->m; i++)
             {
-                cp03_edge *edge = p.edge + p.best[i];
-                mean_sum += (long double)edge->mu / p.m;
-                usefulness_sum += (long double)edge->usefulness / p.m;
+                cp03_edge *edge = p->edge + p->best[i];
+                mean_sum += (long double)edge->mu / p->m;
+                usefulness_sum += (long double)edge->usefulness / p->m;
             }
             gain = (double)mean_sum;
             usefulness = (double)usefulness_sum;
         }
-        relatedness = p.current_q_original;
+        relatedness = p->current_q_original;
         long double sum = 0;
-        for (int i = 0; i < p.m; i++)
+        for (int i = 0; i < p->m; i++)
         {
-            cp03_edge *edge = p.edge + p.best[i];
-            sum += (long double)p.original_K[edge->a + (size_t)n * edge->b]
-                   / p.m;
+            cp03_edge *edge = p->edge + p->best[i];
+            sum += (long double)p->original_K[edge->a + (size_t)n * edge->b]
+                   / p->m;
         }
         within = (double)sum;
         lower_residual = upper_residual = degree_residual = fixed_residual = 0;
         for (int i = 0; i < n; i++)
         {
             lower_residual = fmax(lower_residual,
-                                  p.requested_lower[i] - p.scratch[i]);
+                                  p->requested_lower[i] - p->scratch[i]);
             upper_residual = fmax(upper_residual,
-                                  p.scratch[i] - p.requested_upper[i]);
+                                  p->scratch[i] - p->requested_upper[i]);
             degree_residual = fmax(degree_residual,
-                fmax(p.lower_degree[i] - p.degree[i],
-                     p.degree[i] - p.upper_degree[i]));
-            if (p.fixed) fixed_residual = fmax(fixed_residual,
-                fabs(p.scratch[i] - p.requested_contributions[i]));
+                fmax(p->lower_degree[i] - p->degree[i],
+                     p->degree[i] - p->upper_degree[i]));
+            if (p->fixed) fixed_residual = fmax(fixed_residual,
+                fabs(p->scratch[i] - p->requested_contributions[i]));
         }
         q_residual = fmax(0, relatedness - theta_original);
         primal = fmax(fmax(lower_residual, upper_residual),
                       fmax(fmax(degree_residual, fixed_residual), q_residual));
     }
     SET_VECTOR_ELT(result, 2, parents);
-    SET_VECTOR_ELT(result, 3, lmm_keep(ScalarReal(gain), &np));
-    SET_VECTOR_ELT(result, 4, lmm_keep(ScalarReal(relatedness), &np));
-    SET_VECTOR_ELT(result, 5, lmm_keep(ScalarReal(within), &np));
-    SET_VECTOR_ELT(result, 6, lmm_keep(mkString(mode), &np));
-    SET_VECTOR_ELT(result, 7, lmm_keep(mkString(status), &np));
+    SET_VECTOR_ELT(result, 3, lmm_keep(ScalarReal(gain), np));
+    SET_VECTOR_ELT(result, 4, lmm_keep(ScalarReal(relatedness), np));
+    SET_VECTOR_ELT(result, 5, lmm_keep(ScalarReal(within), np));
+    SET_VECTOR_ELT(result, 6, lmm_keep(mkString(mode), np));
+    SET_VECTOR_ELT(result, 7, lmm_keep(mkString(status), np));
     const char *objective_names[] = {"criterion", "sense", "value", "bound",
                                       "gap", "bound.type"};
-    SEXP objective = lmm_keep(mvm_list(6, objective_names), &np);
-    double objective_value = p.fixed ? within :
-                             p.useful ? usefulness : gain;
-    long double converted_bound = p.fixed
-        ? (long double)p.objective_bound * p.cost_scale
-        : (long double)p.score_offset +
-          (long double)p.score_scale * p.objective_bound;
+    SEXP objective = lmm_keep(mvm_list(6, objective_names), np);
+    double objective_value = p->fixed ? within :
+                             p->useful ? usefulness : gain;
+    long double converted_bound = p->fixed
+        ? (long double)p->objective_bound * p->cost_scale
+        : (long double)p->score_offset +
+          (long double)p->score_scale * p->objective_bound;
     double objective_bound = (double)converted_bound;
     if (R_FINITE(objective_bound))
         objective_bound = nextafter(objective_bound,
-                                    p.fixed ? -INFINITY : INFINITY);
-    double original_gap = p.have_best ?
-        (p.fixed ? objective_value - objective_bound
+                                    p->fixed ? -INFINITY : INFINITY);
+    double original_gap = p->have_best ?
+        (p->fixed ? objective_value - objective_bound
                  : objective_bound - objective_value) : NA_REAL;
     if (!strcmp(status, "optimal") &&
         (!R_FINITE(original_gap) || original_gap < 0 ||
-         original_gap / (p.fixed ? p.cost_scale : p.score_scale) >
-             p.tolerance))
+         original_gap / (p->fixed ? p->cost_scale : p->score_scale) >
+             p->tolerance))
     {
         status = "best.found";
-        p.reason = "objective.numerical.limit";
-        SET_VECTOR_ELT(result, 7, lmm_keep(mkString(status), &np));
+        p->reason = "objective.numerical.limit";
+        SET_VECTOR_ELT(result, 7, lmm_keep(mkString(status), np));
     }
-    SET_VECTOR_ELT(objective, 0, lmm_keep(mkString(p.fixed
-        ? "within.cross.relatedness" : criterion), &np));
+    SET_VECTOR_ELT(objective, 0, lmm_keep(mkString(p->fixed
+        ? "within.cross.relatedness" : criterion), np));
     SET_VECTOR_ELT(objective, 1,
-                   lmm_keep(mkString(p.fixed ? "min" : "max"), &np));
-    SET_VECTOR_ELT(objective, 2, lmm_keep(ScalarReal(objective_value), &np));
-    SET_VECTOR_ELT(objective, 3, lmm_keep(ScalarReal(objective_bound), &np));
-    SET_VECTOR_ELT(objective, 4, lmm_keep(ScalarReal(original_gap), &np));
-    SET_VECTOR_ELT(objective, 5, lmm_keep(mkString(p.bound_type), &np));
+                   lmm_keep(mkString(p->fixed ? "min" : "max"), np));
+    SET_VECTOR_ELT(objective, 2, lmm_keep(ScalarReal(objective_value), np));
+    SET_VECTOR_ELT(objective, 3, lmm_keep(ScalarReal(objective_bound), np));
+    SET_VECTOR_ELT(objective, 4, lmm_keep(ScalarReal(original_gap), np));
+    SET_VECTOR_ELT(objective, 5, lmm_keep(mkString(p->bound_type), np));
     SET_VECTOR_ELT(result, 8, objective);
     const char *constraint_names[] = {"n.crosses", "n.progeny", "total.progeny",
         "theta", "lower", "upper", "degree.lower", "degree.upper",
         "requested.contributions", "allowed.pairs", "diversity"};
-    SEXP constraints = lmm_keep(mvm_list(10 + p.diverse, constraint_names), &np);
-    SET_VECTOR_ELT(constraints, 0, lmm_keep(ScalarInteger(p.m), &np));
-    SET_VECTOR_ELT(constraints, 1, lmm_keep(ScalarInteger(p.nprogeny), &np));
-    SET_VECTOR_ELT(constraints, 2, lmm_keep(ScalarReal(m * progeny), &np));
-    SET_VECTOR_ELT(constraints, 3, lmm_keep(ScalarReal(theta_original), &np));
+    const char *practical_constraint_names[12];
+    for (int i = 0; i < 10 + p->diverse; i++)
+        practical_constraint_names[i] = constraint_names[i];
+    practical_constraint_names[10 + p->diverse] = "practical";
+    SEXP constraints = lmm_keep(mvm_list(10 + p->diverse + (p->practical != NULL),
+        p->practical ? practical_constraint_names : constraint_names), np);
+    SET_VECTOR_ELT(constraints, 0, lmm_keep(ScalarInteger(p->m), np));
+    SET_VECTOR_ELT(constraints, 1, lmm_keep(ScalarInteger(p->nprogeny), np));
+    SET_VECTOR_ELT(constraints, 2, lmm_keep(ScalarReal(m * progeny), np));
+    SET_VECTOR_ELT(constraints, 3, lmm_keep(ScalarReal(theta_original), np));
     SET_VECTOR_ELT(constraints, 4,
-                   cp03_number_vector(p.requested_lower, n, names, &np));
+                   cp03_number_vector(p->requested_lower, n, names, np));
     SET_VECTOR_ELT(constraints, 5,
-                   cp03_number_vector(p.requested_upper, n, names, &np));
+                   cp03_number_vector(p->requested_upper, n, names, np));
     for (int j = 6; j < 8; j++)
     {
-        SEXP value = lmm_keep(allocVector(INTSXP, n), &np);
-        memcpy(INTEGER(value), j == 6 ? p.lower_degree : p.upper_degree,
+        SEXP value = lmm_keep(allocVector(INTSXP, n), np);
+        memcpy(INTEGER(value), j == 6 ? p->lower_degree : p->upper_degree,
                (size_t)n * sizeof(int));
         setAttrib(value, R_NamesSymbol, names);
         SET_VECTOR_ELT(constraints, j, value);
     }
-    if (p.fixed) SET_VECTOR_ELT(constraints, 8,
-        cp03_number_vector(p.requested_contributions, n, names, &np));
-    SET_VECTOR_ELT(constraints, 9, lmm_keep(ScalarInteger(p.ne), &np));
-    if (p.diverse)
+    if (p->fixed) SET_VECTOR_ELT(constraints, 8,
+        cp03_number_vector(p->requested_contributions, n, names, np));
+    SET_VECTOR_ELT(constraints, 9,
+        lmm_keep(ScalarInteger(p->practical ? p->nfamilies : p->ne), np));
+    if (p->practical)
+        SET_VECTOR_ELT(constraints, 10 + p->diverse, practical_request);
+    if (p->diverse)
     {
         const char *labels[] = {"max", "sample"};
-        SEXP requested = lmm_keep(mvm_list(2, labels), &np);
-        SET_VECTOR_ELT(requested, 0, lmm_keep(ScalarReal(p.diversity_max), &np));
-        SET_VECTOR_ELT(requested, 1, lmm_keep(mkString("family.slots"), &np));
+        SEXP requested = lmm_keep(mvm_list(2, labels), np);
+        SET_VECTOR_ELT(requested, 0, lmm_keep(ScalarReal(p->diversity_max), np));
+        SET_VECTOR_ELT(requested, 1, lmm_keep(mkString("family.slots"), np));
         SET_VECTOR_ELT(constraints, 10, requested);
     }
     SET_VECTOR_ELT(result, 9, constraints);
@@ -72916,104 +77714,161 @@ static SEXP lmm_cross_plan(SEXP args)
         "minimum.relatedness.lower.bound", "relaxation.gain.upper.bound",
         "work.estimate", "start.used", "relatedness.roundoff",
         "zero.row.residual", "uncertain.evaluations"};
-    SEXP diagnostics = lmm_keep(mvm_list(21, diagnostic_names), &np);
-    SET_VECTOR_ELT(diagnostics, 0, lmm_keep(mkString(p.reason), &np));
-    double diagnostic_values[] = {p.have_best ? abs(p.count - p.m) : NA_REAL,
+    const char *practical_diagnostic_names[23];
+    for (int i = 0; i < 21; i++) practical_diagnostic_names[i] = diagnostic_names[i];
+    practical_diagnostic_names[21] = "practical";
+    practical_diagnostic_names[22] = "practical.search";
+    SEXP diagnostics = lmm_keep(mvm_list(p->practical ? 23 : 21,
+        p->practical ? practical_diagnostic_names : diagnostic_names), np);
+    SET_VECTOR_ELT(diagnostics, 0, lmm_keep(mkString(p->reason), np));
+    double diagnostic_values[] = {p->have_best ? abs(p->count - p->m) : NA_REAL,
         degree_residual, lower_residual, upper_residual, q_residual,
-        fixed_residual, primal, (double)p.nodes, (double)p.proposals,
-        (double)p.accepted, (double)p.completed_starts};
+        fixed_residual, primal, (double)p->nodes, (double)p->proposals,
+        (double)p->accepted, (double)p->completed_starts};
     for (int i = 0; i < 11; i++)
         SET_VECTOR_ELT(diagnostics, i + 1,
-                       lmm_keep(ScalarReal(diagnostic_values[i]), &np));
-    SET_VECTOR_ELT(diagnostics, 12, lmm_keep(ScalarLogical(p.complete), &np));
+                       lmm_keep(ScalarReal(diagnostic_values[i]), np));
+    SET_VECTOR_ELT(diagnostics, 12, lmm_keep(ScalarLogical(p->complete), np));
     SET_VECTOR_ELT(diagnostics, 13,
-        lmm_keep(mkString(p.method == 1 ? "exact" : "heuristic"), &np));
+        lmm_keep(mkString(p->method == 1 ? "exact" : "heuristic"), np));
     SET_VECTOR_ELT(diagnostics, 14,
-                   lmm_keep(ScalarReal(p.minq_lower * p.o.scale), &np));
+                   lmm_keep(ScalarReal((double)((long double)p->minq_lower * p->o.scale +
+                                        p->o.relation_offset)), np));
     double relaxed_gain = NA_REAL;
-    if (R_FINITE(p.gain_upper))
+    if (R_FINITE(p->gain_upper))
     {
-        relaxed_gain = (double)((long double)p.o.merit_offset +
-            (long double)p.o.merit_scale * p.gain_upper);
+        relaxed_gain = (double)((long double)p->o.merit_offset +
+            (long double)p->o.merit_scale * p->gain_upper);
         if (R_FINITE(relaxed_gain))
             relaxed_gain = nextafter(relaxed_gain, INFINITY);
-        if (p.have_best && relaxed_gain < gain) relaxed_gain = NA_REAL;
+        if (p->have_best && relaxed_gain < gain) relaxed_gain = NA_REAL;
     }
     SET_VECTOR_ELT(diagnostics, 15,
-                   lmm_keep(ScalarReal(relaxed_gain), &np));
+                   lmm_keep(ScalarReal(relaxed_gain), np));
     SET_VECTOR_ELT(diagnostics, 16,
-                   lmm_keep(ScalarReal(p.work_estimate), &np));
+                   lmm_keep(ScalarReal(p->work_estimate), np));
     SET_VECTOR_ELT(diagnostics, 17,
-                   lmm_keep(ScalarLogical(p.start_used), &np));
+                   lmm_keep(ScalarLogical(p->start_used), np));
     SET_VECTOR_ELT(diagnostics, 18, lmm_keep(ScalarReal(
-        p.have_best ? p.current_q_error : NA_REAL), &np));
+        p->have_best ? p->current_q_error : NA_REAL), np));
     SET_VECTOR_ELT(diagnostics, 19, lmm_keep(ScalarReal(
-        p.have_best ? p.current_row_residual : NA_REAL), &np));
+        p->have_best ? p->current_row_residual : NA_REAL), np));
     SET_VECTOR_ELT(diagnostics, 20,
-                   lmm_keep(ScalarReal((double)p.uncertain_leaves), &np));
+                   lmm_keep(ScalarReal((double)p->uncertain_leaves), np));
+    if (p->practical)
+    {
+        if (!p->have_best)
+            st_cross_practical_check(p->practical, 0,
+                p->check_seed, p->check_pollen, p->check_family,
+                p->check_produced, NULL, NULL, p->roles);
+        SET_VECTOR_ELT(diagnostics, 21,
+            lmm_keep(st_cross_practical_report(p->practical), np));
+        const char *labels[] = {"candidate.arcs", "biological.pairs", "directions.known",
+                               "incumbent.checked", "workspace.cells"};
+        SEXP practical_search = lmm_keep(mvm_list(5, labels), np);
+        SET_VECTOR_ELT(practical_search, 0, lmm_keep(ScalarInteger(p->ne), np));
+        SET_VECTOR_ELT(practical_search, 1, lmm_keep(ScalarInteger(p->nfamilies), np));
+        SET_VECTOR_ELT(practical_search, 2, lmm_keep(ScalarLogical(p->roles), np));
+        SET_VECTOR_ELT(practical_search, 3, lmm_keep(ScalarLogical(p->have_best), np));
+        SET_VECTOR_ELT(practical_search, 4, lmm_keep(ScalarReal(
+            3.0 * n * n + 8.0 * p->ne + p->nfamilies +
+                7.0 * fmin(p->m, p->ne)), np));
+        SET_VECTOR_ELT(diagnostics, 22, practical_search);
+    }
     SET_VECTOR_ELT(result, 10, diagnostics);
     const char *control_result_names[] = {"method", "max.nodes", "maxit",
         "starts", "seed", "tolerance", "start.used"};
-    SEXP used_control = lmm_keep(mvm_list(7, control_result_names), &np);
-    SET_VECTOR_ELT(used_control, 0, lmm_keep(mkString(requested_method), &np));
+    SEXP used_control = cp12_public_list(7, control_result_names, p, 4, np);
+    SET_VECTOR_ELT(used_control, 0, lmm_keep(mkString(requested_method), np));
     SET_VECTOR_ELT(used_control, 1,
-                   lmm_keep(ScalarReal((double)p.maxnodes), &np));
-    SET_VECTOR_ELT(used_control, 2, lmm_keep(ScalarInteger(p.maxit), &np));
-    SET_VECTOR_ELT(used_control, 3, lmm_keep(ScalarInteger(p.starts), &np));
+                   lmm_keep(ScalarReal((double)p->maxnodes), np));
+    SET_VECTOR_ELT(used_control, 2, lmm_keep(ScalarInteger(p->maxit), np));
+    SET_VECTOR_ELT(used_control, 3, lmm_keep(ScalarInteger(p->starts), np));
     SET_VECTOR_ELT(used_control, 4,
-                   lmm_keep(ScalarReal((double)p.seed), &np));
-    SET_VECTOR_ELT(used_control, 5, lmm_keep(ScalarReal(p.tolerance), &np));
+                   lmm_keep(ScalarReal((double)p->seed), np));
+    SET_VECTOR_ELT(used_control, 5, lmm_keep(ScalarReal(p->tolerance), np));
     SET_VECTOR_ELT(used_control, 6,
-                   lmm_keep(ScalarLogical(p.start_used), &np));
+                   lmm_keep(ScalarLogical(p->start_used), np));
     SET_VECTOR_ELT(result, 11, used_control);
     const char *search_names[] = {"seed", "state", "rng", "restart"};
-    SEXP search = lmm_keep(mvm_list(4, search_names), &np),
-         state = lmm_keep(allocVector(RAWSXP, 8), &np);
+    SEXP search = lmm_keep(mvm_list(4, search_names), np),
+         state = lmm_keep(allocVector(RAWSXP, 8), np);
     for (int i = 0; i < 8; i++)
-        RAW(state)[i] = (unsigned char)(p.rng >> (8 * (7 - i)));
-    SET_VECTOR_ELT(search, 0, lmm_keep(ScalarReal((double)p.seed), &np));
+        RAW(state)[i] = (unsigned char)(p->rng >> (8 * (7 - i)));
+    SET_VECTOR_ELT(search, 0, lmm_keep(ScalarReal((double)p->seed), np));
     SET_VECTOR_ELT(search, 1, state);
-    SET_VECTOR_ELT(search, 2, lmm_keep(mkString("xorshift64star"), &np));
-    SET_VECTOR_ELT(search, 3, lmm_keep(ScalarLogical(p.start_used), &np));
+    SET_VECTOR_ELT(search, 2, lmm_keep(mkString("xorshift64star"), np));
+    SET_VECTOR_ELT(search, 3, lmm_keep(ScalarLogical(p->start_used), np));
     SET_VECTOR_ELT(result, 12, search);
     const char *input_names[] = {"merit", "K", "pairs", "scores"};
-    const char *extended_input_names[5];
-    int input_count = p.scored ? 4 : 3;
+    const char *extended_input_names[6];
+    int input_count = p->scored ? 4 : 3;
     for (int i = 0; i < input_count; i++) extended_input_names[i] = input_names[i];
     extended_input_names[input_count] = "diversity";
-    SEXP inputs = lmm_keep(mvm_list(input_count + p.diverse, extended_input_names), &np);
+    if (p->practical) extended_input_names[input_count + p->diverse] = "practical";
+    SEXP inputs = lmm_keep(mvm_list(input_count + p->diverse + (p->practical != NULL),
+        extended_input_names), np);
     SET_VECTOR_ELT(inputs, 0, merit);
-    SET_VECTOR_ELT(inputs, 1, matrix);
+    SET_VECTOR_ELT(inputs, 1, p->practical ? original_matrix : matrix);
     SET_VECTOR_ELT(inputs, 2, pairs);
-    if (p.scored) SET_VECTOR_ELT(inputs, 3, scores);
-    if (p.diverse) SET_VECTOR_ELT(inputs, input_count, diversity);
+    if (p->scored) SET_VECTOR_ELT(inputs, 3, scores);
+    if (p->diverse) SET_VECTOR_ELT(inputs, input_count, diversity);
+    if (p->practical) SET_VECTOR_ELT(inputs, input_count + p->diverse, practical_request);
     SET_VECTOR_ELT(result, 13, inputs);
-    if (p.scored)
+    if (p->scored)
     {
-        SET_VECTOR_ELT(result, 14, lmm_keep(ScalarReal(usefulness), &np));
-        SET_VECTOR_ELT(result, 15, lmm_keep(ScalarReal(parent_gain), &np));
-        SET_VECTOR_ELT(result, 16, lmm_keep(mkString(criterion), &np));
-        SET_VECTOR_ELT(result, 17, lmm_keep(ScalarReal(p.accuracy), &np));
+        SET_VECTOR_ELT(result, 14, lmm_keep(ScalarReal(usefulness), np));
+        SET_VECTOR_ELT(result, 15, lmm_keep(ScalarReal(parent_gain), np));
+        SET_VECTOR_ELT(result, 16, lmm_keep(mkString(criterion), np));
+        SET_VECTOR_ELT(result, 17, lmm_keep(ScalarReal(p->accuracy), np));
     }
-    if (p.diverse)
+    if (p->diverse)
     {
         const char *labels[] = {"max", "sample", "loss", "feasible", "evaluation"};
-        SEXP achieved = lmm_keep(mvm_list(5, labels), &np);
-        SET_VECTOR_ELT(achieved, 0, lmm_keep(ScalarReal(p.diversity_max), &np));
-        SET_VECTOR_ELT(achieved, 1, lmm_keep(mkString("family.slots"), &np));
+        SEXP achieved = lmm_keep(mvm_list(5, labels), np);
+        SET_VECTOR_ELT(achieved, 0, lmm_keep(ScalarReal(p->diversity_max), np));
+        SET_VECTOR_ELT(achieved, 1, lmm_keep(mkString("family.slots"), np));
         SET_VECTOR_ELT(achieved, 2, lmm_keep(ScalarReal(
-            p.have_best ? p.diversity_loss : NA_REAL), &np));
-        SET_VECTOR_ELT(achieved, 3, lmm_keep(ScalarLogical(p.have_best), &np));
-        if (p.have_best)
+            p->have_best ? p->diversity_loss : NA_REAL), np));
+        SET_VECTOR_ELT(achieved, 3, lmm_keep(ScalarLogical(p->have_best), np));
+        if (p->have_best)
         {
-            cp05_plan_loss(&p);
-            SET_VECTOR_ELT(achieved, 4, cp05_result(&p.diversity, &np));
+            cp05_plan_loss(p);
+            SET_VECTOR_ELT(achieved, 4, cp05_result(&p->diversity, np));
         }
         SET_VECTOR_ELT(result, base_result_count, achieved);
     }
     setAttrib(result, R_ClassSymbol,
-               lmm_keep(mkString("st.cross.plan"), &np));
+               lmm_keep(mkString("st.cross.plan"), np));
+    return result;
+}
+
+SEXP st_cross_plan_point(void *context, const st_cross_plan_override *override)
+{
+    cp13_prepared *prepared = context;
+    int np = 0;
+    SEXP result = cp13_plan_point_internal(prepared, override, &np);
+    cp03_problem *p = &prepared->active;
+    uint64_t nodes = p->future && p->future->objective
+        ? p->future->count_nodes + p->future->seed_nodes : p->nodes;
+    prepared->nodes += nodes;
+    if (prepared->frontier && p->variable && p->count_workspace)
+    {
+        double used = p->variable == 2 ? st_cross_variable_work_used(p->count_workspace)
+                                      : st_cross_joint_work_used(p->count_workspace);
+        if (prepared->count_remaining < 0) prepared->count_ceiling = p->count_ceiling;
+        prepared->count_used += used;
+        prepared->count_remaining = fmax(0, prepared->count_ceiling - prepared->count_used);
+    }
     UNPROTECT(np);
+    return result;
+}
+
+static SEXP lmm_cross_plan(SEXP args)
+{
+    cp13_prepared *prepared = st_cross_plan_prepare(args);
+    SEXP result = st_cross_plan_point(prepared, NULL);
+    UNPROTECT(prepared->np);
     return result;
 }
 
@@ -73024,6 +77879,604 @@ static double cp03_print_scalar(SEXP object, const char *name)
     if (!mvm_numeric(value) || LENGTH(value) != 1)
         error("print.st.cross.plan: incomplete component '%s'", name);
     return mvm_num(value, 0);
+}
+
+static void cp12_print_summary(const lmm_print_options *options, SEXP object)
+{
+    if (isNull(mvm_get(object, "genetic.model"))) return;
+    SEXP selected = mvm_get(object, "selected.contributions"),
+        proxy = mvm_get(selected, "proxy"),
+        point = mvm_get(proxy, "value"), cap = mvm_get(proxy, "cap"),
+        state = mvm_get(proxy, "state"),
+        scenarios = mvm_get(object, "scenarios");
+    int checked = mvm_numeric(state) && LENGTH(state) == 1 ? asInteger(state) : -2;
+    const char *qualification = checked == 1 ? "qualified" : checked == -1
+        ? "cap violated" : checked == 0 ? "unresolved" : "unavailable";
+    char first[LMM_PRINT_BUFFER], second[LMM_PRINT_BUFFER];
+    lmm_print_text(options, "Selected-founder proxy (UCPC): %s; cap: %s; %s\n",
+        lmm_print_number(mvm_numeric(point) && LENGTH(point) == 1
+            ? mvm_num(point, 0) : NA_REAL, options->digits, first),
+        lmm_print_number(mvm_numeric(cap) && LENGTH(cap) == 1
+            ? mvm_num(cap, 0) : NA_REAL, options->digits, second), qualification);
+    if (!isNull(scenarios))
+    {
+        SEXP reason = mvm_get(scenarios, "reason");
+        const char *text = TYPEOF(reason) == STRSXP && LENGTH(reason) == 1 &&
+            STRING_ELT(reason, 0) != NA_STRING ? CHAR(STRING_ELT(reason, 0)) : "assessment";
+        lmm_print_text(options, "Actual-genotype scenarios: %s of %s completed; %s\n",
+            lmm_print_number(cp03_print_scalar(scenarios, "completed"), options->digits, first),
+            lmm_print_number(cp03_print_scalar(scenarios, "requested"), options->digits, second), text);
+    }
+}
+
+static double cp13_output_number(SEXP object, const char *name)
+{
+    SEXP value = mvm_get(object, name);
+    return mvm_numeric(value) && XLENGTH(value) == 1 ? mvm_num(value, 0) : NA_REAL;
+}
+
+static const char *cp13_output_text(SEXP object, const char *name,
+                                   const char *fallback)
+{
+    SEXP value = mvm_get(object, name);
+    return TYPEOF(value) == STRSXP && XLENGTH(value) == 1 &&
+        STRING_ELT(value, 0) != NA_STRING
+        ? translateCharUTF8(STRING_ELT(value, 0)) : fallback;
+}
+
+static int cp13_output_logical(SEXP object, const char *name)
+{
+    SEXP value = mvm_get(object, name);
+    return TYPEOF(value) == LGLSXP && XLENGTH(value) == 1
+        ? LOGICAL(value)[0] : NA_LOGICAL;
+}
+
+static double cp13_output_metric(SEXP future, const char *generation,
+                                   const char *metric, int se)
+{
+    SEXP table = mvm_get(future, "population"),
+        design = mvm_get(table, "design"),
+        stage = mvm_get(table, "generation"),
+        name = mvm_get(table, "metric"),
+        value = mvm_get(table, se ? "SE" : "estimate"),
+        state = mvm_get(table, se ? "SE.state" : "state");
+    if (TYPEOF(design) != STRSXP || TYPEOF(stage) != STRSXP ||
+        TYPEOF(name) != STRSXP || !mvm_numeric(value) || !mvm_numeric(state))
+        return NA_REAL;
+    R_xlen_t n = XLENGTH(design);
+    if (XLENGTH(stage) != n || XLENGTH(name) != n ||
+        XLENGTH(value) != n || XLENGTH(state) != n)
+        return NA_REAL;
+    for (R_xlen_t i = 0; i < n; i++)
+        if (STRING_ELT(design, i) != NA_STRING &&
+            STRING_ELT(stage, i) != NA_STRING && STRING_ELT(name, i) != NA_STRING &&
+            !strcmp(CHAR(STRING_ELT(design, i)), "selected") &&
+            !strcmp(CHAR(STRING_ELT(stage, i)), generation) &&
+            !strcmp(CHAR(STRING_ELT(name, i)), metric))
+            return mvm_num(state, i) == 1 ? mvm_num(value, i) : NA_REAL;
+    return NA_REAL;
+}
+
+static int cp13_output_feasible(SEXP plan)
+{
+    int feasible = cp13_output_logical(mvm_get(plan, "feasibility"), "feasible");
+    if (feasible != NA_LOGICAL) return feasible;
+    const char *status = cp13_output_text(plan, "status", "not.evaluated");
+    if (!strcmp(status, "infeasible")) return FALSE;
+    double residual = cp13_output_number(mvm_get(plan, "diagnostics"), "primal.residual"),
+        tolerance = cp13_output_number(mvm_get(plan, "control"), "tolerance");
+    return R_FINITE(residual) && R_FINITE(tolerance) && tolerance >= 0
+        ? residual <= tolerance : NA_LOGICAL;
+}
+
+static SEXP cp13_frontier_points(SEXP plans, SEXP limits, int *np)
+{
+    if (TYPEOF(plans) != VECSXP || !mvm_numeric(limits) ||
+        XLENGTH(plans) != XLENGTH(limits) || XLENGTH(plans) > INT_MAX)
+        error("st.cross.frontier: invalid final point inputs");
+    int n = LENGTH(plans);
+    const char *names[] = {"point", "limit", "status", "feasible", "gain",
+        "usefulness", "training", "evaluation", "SE", "genomic.q",
+        "gene.diversity", "completed", "requested", "reason", "seed", "start.used"};
+    SEXP table = lmm_keep(lmm_dataframe(n, 16, names, np), np);
+    for (int j = 0; j < 16; j++)
+        SET_VECTOR_ELT(table, j, lmm_keep(allocVector(j == 0 ? INTSXP
+            : j == 2 || j == 13 ? STRSXP : j == 3 || j == 15 ? LGLSXP : REALSXP, n), np));
+    for (int i = 0; i < n; i++)
+    {
+        SEXP plan = VECTOR_ELT(plans, i), future = mvm_get(plan, "future"),
+            training = mvm_get(future, "training"), evaluation = mvm_get(future, "evaluation"),
+            diagnostic = mvm_get(plan, "diagnostics"), control = mvm_get(plan, "control");
+        INTEGER(VECTOR_ELT(table, 0))[i] = i + 1;
+        REAL(VECTOR_ELT(table, 1))[i] = mvm_num(limits, i);
+        SET_STRING_ELT(VECTOR_ELT(table, 2), i,
+            mkCharCE(cp13_output_text(plan, "status", "not.evaluated"), CE_UTF8));
+        LOGICAL(VECTOR_ELT(table, 3))[i] = cp13_output_feasible(plan);
+        REAL(VECTOR_ELT(table, 4))[i] = cp13_output_number(plan, "gain");
+        REAL(VECTOR_ELT(table, 5))[i] = cp13_output_number(plan, "usefulness");
+        REAL(VECTOR_ELT(table, 6))[i] = cp13_output_number(training, "value");
+        REAL(VECTOR_ELT(table, 7))[i] = cp13_output_number(evaluation, "value");
+        REAL(VECTOR_ELT(table, 8))[i] = cp13_output_metric(future, "G2", "selected.mean", 1);
+        REAL(VECTOR_ELT(table, 9))[i] = cp13_output_metric(future, "G2", "genomic.q", 0);
+        REAL(VECTOR_ELT(table, 10))[i] = cp13_output_metric(future, "G2", "gene.diversity", 0);
+        REAL(VECTOR_ELT(table, 11))[i] = cp13_output_number(evaluation, "completed");
+        REAL(VECTOR_ELT(table, 12))[i] = cp13_output_number(evaluation, "requested");
+        SET_STRING_ELT(VECTOR_ELT(table, 13), i,
+            mkCharCE(cp13_output_text(diagnostic, "reason", "point.not.evaluated"), CE_UTF8));
+        REAL(VECTOR_ELT(table, 14))[i] = cp13_output_number(control, "seed");
+        LOGICAL(VECTOR_ELT(table, 15))[i] = cp13_output_logical(control, "start.used");
+    }
+    return table;
+}
+
+static void cp13_print_bank(const lmm_print_options *options,
+                              const char *label, SEXP bank)
+{
+    char first[LMM_PRINT_BUFFER], second[LMM_PRINT_BUFFER];
+    lmm_print_text(options, "%s bank: %s; %s of %s complete\n", label,
+        cp13_output_text(bank, "status", "not.requested"),
+        lmm_print_number(cp13_output_number(bank, "completed"), options->digits, first),
+        lmm_print_number(cp13_output_number(bank, "requested"), options->digits, second));
+}
+
+static SEXP cp13_future_print(SEXP args, SEXP object)
+{
+    lmm_print_options options = lmm_print_settings(args);
+    SEXP objective = mvm_get(object, "objective"), constraints = mvm_get(object, "constraints"),
+        future = mvm_get(object, "future"), resources = mvm_get(future, "resources"),
+        crosses = mvm_get(object, "crosses"), diagnostic = mvm_get(object, "diagnostics");
+    if (TYPEOF(object) != VECSXP || !inherits(object, "st.cross.plan") ||
+        !inherits(crosses, "data.frame"))
+        error("print.st.cross.plan: invalid future plan");
+    char first[LMM_PRINT_BUFFER], second[LMM_PRINT_BUFFER], third[LMM_PRINT_BUFFER];
+    lmm_print_text(&options, "Joint planning for selected G2 descendants\n");
+    lmm_print_text(&options, "Criterion: future; horizon: 2; status: %s\n",
+        cp13_output_text(object, "status", "unavailable"));
+    lmm_print_text(&options, "G1 families / produced / retained: %s / %s / %s\n",
+        lmm_print_number(cp13_output_number(resources, "G1.families"), options.digits, first),
+        lmm_print_number(cp13_output_number(resources, "G1.produced"), options.digits, second),
+        lmm_print_number(cp13_output_number(resources, "G1.retained"), options.digits, third));
+    lmm_print_text(&options, "G2 families / produced / retained: %s / %s / %s\n",
+        lmm_print_number(cp13_output_number(resources, "G2.families"), options.digits, first),
+        lmm_print_number(cp13_output_number(resources, "G2.produced"), options.digits, second),
+        lmm_print_number(cp13_output_number(resources, "G2.retained"), options.digits, third));
+    lmm_print_text(&options, "Analytic G1 baseline / selected mean: %s / %s\n",
+        lmm_print_number(cp13_output_number(object, "gain"), options.digits, first),
+        lmm_print_number(cp13_output_number(object, "usefulness"), options.digits, second));
+    lmm_print_text(&options, "Training G1 selected mean / additional G2 response / G2 mean: %s / %s / %s\n",
+        lmm_print_number(cp13_output_number(objective, "g1.selected.mean"), options.digits, first),
+        lmm_print_number(cp13_output_number(objective, "g2.response"), options.digits, second),
+        lmm_print_number(cp13_output_number(objective, "value"), options.digits, third));
+    cp13_print_bank(&options, "Training", mvm_get(future, "training"));
+    cp13_print_bank(&options, "Held-out", mvm_get(future, "evaluation"));
+    lmm_print_text(&options, "Held-out G2 selected mean / SE: %s / %s\n",
+        lmm_print_number(cp13_output_number(mvm_get(future, "evaluation"), "value"), options.digits, first),
+        lmm_print_number(cp13_output_metric(future, "G2", "selected.mean", 1), options.digits, second));
+    lmm_print_text(&options, "Actual held-out G2 genomic q / gene diversity: %s / %s\n",
+        lmm_print_number(cp13_output_metric(future, "G2", "genomic.q", 0), options.digits, first),
+        lmm_print_number(cp13_output_metric(future, "G2", "gene.diversity", 0), options.digits, second));
+    lmm_print_text(&options, "Family-slot relatedness / limit: %s / %s\n",
+        lmm_print_number(cp13_output_number(object, "relatedness"), options.digits, first),
+        lmm_print_number(cp13_output_number(constraints, "theta"), options.digits, second));
+    int feasible = cp13_output_feasible(object);
+    lmm_print_text(&options, "Original-input G1 feasibility: %s\n",
+        feasible == TRUE ? "passed" : feasible == FALSE ? "failed or no incumbent" : "unresolved");
+    cp12_print_summary(&options, object);
+    lmm_print_text(&options, "Training-bank bound / gap: %s / %s\n",
+        lmm_print_number(cp13_output_number(objective, "bound"), options.digits, first),
+        lmm_print_number(cp13_output_number(objective, "gap"), options.digits, second));
+    SEXP family = mvm_get(crosses, "family");
+    if (TYPEOF(family) != INTSXP)
+        error("print.st.cross.plan: invalid future family table");
+    if (!LENGTH(family))
+    {
+        lmm_print_text(&options, "\nNo checked full-bank future plan returned.\nReason: %s\n",
+            cp13_output_text(diagnostic, "reason", "not.evaluated"));
+        return object;
+    }
+    const char *columns[] = {"family", "P1Name", "P2Name", "n.progeny", "n.selected"},
+        *labels[] = {"Family", "Parent 1", "Parent 2", "Produced", "Retained"};
+    lmm_print_text(&options, "\nChosen G1 crosses and actual counts\n");
+    lmm_print_table(crosses, columns, labels, 5, &options);
+    SEXP directions = mvm_get(object, "directions");
+    if (!isNull(directions))
+    {
+        const char *dc[] = {"family", "seed", "pollen"},
+            *dl[] = {"Family", "Seed", "Pollen"};
+        lmm_print_text(&options, "\nDeclared G1 seed/pollen directions\n");
+        lmm_print_table(directions, dc, dl, 3, &options);
+    }
+    SEXP contrasts = mvm_get(future, "contrasts");
+    if (inherits(contrasts, "data.frame") && LENGTH(mvm_get(contrasts, "comparator")))
+    {
+        const char *cc[] = {"comparator", "metric", "estimate", "SE", "reason"},
+            *cl[] = {"Comparator", "Metric", "Difference", "SE", "Reason"};
+        lmm_print_text(&options, "\nPaired held-out contrasts (selected minus comparator)\n");
+        lmm_print_table(contrasts, cc, cl, 5, &options);
+    }
+    return object;
+}
+
+static const char *cp13_print_cell(SEXP column, int row, const char *name,
+    int digits, char *buffer)
+{
+    if (TYPEOF(column) == LGLSXP)
+        return LOGICAL(column)[row] == NA_LOGICAL ? "NA" : LOGICAL(column)[row] ? "TRUE" : "FALSE";
+    return lmm_print_cell(column, row, name, digits, buffer);
+}
+
+SEXP st_cross_frontier_print(SEXP args)
+{
+    lmm_print_options options = lmm_print_settings(args);
+    SEXP object = mvm_get(args, "object"), points = mvm_get(object, "points");
+    if (TYPEOF(object) != VECSXP || !inherits(object, "st.cross.frontier") ||
+        !inherits(points, "data.frame"))
+        error("print.st.cross.frontier: invalid result object");
+    SEXP number = mvm_get(points, "point");
+    if (TYPEOF(number) != INTSXP)
+        error("print.st.cross.frontier: invalid point table");
+    double horizon = cp13_output_number(object, "horizon");
+    char first[LMM_PRINT_BUFFER], second[LMM_PRINT_BUFFER];
+    lmm_print_text(&options, "Gain-diversity frontier\n");
+    lmm_print_text(&options, "Criterion: %s; horizon: %s; limit metric: %s\n",
+        cp13_output_text(object, "criterion", "mean"),
+        lmm_print_number(horizon, options.digits, first),
+        cp13_output_text(object, "metric", "theta"));
+    lmm_print_text(&options, "Points: %s; recorded search status applies to each point\n",
+        lmm_print_number(LENGTH(number), 0, first));
+    if (horizon == 2)
+    {
+        const char *columns[] = {"point", "limit", "status", "feasible", "training", "evaluation", "SE"},
+            *labels[] = {"Point", "Limit", "Status", "Feasible", "Training G2", "Held-out G2", "SE"};
+        lmm_print_grid(points, columns, labels, 7, cp13_print_cell, &options);
+    }
+    else
+    {
+        const char *columns[] = {"point", "limit", "status", "feasible", "gain", "usefulness"},
+            *labels[] = {"Point", "Limit", "Status", "Feasible", "G1 baseline", "G1 selected"};
+        lmm_print_grid(points, columns, labels, 6, cp13_print_cell, &options);
+    }
+    SEXP requested = mvm_get(points, "requested");
+    int assessed = 0;
+    if (mvm_numeric(requested))
+        for (R_xlen_t i = 0; i < XLENGTH(requested); i++)
+            if (R_FINITE(mvm_num(requested, i)) && mvm_num(requested, i) > 0) assessed = 1;
+    if (assessed)
+    {
+        lmm_print_text(&options, "\nActual held-out G2 metrics and bank completion\n");
+        if (horizon == 2)
+        {
+            const char *columns[] = {"point", "genomic.q", "gene.diversity", "completed", "requested"},
+                *labels[] = {"Point", "G2 genomic q", "G2 gene diversity", "Completed", "Requested"};
+            lmm_print_grid(points, columns, labels, 5, cp13_print_cell, &options);
+        }
+        else
+        {
+            const char *columns[] = {"point", "evaluation", "SE", "genomic.q", "gene.diversity", "completed", "requested"},
+                *labels[] = {"Point", "Held-out G2", "SE", "G2 genomic q", "G2 gene diversity", "Completed", "Requested"};
+            lmm_print_grid(points, columns, labels, 7, cp13_print_cell, &options);
+        }
+    }
+    SEXP diagnostics = mvm_get(object, "diagnostics");
+    double work = cp13_output_number(diagnostics, "work"),
+        maximum = cp13_output_number(diagnostics, "max.work");
+    if (R_FINITE(work) || R_FINITE(maximum))
+        lmm_print_text(&options, "Cumulative work / ceiling: %s / %s\n",
+            lmm_print_number(work, options.digits, first),
+            lmm_print_number(maximum, options.digits, second));
+    return object;
+}
+
+static void cp13_frontier_start(cp13_prepared *prepared, SEXP plan,
+    st_cross_plan_override *override, int *first, int *second,
+    int64_t *produced, int64_t *retained, double *accuracy,
+    st_cross_future_operations *operations)
+{
+    cp03_problem *p = &prepared->base;
+    override->has_start = 0;
+    SEXP crosses = mvm_get(plan, "crosses"), a = mvm_get(crosses, "P1Name"),
+        b = mvm_get(crosses, "P2Name"), n = mvm_get(crosses, "n.progeny"),
+        r = mvm_get(crosses, "n.selected"), directions = mvm_get(plan, "directions"),
+        seed = mvm_get(directions, "seed"), pollen = mvm_get(directions, "pollen");
+    if (TYPEOF(a) != STRSXP || TYPEOF(b) != STRSXP || LENGTH(a) != p->m ||
+        LENGTH(b) != p->m || !mvm_numeric(n) || LENGTH(n) != p->m ||
+        (p->variable && (!mvm_numeric(r) || LENGTH(r) != p->m))) return;
+    if (p->roles && (TYPEOF(seed) != STRSXP || TYPEOF(pollen) != STRSXP ||
+        LENGTH(seed) != p->m || LENGTH(pollen) != p->m)) return;
+    for (int i = 0; i < p->m; i++)
+    {
+        int x = cp03_parent(prepared->names, STRING_ELT(a, i)),
+            y = cp03_parent(prepared->names, STRING_ELT(b, i));
+        if (p->roles)
+        {
+            int found = -1;
+            for (int j = 0; j < p->m; j++)
+            {
+                int sx = cp03_parent(prepared->names, STRING_ELT(seed, j)),
+                    sy = cp03_parent(prepared->names, STRING_ELT(pollen, j));
+                if ((sx == x && sy == y) || (sx == y && sy == x))
+                {
+                    if (found >= 0) return;
+                    found = j; first[i] = sx; second[i] = sy;
+                }
+            }
+            if (found < 0) return;
+        }
+        else { first[i] = x; second[i] = y; }
+        double nv = mvm_num(n, i), rv = p->variable ? mvm_num(r, i) : 0;
+        if (!R_FINITE(nv) || nv < 1 || nv > INT_MAX || nv != floor(nv) ||
+            !R_FINITE(rv) || rv < 0 || rv > nv || rv != floor(rv)) return;
+        produced[i] = (int64_t)nv; retained[i] = (int64_t)rv; accuracy[i] = p->accuracy;
+    }
+    operations->rows = p->m;
+    operations->direction_known = p->roles;
+    operations->operations_known = 0;
+    operations->seed = first; operations->pollen = second; operations->family_hint = NULL;
+    operations->produced = produced; operations->retained = p->variable ? retained : NULL;
+    operations->operations = NULL;
+    override->start.families = p->m;
+    override->start.first = first; override->start.second = second;
+    override->start.produced = produced; override->start.retained = p->variable ? retained : NULL;
+    override->start.accuracy = accuracy; override->start.operation_view = operations;
+    override->has_start = 1;
+}
+
+static SEXP cp13_start_output(cp13_prepared *prepared,
+    const st_cross_plan_override *override, int *np)
+{
+    if (!override->has_start) return R_NilValue;
+    int m = override->start.families;
+    const char *labels[] = {"P1Name", "P2Name", "n.progeny", "n.selected"};
+    SEXP table = lmm_keep(mvm_list(prepared->base.variable ? 4 : 3, labels), np),
+        first = lmm_keep(allocVector(STRSXP, m), np), second = lmm_keep(allocVector(STRSXP, m), np),
+        produced = lmm_keep(allocVector(REALSXP, m), np), retained = R_NilValue;
+    if (prepared->base.variable) retained = lmm_keep(allocVector(REALSXP, m), np);
+    for (int i = 0; i < m; i++)
+    {
+        SET_STRING_ELT(first, i, STRING_ELT(prepared->names, override->start.first[i]));
+        SET_STRING_ELT(second, i, STRING_ELT(prepared->names, override->start.second[i]));
+        REAL(produced)[i] = (double)override->start.produced[i];
+        if (prepared->base.variable) REAL(retained)[i] = (double)override->start.retained[i];
+    }
+    SET_VECTOR_ELT(table, 0, first); SET_VECTOR_ELT(table, 1, second); SET_VECTOR_ELT(table, 2, produced);
+    if (prepared->base.variable) SET_VECTOR_ELT(table, 3, retained);
+    SEXP rows = lmm_keep(allocVector(INTSXP, 2), np);
+    INTEGER(rows)[0] = NA_INTEGER; INTEGER(rows)[1] = -m;
+    setAttrib(table, R_RowNamesSymbol, rows);
+    setAttrib(table, R_ClassSymbol, lmm_keep(mkString("data.frame"), np));
+    return table;
+}
+
+static SEXP st_cross_frontier(SEXP args)
+{
+    SEXP limits = mvm_get(args, "limits"), metric = mvm_get(args, "metric"),
+        warmstart = mvm_get(args, "warmstart");
+    if (!mvm_numeric(limits) || inherits(limits, "factor") ||
+        !isNull(getAttrib(limits, R_DimSymbol)) ||
+        XLENGTH(limits) < 1 || XLENGTH(limits) > INT_MAX)
+        error("st.cross.frontier: limits must be a nonempty finite numeric vector");
+    const char *axis = cp03_text(metric, "metric");
+    int kind = !strcmp(axis, "theta") ? 1 : !strcmp(axis, "selected.founder.theta") ? 2 : 0;
+    if (!kind) error("st.cross.frontier: metric must be theta or selected.founder.theta");
+    if (TYPEOF(warmstart) != LGLSXP || LENGTH(warmstart) != 1 || LOGICAL(warmstart)[0] == NA_LOGICAL)
+        error("st.cross.frontier: warmstart must be one nonmissing logical value");
+    for (int i = 0; i < LENGTH(limits); i++)
+        if (!R_FINITE(mvm_num(limits, i)) || (kind == 2 && mvm_num(limits, i) < 0))
+            error("st.cross.frontier: invalid finite limit");
+    if (kind == 2 && isNull(mvm_get(args, "genetic.model")))
+        error("st.cross.frontier: selected.founder.theta requires genetic.model");
+    cp13_prepared *prepared = st_cross_plan_prepare(args);
+    int np = 0, count = LENGTH(limits), m = prepared->base.m;
+    const char *labels[] = {"plans", "points", "metric", "limits", "criterion", "horizon", "diagnostics", "control"};
+    SEXP out = lmm_keep(mvm_list(8, labels), &np), plans = lmm_keep(allocVector(VECSXP, count), &np);
+    int capacity = m <= prepared->base.ne ? m : 1;
+    int *first = mvm_alloc(capacity, sizeof(int)), *second = mvm_alloc(capacity, sizeof(int));
+    int64_t *produced = mvm_alloc(capacity, sizeof(int64_t)), *retained = mvm_alloc(capacity, sizeof(int64_t));
+    double *accuracy = mvm_alloc(capacity, sizeof(double));
+    st_cross_future_operations operations = {0};
+    st_cross_plan_override override = {0};
+    override.limit_kind = kind; override.has_limit = 1; override.seed = prepared->base.seed;
+    for (int i = 0; i < count; i++)
+    {
+        R_CheckUserInterrupt();
+        override.limit = mvm_num(limits, i);
+        override.followup = LOGICAL(warmstart)[0] && i > 0;
+        override.has_start = 0;
+        if (LOGICAL(warmstart)[0] && i)
+            cp13_frontier_start(prepared, VECTOR_ELT(plans, i - 1), &override,
+                first, second, produced, retained, accuracy, &operations);
+        void *mark = st_work_mark();
+        int point_np = 0;
+        SEXP actual_start = lmm_keep(cp13_start_output(prepared, &override, &point_np), &point_np);
+        SEXP plan = lmm_keep(st_cross_plan_point(prepared, &override), &point_np);
+        SEXP point_control = mvm_get(plan, "control");
+        int used = cp13_output_logical(point_control, "start.used") == TRUE,
+            typed_used = prepared->active.typed_start_used;
+        if (override.has_start)
+            point_control = cp12_put(point_control, typed_used ? "start" : "start.requested", actual_start, &point_np);
+        if (used && !typed_used && !isNull(mvm_get(mvm_get(args, "control"), "start")))
+            point_control = cp12_put(point_control, "start", mvm_get(mvm_get(args, "control"), "start"), &point_np);
+        if (LOGICAL(warmstart)[0] && i)
+            point_control = cp12_put(point_control, "start.reason", lmm_keep(mkString(typed_used
+                ? "previous.point.actual.counts.accepted" : used ? "previous.point.rejected.original.start.used"
+                : override.has_start ? "previous.point.unavailable.under.current.constraints"
+                : "previous.point.no.usable.incumbent"), &point_np), &point_np);
+        point_control = cp12_put(point_control, "frontier.metric", metric, &point_np);
+        point_control = cp12_put(point_control, "frontier.limit", lmm_keep(ScalarReal(override.limit), &point_np), &point_np);
+        plan = cp12_put(plan, "control", point_control, &point_np);
+        SET_VECTOR_ELT(plans, i, plan);
+        UNPROTECT(point_np);
+        st_work_reset(mark);
+    }
+    SET_VECTOR_ELT(out, 0, plans);
+    SET_VECTOR_ELT(out, 1, cp13_frontier_points(plans, limits, &np));
+    SET_VECTOR_ELT(out, 2, metric); SET_VECTOR_ELT(out, 3, limits);
+    SEXP criterion = mvm_get(args, "criterion");
+    SET_VECTOR_ELT(out, 4, criterion);
+    int future = !strcmp(cp03_text(criterion, "criterion"), "future");
+    SET_VECTOR_ELT(out, 5, lmm_keep(ScalarInteger(future ? 2 : 1), &np));
+    const char *diagnostic_names[] = {"points", "completed.points", "outer.nodes", "shared.owner", "reason", "genetic",
+        "allocation.work", "max.transitions", "remaining.transitions", "max.nodes"};
+    SEXP diagnostics = lmm_keep(mvm_list(10, diagnostic_names), &np);
+    SET_VECTOR_ELT(diagnostics, 0, lmm_keep(ScalarInteger(count), &np));
+    int completed = 0;
+    for (int i = 0; i < count; i++)
+        if (cp13_output_feasible(VECTOR_ELT(plans, i)) == TRUE) completed++;
+    SET_VECTOR_ELT(diagnostics, 1, lmm_keep(ScalarInteger(completed), &np));
+    SET_VECTOR_ELT(diagnostics, 2, lmm_keep(ScalarReal((double)prepared->nodes), &np));
+    SET_VECTOR_ELT(diagnostics, 3, lmm_keep(mkString("one.call.model.bank.and.resource.owner"), &np));
+    SET_VECTOR_ELT(diagnostics, 4, lmm_keep(mkString(completed == count ? "completed" : "some.points.unavailable.or.infeasible"), &np));
+    SET_VECTOR_ELT(diagnostics, 5, mvm_get(mvm_get(VECTOR_ELT(plans, count - 1), "diagnostics"), "genetic"));
+    SET_VECTOR_ELT(diagnostics, 6, lmm_keep(ScalarReal(prepared->count_used), &np));
+    SET_VECTOR_ELT(diagnostics, 7, lmm_keep(ScalarReal(prepared->base.variable ? prepared->count_ceiling : NA_REAL), &np));
+    SET_VECTOR_ELT(diagnostics, 8, lmm_keep(ScalarReal(prepared->base.variable ? prepared->count_remaining : NA_REAL), &np));
+    SET_VECTOR_ELT(diagnostics, 9, lmm_keep(ScalarReal((double)prepared->base.maxnodes), &np));
+    SET_VECTOR_ELT(out, 6, diagnostics);
+    const char *control_names[] = {"warmstart", "seed", "point.control", "reproducibility"};
+    SEXP control = lmm_keep(mvm_list(4, control_names), &np);
+    SET_VECTOR_ELT(control, 0, warmstart);
+    SET_VECTOR_ELT(control, 1, lmm_keep(ScalarReal((double)prepared->base.seed), &np));
+    SET_VECTOR_ELT(control, 2, mvm_get(args, "control"));
+    SET_VECTOR_ELT(control, 3, lmm_keep(mkString("Completed points retain their actual start and seed; resources are cumulative across this call."), &np));
+    SET_VECTOR_ELT(out, 7, control);
+    setAttrib(out, R_ClassSymbol, lmm_keep(mkString("st.cross.frontier"), &np));
+    UNPROTECT(np + prepared->np);
+    return out;
+}
+
+static SEXP cp10_print(SEXP args, SEXP object)
+{
+    lmm_print_options options = lmm_print_settings(args);
+    SEXP constraints = mvm_get(object, "constraints"), group = mvm_get(constraints, "progeny"),
+        objective = mvm_get(object, "objective"), diagnostics = mvm_get(object, "diagnostics"),
+        joint = mvm_get(diagnostics, "joint"), allocation = mvm_get(diagnostics, "allocation"),
+        crosses = mvm_get(object, "crosses"), feasibility = mvm_get(object, "feasibility");
+    char first[LMM_PRINT_BUFFER], second[LMM_PRINT_BUFFER], third[LMM_PRINT_BUFFER];
+    lmm_print_text(&options, "Joint cross and progeny allocation\n");
+    lmm_print_text(&options, "Criterion: %s; status: %s\n",
+        cp03_text(mvm_get(object, "criterion"), "criterion"),
+        cp03_text(mvm_get(object, "status"), "status"));
+    lmm_print_text(&options, "Families: %s; produced: %s; retained per family: %s\n",
+        lmm_print_number(cp03_print_scalar(constraints, "n.crosses"), options.digits, first),
+        lmm_print_number(cp03_print_scalar(group, "total.progeny"), options.digits, second),
+        lmm_print_number(cp03_print_scalar(group, "n.selected"), options.digits, third));
+    lmm_print_text(&options, "Selection: %s; produced bounds per active family: %s to %s\n",
+        cp03_text(mvm_get(group, "selection.method"), "selection.method"),
+        lmm_print_number(cp03_print_scalar(group, "min.progeny"), options.digits, first),
+        lmm_print_number(cp03_print_scalar(group, "max.progeny"), options.digits, second));
+    lmm_print_text(&options, "Baseline mean: %s; selected response: %s; selected mean: %s\n",
+        lmm_print_number(cp03_print_scalar(object, "gain"), options.digits, first),
+        lmm_print_number(cp03_print_scalar(objective, "response"), options.digits, second),
+        lmm_print_number(cp03_print_scalar(object, "usefulness"), options.digits, third));
+    lmm_print_text(&options, "Group relatedness (family slots): %s; limit: %s\n",
+        lmm_print_number(cp03_print_scalar(object, "relatedness"), options.digits, first),
+        lmm_print_number(cp03_print_scalar(constraints, "theta"), options.digits, second));
+    lmm_print_text(&options, "Objective upper bound: %s; centered criterion gap: %s\n",
+        lmm_print_number(cp03_print_scalar(objective, "bound"), options.digits, first),
+        lmm_print_number(cp03_print_scalar(objective, "gap"), options.digits, second));
+    lmm_print_text(&options, "Solver: %s; evaluated family/direction sets: %s\n",
+        cp03_text(mvm_get(diagnostics, "method"), "method"),
+        lmm_print_number(cp03_print_scalar(joint, "evaluated.sets"), options.digits, first));
+    lmm_print_text(&options, "Cumulative allocation work: %s; ceiling: %s\n",
+        lmm_print_number(cp03_print_scalar(allocation, "allocation.work"), options.digits, first),
+        lmm_print_number(cp03_print_scalar(allocation, "max.transitions"), options.digits, second));
+    int feasible = asLogical(mvm_get(feasibility, "feasible"));
+    lmm_print_text(&options, "Original-input feasibility: %s\n",
+        feasible == TRUE ? "passed" : feasible == FALSE ? "failed or no incumbent" : "unresolved");
+    cp12_print_summary(&options, object);
+    lmm_print_text(&options, "%s\n", cp03_text(mvm_get(objective, "numerical.qualification"),
+                                               "numerical qualification"));
+    SEXP family = mvm_get(crosses, "family");
+    if (TYPEOF(family) != INTSXP) error("print.st.cross.plan: invalid joint family table");
+    if (!LENGTH(family))
+    {
+        lmm_print_text(&options, "\nNo feasible joint plan returned.\nReason: %s\n",
+            cp03_text(mvm_get(diagnostics, "reason"), "reason"));
+        return object;
+    }
+    lmm_print_text(&options, "\nChosen crosses and actual counts\n");
+    const char *columns[] = {"family", "P1Name", "P2Name", "n.progeny", "n.selected", "selected.mean", "response"},
+        *labels[] = {"Family", "Parent 1", "Parent 2", "Produced", "Retained", "Selected mean", "Response"};
+    lmm_print_table(crosses, columns, labels, 7, &options);
+    SEXP directions = mvm_get(object, "directions");
+    if (!isNull(directions))
+    {
+        const char *dc[] = {"family", "seed", "pollen"}, *dl[] = {"Family", "Seed", "Pollen"};
+        lmm_print_text(&options, "\nDeclared seed/pollen directions\n");
+        lmm_print_table(directions, dc, dl, 3, &options);
+    }
+    return object;
+}
+
+static SEXP cp11_print(SEXP args, SEXP object)
+{
+    lmm_print_options options = lmm_print_settings(args);
+    SEXP constraints = mvm_get(object, "constraints"), group = mvm_get(constraints, "progeny"),
+        objective = mvm_get(object, "objective"), diagnostics = mvm_get(object, "diagnostics"),
+        joint = mvm_get(diagnostics, "joint"), allocation = mvm_get(diagnostics, "allocation"),
+        crosses = mvm_get(object, "crosses"), feasibility = mvm_get(object, "feasibility");
+    char first[LMM_PRINT_BUFFER], second[LMM_PRINT_BUFFER], third[LMM_PRINT_BUFFER];
+    lmm_print_text(&options, "Joint production and retention planning\n");
+    lmm_print_text(&options, "Criterion: %s; status: %s\n",
+        cp03_text(mvm_get(object, "criterion"), "criterion"),
+        cp03_text(mvm_get(object, "status"), "status"));
+    lmm_print_text(&options, "Produced families: %s; produced descendants: %s; retained descendants: %s\n",
+        lmm_print_number(cp03_print_scalar(constraints, "n.crosses"), options.digits, first),
+        lmm_print_number(cp03_print_scalar(group, "total.progeny"), options.digits, second),
+        lmm_print_number(cp03_print_scalar(group, "total.selected"), options.digits, third));
+    lmm_print_text(&options, "Families with retained descendants: %s; selection: %s\n",
+        lmm_print_number(cp03_print_scalar(mvm_get(object, "population"), "n.families.retained"), options.digits, first),
+        cp03_text(mvm_get(group, "selection.method"), "selection.method"));
+    lmm_print_text(&options, "Default produced bounds: %s to %s; retained bounds: %s to %s\n",
+        lmm_print_number(cp03_print_scalar(group, "min.progeny"), options.digits, first),
+        lmm_print_number(cp03_print_scalar(group, "max.progeny"), options.digits, second),
+        lmm_print_number(cp03_print_scalar(group, "min.selected"), options.digits, third),
+        lmm_print_number(cp03_print_scalar(group, "max.selected"), options.digits, (char[LMM_PRINT_BUFFER]){0}));
+    lmm_print_text(&options, "Baseline mean: %s; selected response: %s; selected mean: %s\n",
+        lmm_print_number(cp03_print_scalar(object, "gain"), options.digits, first),
+        lmm_print_number(cp03_print_scalar(objective, "response"), options.digits, second),
+        lmm_print_number(cp03_print_scalar(object, "usefulness"), options.digits, third));
+    lmm_print_text(&options, "Family-slot relatedness: %s; family-slot limit: %s\n",
+        lmm_print_number(cp03_print_scalar(object, "relatedness"), options.digits, first),
+        lmm_print_number(cp03_print_scalar(constraints, "theta"), options.digits, second));
+    lmm_print_text(&options, "Actual produced / retained relatedness: %s / %s\n",
+        lmm_print_number(cp03_print_scalar(mvm_get(object, "population.relatedness"), "produced"), options.digits, first),
+        lmm_print_number(cp03_print_scalar(mvm_get(object, "population.relatedness"), "retained"), options.digits, second));
+    lmm_print_text(&options, "Objective upper bound: %s; centered criterion gap: %s\n",
+        lmm_print_number(cp03_print_scalar(objective, "bound"), options.digits, first),
+        lmm_print_number(cp03_print_scalar(objective, "gap"), options.digits, second));
+    lmm_print_text(&options, "Solver: %s; evaluated family/direction sets: %s\n",
+        cp03_text(mvm_get(diagnostics, "method"), "method"),
+        lmm_print_number(cp03_print_scalar(joint, "evaluated.sets"), options.digits, first));
+    lmm_print_text(&options, "Cumulative allocation work: %s; ceiling: %s\n",
+        lmm_print_number(cp03_print_scalar(allocation, "allocation.work"), options.digits, first),
+        lmm_print_number(cp03_print_scalar(allocation, "max.transitions"), options.digits, second));
+    int feasible = asLogical(mvm_get(feasibility, "feasible"));
+    lmm_print_text(&options, "Original-input feasibility: %s\n",
+        feasible == TRUE ? "passed" : feasible == FALSE ? "failed or no incumbent" : "unresolved");
+    cp12_print_summary(&options, object);
+    lmm_print_text(&options, "%s\n", cp03_text(mvm_get(objective, "numerical.qualification"),
+                                               "numerical qualification"));
+    SEXP family = mvm_get(crosses, "family");
+    if (TYPEOF(family) != INTSXP) error("print.st.cross.plan: invalid joint family table");
+    if (!LENGTH(family))
+    {
+        lmm_print_text(&options, "\nNo feasible joint plan returned.\nReason: %s\n",
+            cp03_text(mvm_get(diagnostics, "reason"), "reason"));
+        return object;
+    }
+    lmm_print_text(&options, "\nProduced families and actual n / r\n");
+    const char *columns[] = {"family", "P1Name", "P2Name", "n.progeny", "n.selected", "selected.mean", "response"},
+        *labels[] = {"Family", "Parent 1", "Parent 2", "Produced", "Retained", "Selected mean", "Response"};
+    lmm_print_table(crosses, columns, labels, 7, &options);
+    SEXP directions = mvm_get(object, "directions");
+    if (!isNull(directions))
+    {
+        const char *dc[] = {"family", "seed", "pollen"}, *dl[] = {"Family", "Seed", "Pollen"};
+        lmm_print_text(&options, "\nDeclared seed/pollen directions\n");
+        lmm_print_table(directions, dc, dl, 3, &options);
+    }
+    return object;
 }
 
 static SEXP lmm_cross_plan_print(SEXP args)
@@ -73043,6 +78496,12 @@ static SEXP lmm_cross_plan_print(SEXP args)
         TYPEOF(objective) != VECSXP || TYPEOF(constraints) != VECSXP ||
         TYPEOF(diagnostics) != VECSXP || !inherits(crosses, "data.frame"))
         error("print.st.cross.plan: invalid result object");
+    if (TYPEOF(criterion) == STRSXP && LENGTH(criterion) == 1 &&
+        STRING_ELT(criterion, 0) != NA_STRING && !strcmp(CHAR(STRING_ELT(criterion, 0)), "future"))
+        return cp13_future_print(args, object);
+    if (!isNull(mvm_get(constraints, "progeny")))
+        return !isNull(mvm_get(mvm_get(constraints, "progeny"), "total.selected"))
+            ? cp11_print(args, object) : cp10_print(args, object);
     int fixed = !strcmp(CHAR(STRING_ELT(mode, 0)), "fixed");
     int scored = !isNull(criterion), useful = 0;
     if (scored)
@@ -73063,6 +78522,38 @@ static SEXP lmm_cross_plan_print(SEXP args)
         : useful ? "maximum predicted usefulness"
         : "maximum predicted mean",
         translateCharUTF8(STRING_ELT(status, 0)));
+    SEXP practical = mvm_get(diagnostics, "practical");
+    if (!isNull(practical))
+    {
+        SEXP states = mvm_get(mvm_get(practical, "checks"), "state"),
+            practical_feasible = mvm_get(practical, "feasible"),
+            searched = mvm_get(diagnostics, "practical.search"),
+            checked = mvm_get(searched, "incumbent.checked"),
+            direction_table = mvm_get(object, "directions");
+        int counts[4] = {0, 0, 0, 0};
+        if (TYPEOF(states) == STRSXP)
+            for (R_xlen_t i = 0; i < XLENGTH(states); i++)
+            {
+                if (STRING_ELT(states, i) == NA_STRING) { counts[3]++; continue; }
+                const char *state = CHAR(STRING_ELT(states, i));
+                if (!strcmp(state, "pass")) counts[0]++;
+                else if (!strcmp(state, "fail")) counts[1]++;
+                else if (!strcmp(state, "unresolved")) counts[2]++;
+                else counts[3]++;
+            }
+        int have_incumbent = TYPEOF(checked) == LGLSXP && LENGTH(checked) == 1
+            && LOGICAL(checked)[0] == TRUE;
+        int value = TYPEOF(practical_feasible) == LGLSXP && LENGTH(practical_feasible) == 1
+            ? LOGICAL(practical_feasible)[0] : NA_LOGICAL;
+        lmm_print_text(&options, "Practical constraints: %s\n",
+            !have_incumbent ? "no feasible incumbent" : value == TRUE ? "feasible"
+            : value == FALSE ? "infeasible" : "unresolved");
+        lmm_print_text(&options, "Checks: %d pass; %d fail; %d unresolved; %d unavailable\n",
+            counts[0], counts[1], counts[2], counts[3]);
+        if (!isNull(direction_table))
+            lmm_print_text(&options, "Seed/pollen directions: %d\n",
+                LENGTH(mvm_get(direction_table, "family")));
+    }
     lmm_print_text(&options,
         "Families: %s; progeny per family: %s; total progeny: %s\n",
         lmm_print_value(cp03_print_scalar(constraints, "n.crosses"), 1, 0,
@@ -73144,6 +78635,12 @@ typedef struct
     double *geometry, *original_L, *L, *J, *JLU, *Jrow, *Jcol;
     double *Jrhs, *Jsolution, *Jresidual, *Jstep, *eq_rhs, *eq_step;
     int *Jpivot;
+    int precise_mode, precise_ready, *precise_pivot;
+    int dense_ready, *dense_pivot;
+    long double *dense_J, *dense_LU, *dense_B, *dense_scale;
+    long double *dense_rhs, *dense_solution, *dense_step;
+    long double *precise_J, *precise_LU, *precise_scale, *precise_rhs;
+    long double *precise_solution, *precise_G, *precise_step;
     double *dx, *ds, *dl, *dn, *adx, *ads, *adl, *adn;
     double *rdual, *rpri, *req, *v, *centre, *gradient, *oracle;
     double *trial, *trial_full, *trial_c, *trial_kc, *trial_g;
@@ -73445,8 +78942,118 @@ static double oma_residuals(oma_problem *p, const double *x,
     return fmax(norm, p->ni ? (double)(mu / p->ni) : 0);
 }
 
+static int oma_precise_solve(oma_problem *p)
+{
+    int n = 2 * p->w + p->nq + (p->qindex >= 0), w = p->w;
+    if (n > 1024) return 0;
+    if (!p->precise_J)
+    {
+        p->precise_J = mvm_alloc((size_t)n * n, sizeof(long double));
+        p->precise_LU = mvm_alloc((size_t)n * n, sizeof(long double));
+        p->precise_G = mvm_alloc((size_t)w * w, sizeof(long double));
+        p->precise_scale = mvm_alloc(n, sizeof(long double));
+        p->precise_rhs = mvm_alloc(n, sizeof(long double));
+        p->precise_solution = mvm_alloc(n, sizeof(long double));
+        p->precise_step = mvm_alloc(n, sizeof(long double));
+        p->precise_pivot = mvm_alloc(n, sizeof(int));
+    }
+    if (!p->precise_ready)
+    {
+        memset(p->precise_G, 0, (size_t)w * w * sizeof(long double));
+        for (int j = 0; j < p->nf; j++)
+        {
+            int e = p->free[j], index[3] = {p->a[e], p->b[e], p->n};
+            long double a[3] = {.5L, .5L, p->geometry[e]}, v = 1 / (long double)p->D[j];
+            for (int b = 0; b < 3; b++)
+                for (int i = 0; i < 3; i++)
+                    p->precise_G[index[i] + (size_t)w * index[b]] += a[i] * a[b] * v;
+        }
+        for (int j = 0; j < n; j++)
+            for (int i = 0; i < n; i++)
+                p->precise_J[i + (size_t)n * j] = p->J[i + (size_t)n * j];
+        for (int j = 0; j < w; j++)
+            for (int i = 0; i < w; i++)
+                p->precise_J[w + i + (size_t)n * (w + j)] = p->precise_G[i + (size_t)w * j];
+        memcpy(p->precise_LU, p->precise_J, (size_t)n * n * sizeof(long double));
+        for (int i = 0; i < n; i++) p->precise_scale[i] = 1;
+        for (int pass = 0; pass < 5; pass++)
+        {
+            for (int i = 0; i < n; i++)
+            {
+                long double maximum = 0;
+                for (int j = 0; j < n; j++)
+                    maximum = fmaxl(maximum, fabsl(p->precise_LU[i + (size_t)n * j]));
+                p->precise_step[i] = maximum > 0 ? 1 / sqrtl(maximum) : 1;
+                p->precise_scale[i] *= p->precise_step[i];
+            }
+            for (int j = 0; j < n; j++)
+                for (int i = 0; i < n; i++)
+                    p->precise_LU[i + (size_t)n * j] *= p->precise_step[i] * p->precise_step[j];
+        }
+        for (int j = 0; j < n; j++)
+        {
+            int pivot = j;
+            for (int i = j + 1; i < n; i++)
+                if (fabsl(p->precise_LU[i + (size_t)n * j]) >
+                    fabsl(p->precise_LU[pivot + (size_t)n * j])) pivot = i;
+            p->precise_pivot[j] = pivot;
+            if (!(fabsl(p->precise_LU[pivot + (size_t)n * j]) > 0)) return 0;
+            if (pivot != j)
+                for (int k = 0; k < n; k++)
+                {
+                    long double value = p->precise_LU[j + (size_t)n * k];
+                    p->precise_LU[j + (size_t)n * k] = p->precise_LU[pivot + (size_t)n * k];
+                    p->precise_LU[pivot + (size_t)n * k] = value;
+                }
+            for (int i = j + 1; i < n; i++)
+                p->precise_LU[i + (size_t)n * j] /= p->precise_LU[j + (size_t)n * j];
+            for (int k = j + 1; k < n; k++)
+                for (int i = j + 1; i < n; i++)
+                    p->precise_LU[i + (size_t)n * k] -=
+                        p->precise_LU[i + (size_t)n * j] * p->precise_LU[j + (size_t)n * k];
+        }
+        p->precise_ready = 1;
+    }
+    for (int i = 0; i < n; i++) p->precise_solution[i] = 0;
+    for (int pass = 0; pass < 4; pass++)
+    {
+        for (int i = 0; i < n; i++)
+        {
+            long double value = p->Jrhs[i];
+            for (int j = 0; j < n; j++)
+                value -= p->precise_J[i + (size_t)n * j] * p->precise_solution[j];
+            p->precise_rhs[i] = value * p->precise_scale[i];
+        }
+        for (int j = 0; j < n; j++)
+        {
+            int pivot = p->precise_pivot[j];
+            long double value = p->precise_rhs[j];
+            p->precise_rhs[j] = p->precise_rhs[pivot];
+            p->precise_rhs[pivot] = value;
+        }
+        for (int i = 0; i < n; i++)
+            for (int j = 0; j < i; j++)
+                p->precise_rhs[i] -= p->precise_LU[i + (size_t)n * j] * p->precise_rhs[j];
+        for (int i = n - 1; i >= 0; i--)
+        {
+            for (int j = i + 1; j < n; j++)
+                p->precise_rhs[i] -= p->precise_LU[i + (size_t)n * j] * p->precise_rhs[j];
+            p->precise_rhs[i] /= p->precise_LU[i + (size_t)n * i];
+        }
+        for (int i = 0; i < n; i++)
+            p->precise_solution[i] += p->precise_rhs[i] * p->precise_scale[i];
+    }
+    for (int i = 0; i < n; i++)
+    {
+        p->Jsolution[i] = (double)p->precise_solution[i];
+        if (!R_FINITE(p->Jsolution[i])) return 0;
+    }
+    return 1;
+}
+
 static int oma_parent_solve(oma_problem *p)
 {
+    if (p->precise_mode) return oma_precise_solve(p);
     int dimension = 2 * p->w + p->nq + (p->qindex >= 0),
         one = 1, info = 0;
     for (int i = 0; i < dimension; i++)
@@ -73489,10 +79096,176 @@ static int oma_parent_solve(oma_problem *p)
     return 1;
 }
 
+/* The direct free-variable system avoids cancellation in small ill-conditioned
+   parent reductions. Its request-owned workspace is bounded by 512 rows. */
+static int oma_dense_newton(oma_problem *p, const double *rhs,
+    const double *equal, double quadratic, double *dx, double *dn,
+    double *dq)
+{
+    int nf = p->nf, w = p->w;
+    size_t dimension = (size_t)nf + p->nq + (p->qindex >= 0);
+    if (!nf || dimension > 512 || w > 512) return 0;
+    int n = (int)dimension;
+    if (!p->dense_J)
+    {
+        p->dense_J = mvm_alloc((size_t)n * n, sizeof(long double));
+        p->dense_LU = mvm_alloc((size_t)n * n, sizeof(long double));
+        p->dense_B = mvm_alloc((size_t)w * w, sizeof(long double));
+        p->dense_scale = mvm_alloc(n, sizeof(long double));
+        p->dense_rhs = mvm_alloc(n, sizeof(long double));
+        p->dense_solution = mvm_alloc(n, sizeof(long double));
+        p->dense_step = mvm_alloc(n, sizeof(long double));
+        p->dense_pivot = mvm_alloc(n, sizeof(int));
+    }
+    if (!p->dense_ready)
+    {
+        memset(p->dense_B, 0, (size_t)w * w * sizeof(long double));
+        for (int k = 0; k < p->ni; k++)
+        {
+            int type = p->type[k], i = p->index[k];
+            if (type < 2) continue;
+            long double value = type == 6 ? 0 :
+                (long double)p->lambda[k] / p->slack[k];
+            if (type < 4) p->dense_B[i + (size_t)w * i] += value;
+            else if (type < 6) p->dense_B[p->n + (size_t)w * p->n] += value;
+            else for (int j = 0; j < p->n; j++)
+                for (int i2 = 0; i2 < p->n; i2++)
+                    p->dense_B[i2 + (size_t)w * j] +=
+                        2 * (long double)p->lambda[k] *
+                        p->Kn[i2 + (size_t)p->n * j];
+        }
+        for (int j = 0; j < p->n; j++)
+            for (int i = 0; i < p->n; i++)
+                p->dense_B[i + (size_t)w * j] += 1;
+        memset(p->dense_J, 0, (size_t)n * n * sizeof(long double));
+        for (int j = 0; j < nf; j++)
+        {
+            int f = p->free[j], a2 = p->a[f], b2 = p->b[f];
+            for (int i = 0; i <= j; i++)
+            {
+                int e = p->free[i], a1 = p->a[e], b1 = p->b[e];
+                long double value = .25L *
+                    (p->dense_B[a1 + (size_t)w * a2] +
+                     p->dense_B[a1 + (size_t)w * b2] +
+                     p->dense_B[b1 + (size_t)w * a2] +
+                     p->dense_B[b1 + (size_t)w * b2]);
+                value += .5L * p->geometry[f] *
+                    (p->dense_B[a1 + (size_t)w * p->n] +
+                     p->dense_B[b1 + (size_t)w * p->n]);
+                value += .5L * p->geometry[e] *
+                    (p->dense_B[p->n + (size_t)w * a2] +
+                     p->dense_B[p->n + (size_t)w * b2]);
+                value += (long double)p->geometry[e] * p->geometry[f] *
+                    p->dense_B[p->n + (size_t)w * p->n];
+                if (i == j) value += p->D[i];
+                p->dense_J[i + (size_t)n * j] = value;
+                p->dense_J[j + (size_t)n * i] = value;
+            }
+        }
+        for (int j = 0; j < p->nq; j++)
+            for (int i = 0; i < nf; i++)
+            {
+                long double value = p->E[(size_t)j * nf + i];
+                p->dense_J[i + (size_t)n * (nf + j)] = value;
+                p->dense_J[nf + j + (size_t)n * i] = value;
+            }
+        if (p->qindex >= 0)
+        {
+            for (int i = 0; i < nf; i++)
+            {
+                int e = p->free[i];
+                long double value = (long double)p->kc[p->a[e]] + p->kc[p->b[e]];
+                p->dense_J[i + (size_t)n * (n - 1)] = value;
+                p->dense_J[n - 1 + (size_t)n * i] = value;
+            }
+            p->dense_J[n - 1 + (size_t)n * (n - 1)] =
+                -(long double)p->slack[p->qindex] / p->lambda[p->qindex];
+        }
+        memcpy(p->dense_LU, p->dense_J, (size_t)n * n * sizeof(long double));
+        for (int i = 0; i < n; i++) p->dense_scale[i] = 1;
+        for (int pass = 0; pass < 5; pass++)
+        {
+            for (int i = 0; i < n; i++)
+            {
+                long double maximum = 0;
+                for (int j = 0; j < n; j++)
+                    maximum = fmaxl(maximum, fabsl(p->dense_LU[i + (size_t)n * j]));
+                p->dense_step[i] = maximum > 0 ? 1 / sqrtl(maximum) : 1;
+                p->dense_scale[i] *= p->dense_step[i];
+            }
+            for (int j = 0; j < n; j++)
+                for (int i = 0; i < n; i++)
+                    p->dense_LU[i + (size_t)n * j] *= p->dense_step[i] * p->dense_step[j];
+        }
+        for (int j = 0; j < n; j++)
+        {
+            if ((j & 31) == 0) R_CheckUserInterrupt();
+            int pivot = j;
+            for (int i = j + 1; i < n; i++)
+                if (fabsl(p->dense_LU[i + (size_t)n * j]) >
+                    fabsl(p->dense_LU[pivot + (size_t)n * j])) pivot = i;
+            p->dense_pivot[j] = pivot;
+            if (!(fabsl(p->dense_LU[pivot + (size_t)n * j]) > 0)) return 0;
+            if (pivot != j) for (int k = 0; k < n; k++)
+            {
+                long double value = p->dense_LU[j + (size_t)n * k];
+                p->dense_LU[j + (size_t)n * k] = p->dense_LU[pivot + (size_t)n * k];
+                p->dense_LU[pivot + (size_t)n * k] = value;
+            }
+            for (int i = j + 1; i < n; i++)
+                p->dense_LU[i + (size_t)n * j] /= p->dense_LU[j + (size_t)n * j];
+            for (int k = j + 1; k < n; k++)
+                for (int i = j + 1; i < n; i++)
+                    p->dense_LU[i + (size_t)n * k] -=
+                        p->dense_LU[i + (size_t)n * j] * p->dense_LU[j + (size_t)n * k];
+        }
+        p->dense_ready = 1;
+    }
+    for (int i = 0; i < n; i++) p->dense_solution[i] = 0;
+    for (int pass = 0; pass < 4; pass++)
+    {
+        for (int i = 0; i < n; i++)
+        {
+            long double value = i < nf ? rhs[i] : i < nf + p->nq ?
+                equal[i - nf] : -quadratic;
+            for (int j = 0; j < n; j++)
+                value -= p->dense_J[i + (size_t)n * j] * p->dense_solution[j];
+            p->dense_rhs[i] = value * p->dense_scale[i];
+        }
+        for (int j = 0; j < n; j++)
+        {
+            int pivot = p->dense_pivot[j];
+            long double value = p->dense_rhs[j];
+            p->dense_rhs[j] = p->dense_rhs[pivot];
+            p->dense_rhs[pivot] = value;
+        }
+        for (int i = 0; i < n; i++) for (int j = 0; j < i; j++)
+            p->dense_rhs[i] -= p->dense_LU[i + (size_t)n * j] * p->dense_rhs[j];
+        for (int i = n - 1; i >= 0; i--)
+        {
+            for (int j = i + 1; j < n; j++)
+                p->dense_rhs[i] -= p->dense_LU[i + (size_t)n * j] * p->dense_rhs[j];
+            p->dense_rhs[i] /= p->dense_LU[i + (size_t)n * i];
+        }
+        for (int i = 0; i < n; i++)
+            p->dense_solution[i] += p->dense_rhs[i] * p->dense_scale[i];
+    }
+    for (int i = 0; i < n; i++) if (!R_FINITE((double)p->dense_solution[i]))
+    {
+        p->dense_ready = 0;
+        return 0;
+    }
+    for (int i = 0; i < nf; i++) dx[i] = (double)p->dense_solution[i];
+    for (int i = 0; i < p->nq; i++) dn[i] = (double)p->dense_solution[nf + i];
+    *dq = p->qindex >= 0 ? (double)p->dense_solution[n - 1] : 0;
+    return 1;
+}
+
 static int oma_newton(oma_problem *p, const double *rhs,
     const double *equal, double quadratic, double *dx, double *dn,
     double *dq)
 {
+    if (p->precise_mode && oma_dense_newton(p, rhs, equal, quadratic, dx, dn, dq)) return 1;
     memset(p->parent_acc, 0, (size_t)p->w * sizeof(long double));
     for (int j = 0; j < p->nf; j++)
     {
@@ -73515,7 +79288,7 @@ static int oma_newton(oma_problem *p, const double *rhs,
     for (int i = 0; i < p->nq; i++)
         dn[i] = p->Jsolution[2 * p->w + i];
     for (int i = 0; i < p->w; i++)
-        p->parent_product[i] = p->Jsolution[p->w + i];
+        p->parent_product[i] = p->precise_mode ? p->precise_solution[p->w + i] : p->Jsolution[p->w + i];
     for (int j = 0; j < p->nf; j++)
     {
         int e = p->free[j];
@@ -73531,6 +79304,8 @@ static int oma_newton(oma_problem *p, const double *rhs,
 static int oma_factor(oma_problem *p)
 {
     int w = p->w, n = p->n, info = 0;
+    p->precise_ready = 0;
+    p->dense_ready = 0;
     memset(p->B, 0, (size_t)w * w * sizeof(double));
     memset(p->G, 0, (size_t)w * w * sizeof(double));
     for (int j = 0; j < p->nf; j++) p->D[j] = 0;
@@ -73669,8 +79444,9 @@ static int oma_direction(oma_problem *p, const double *centre,
         {
             long double value = 0;
             for (int j = 0; j < p->w; j++)
-                value += (long double)p->B[i + (size_t)p->w * j] *
-                         p->parent_acc[j];
+                value += (p->precise_mode && p->dense_ready ?
+                    p->dense_B[i + (size_t)p->w * j] :
+                    (long double)p->B[i + (size_t)p->w * j]) * p->parent_acc[j];
             p->parent_product[i] = value;
         }
         long double norm = 0, scale = 1;
@@ -73881,8 +79657,9 @@ static void oma_certificates_at(oma_problem *p)
     double support = oma_linear(p, p->gradient, 1, p->oracle);
     long double correction = support -
         (long double)ocs_dot(p->gradient, p->full, p->ne);
-    long double error = (64 * DBL_EPSILON * (p->n + p->no + 1) +
-        8 * LDBL_EPSILON * ((long double)p->ne + p->n * p->n + 1)) *
+    long double error = (64 * DBL_EPSILON * ((long double)p->n + p->no + 1) +
+        8 * LDBL_EPSILON * ((long double)p->ne +
+                          (long double)p->n * p->n + 1)) *
         (size + norm + fabsl(at) + fabsl(correction) + curvature);
     long double affine_error = p->F1_span > 0 && p->no ?
         fabs(p->original_nu[p->no - 1]) * p->affine_roundoff : 0;
@@ -74168,6 +79945,12 @@ static void oma_optimize(oma_problem *p)
             }
             alpha *= .5;
         }
+        if (!accepted && !p->precise_mode &&
+            (size_t)2 * p->w + p->nq + (p->qindex >= 0) <= 1024)
+        {
+            p->precise_mode = 1;
+            continue;
+        }
         if (!accepted)
         {
             p->reason = "line.search.numerical.limit";
@@ -74183,6 +79966,42 @@ static void oma_optimize(oma_problem *p)
         p->have_best = 0;
         oma_consider(p);
     }
+    if (!p->have_best || p->upper - p->best_merit <= p->tolerance)
+        return;
+    long double mean_h = 0, mean_kin = 0;
+    for (int e = 0; e < p->ne; e++)
+    {
+        mean_h += p->h[e];
+        mean_kin += p->kin[e];
+    }
+    mean_h /= p->ne;
+    mean_kin /= p->ne;
+    long double covariance = 0, variance = 0;
+    for (int e = 0; e < p->ne; e++)
+    {
+        long double d = p->kin[e] - mean_kin;
+        covariance += ((long double)p->h[e] - mean_h) * d;
+        variance += d * d;
+    }
+    if (!(variance > 0)) return;
+    memcpy(p->trial_l, p->lambda, (size_t)p->ni * sizeof(double));
+    memcpy(p->trial_nu, p->nu, (size_t)p->nq * sizeof(double));
+    memset(p->lambda, 0, (size_t)p->ni * sizeof(double));
+    memset(p->nu, 0, (size_t)p->nq * sizeof(double));
+    for (int k = 0; k < p->ni; k++)
+        if (p->type[k] == 4 || p->type[k] == 5)
+        {
+            double multiplier = (double)((p->type[k] == 4 ?
+                -covariance : covariance) / variance);
+            if (R_FINITE(multiplier) && multiplier > 0)
+            {
+                p->lambda[k] = multiplier;
+                oma_certificates(p);
+                p->lambda[k] = 0;
+            }
+        }
+    memcpy(p->lambda, p->trial_l, (size_t)p->ni * sizeof(double));
+    memcpy(p->nu, p->trial_nu, (size_t)p->nq * sizeof(double));
 }
 
 static void oma_table(SEXP table, int n, const char **names,
@@ -74802,6 +80621,7 @@ static SEXP lmm_oma(SEXP args)
     double F1 = NA_REAL, F2 = NA_REAL, merit = NA_REAL,
            box = NA_REAL, parent = NA_REAL, first_residual = NA_REAL,
            second_residual = NA_REAL, equal = NA_REAL;
+    long double centered_merit = NA_REAL;
     if (p.have_best)
     {
         memcpy(REAL(allocations), p.best, (size_t)p.ne * sizeof(double));
@@ -74813,7 +80633,7 @@ static SEXP lmm_oma(SEXP args)
         {
             first_value += (long double)p.rawK[p.a[e] +
                 (size_t)p.n * p.b[e]] * p.best[e];
-            merit_value += (long double)p.rawh[e] * p.best[e];
+            merit_value += ((long double)p.rawh[e] - p.offset) * p.best[e];
         }
         for (int j = 0; j < p.n; j++)
             for (int i = 0; i < p.n; i++)
@@ -74821,7 +80641,8 @@ static SEXP lmm_oma(SEXP args)
                                   p.trial_c[i] * p.trial_c[j];
         F1 = (double)first_value;
         F2 = (double)second_value;
-        merit = (double)merit_value;
+        centered_merit = merit_value;
+        merit = (double)((long double)p.offset + merit_value);
     }
     else
     {
@@ -74843,13 +80664,21 @@ static SEXP lmm_oma(SEXP args)
                                (1 - p.reference_F0))) : NA_REAL, merit};
     for (int i = 0; i < 6; i++)
         SET_VECTOR_ELT(result, i + 4, lmm_keep(ScalarReal(values[i]), &np));
-    long double converted = (long double)p.offset +
-                            (long double)p.merit_scale * p.upper;
-    long double conversion_error = 64 * DBL_EPSILON * (p.ne + 2) *
-        (fabsl(p.offset) + p.merit_scale * (1 + fabsl(p.upper)));
-    double upper_merit = (double)(converted + conversion_error);
+    long double normalization_error = 0;
+    for (int e = 0; e < p.ne; e++)
+        normalization_error = fmaxl(normalization_error,
+            fabsl(((long double)p.rawh[e] - p.offset) -
+                  (long double)p.merit_scale * p.h[e]));
+    long double conversion_error = 64 * DBL_EPSILON * ((long double)p.ne + 2) *
+        p.merit_scale * (1 + fabsl(p.upper)) +
+        (1 + p.tolerance) * normalization_error;
+    long double centered_upper = (long double)p.merit_scale * p.upper +
+                                 conversion_error;
+    double upper_merit = (double)((long double)p.offset + centered_upper);
     if (R_FINITE(upper_merit)) upper_merit = nextafter(upper_merit, INFINITY);
-    double gap = p.have_best ? upper_merit - merit : NA_REAL;
+    double gap = p.have_best ?
+        nextafter((double)(centered_upper - centered_merit), INFINITY) :
+        NA_REAL;
     if (p.have_best && R_FINITE(gap) && gap < 0)
     {
         p.have_best = 0;
@@ -74987,6 +80816,10 @@ SEXP st_lmm_frontend(SEXP args)
             return lmm_propsd(args);
         if (!strcmp(name, "propsd.print"))
             return lmm_propsd_print(args);
+        if (!strcmp(name, "cross.frontier"))
+            return st_cross_frontier(args);
+        if (!strcmp(name, "cross.frontier.print"))
+            return st_cross_frontier_print(args);
         if (!strcmp(name, "cross.plan"))
             return lmm_cross_plan(args);
         if (!strcmp(name, "cross.plan.print"))
@@ -75045,7 +80878,7 @@ static SEXP lmm_provenance_token(int *np)
     if (++serial == 0)
         error("st.lmm: fitted-model provenance counter exhausted");
     char token[128];
-    snprintf(token, sizeof(token), "%lu-%llu-%llu", process, stamp, serial);
+    st_text_write(token, sizeof(token), "%lu-%llu-%llu", process, stamp, serial);
     return lmm_keep(mkString(token), np);
 }
 
@@ -75374,7 +81207,7 @@ static lmm_series_means lmm_series_reference_extract(SEXP fit,
             {
                 int value = !compact && TYPEOF(rows) == INTSXP && LENGTH(rows) == n
                                 ? INTEGER(rows)[i] : i + 1;
-                snprintf(row_buffer, sizeof(row_buffer), "%d", value);
+                st_text_write(row_buffer, sizeof(row_buffer), "%d", value);
                 row_name = row_buffer;
             }
             index = -1;
@@ -75756,7 +81589,7 @@ static SEXP lmm_series_cells(SEXP env, SEXP gen,
                        *target = translateCharUTF8(STRING_ELT(gen, i));
             size_t size = strlen(trait) + strlen(trial) + strlen(target) + 96;
             char *label = mvm_alloc(size, sizeof(char));
-            snprintf(label, size, "%zu:%s:%zu:%s:%zu:%s",
+            st_text_write(label, size, "%zu:%s:%zu:%s:%zu:%s",
                      strlen(trait), trait, strlen(trial), trial, strlen(target), target);
             int cell = i + n * t;
             SET_STRING_ELT(VECTOR_ELT(table, 0), cell, mkCharCE(label, CE_UTF8));
@@ -76363,7 +82196,7 @@ static lmm_arg_view *lmm_series_prepare_arguments(lmm_arg_view *args, int *np)
                 const char *trait = traits.names[t];
                 size_t size = strlen(trait) + 64;
                 char *label = mvm_alloc(size, sizeof(char));
-                snprintf(label, size, "%zu:%s:%d", strlen(trait), trait, i + 1);
+                st_text_write(label, size, "%zu:%s:%d", strlen(trait), trait, i + 1);
                 SET_STRING_ELT(labels, i + total * t, mkCharCE(label, CE_UTF8));
             }
         SET_VECTOR_ELT(names, 0, labels);

@@ -20,6 +20,10 @@ Returns the same invisible implementation-level \code{list} as \code{population.
 }
 
 \details{
+Each derived cache is complete for all individuals or absent throughout a
+population. A mixed source cache causes all marker-genotype, genetic-value and
+phenotype caches to be cleared silently in the source and result.
+
   The first requested individuals are
   separated from \code{NameP2} and placed in \code{NameP1}; the
   remaining individuals stay in \code{NameP2}. Complete individual

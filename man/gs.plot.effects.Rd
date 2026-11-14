@@ -37,7 +37,7 @@ gs.plot.effects(data.set = "default", absolute = TRUE, alpha = 0.05,
 %}
 
 \value{
-Invisibly returns the \code{data.frame} used for plotting, with columns \code{chrom}, \code{pos}, \code{name}, \code{cpos}, and \code{effect}, and a \code{pvalue} column when p-values are available. Returns \code{NULL} if the required effect or map data are unavailable.
+Invisibly returns the \code{data.frame} used for plotting, with columns \code{chrom}, \code{pos}, \code{name}, \code{cpos}, and \code{effect}, and a \code{p} column when p-values are available. Returns \code{NULL} if the required effect or map data are unavailable.
 }
 
 %\note{

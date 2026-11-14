@@ -39,5 +39,5 @@ evaluate.allele.freq("Maize", paste(loci[1:2], collapse = " "))
 }
 
 \seealso{
-For vector based input of loci, see \code{\link{evaluate.allele.freq2}}.
+Vector-based input of loci is supported by \code{\link{evaluate.allele.freq2}}.
 }

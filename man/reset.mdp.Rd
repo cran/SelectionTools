@@ -1,9 +1,9 @@
 \name{reset.mdp}
 \alias{reset.mdp}
-\title{Reset marker-assisted donor-parent information}
+\title{Resets marker-assisted donor-parent information}
 
 \description{
-Reset marker-assisted donor-parent information.
+Resets marker-assisted donor-parent information.
 }
 
 \usage{

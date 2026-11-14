@@ -84,8 +84,8 @@ mab.simulate(simulation.name, simulation.run, repetitions = 1000,
       Doubled haploids
     }}
    \item{population.size}{Numeric vector containing the population sizes of the
-    generations in the backcrossing program. The formal default is
-    \code{NULL}.}
+    generations in the backcrossing program. Each doubled-haploid generation
+    uses its own corresponding entry. The formal default is \code{NULL}.}
    \item{sel.strategy}{Character vector consisting of the selection strategies for the
   different generations of a backcrossing program.  The following
   selection strategies are implemented.  SI: selection index.
@@ -239,7 +239,8 @@ mab.simulate(simulation.name, simulation.run, repetitions = 1000,
     \code{NULL}. If \code{reg.chr} is specified, a corresponding value is
     required.}
    \item{reg.end}{End of the region to be evaluated, in cM distance from the
-    telomere. If 0 is given, the entire chromosome is evaluated. The default
+    telomere. Zero selects the chromosome end; together with a zero
+    \code{reg.begin}, it specifies the whole chromosome. The default
     is \code{NULL}. If \code{reg.chr} is specified, a corresponding value is
     required.}
    \item{missing.allele}{Character string that specifies missing marker data.
@@ -253,6 +254,32 @@ mab.simulate(simulation.name, simulation.run, repetitions = 1000,
    \item{recode.file}{File name for recoded parental marker data when \code{recode.infiles = TRUE}. It is required in that case. Relative names are resolved against \code{st.output.dir}; absolute paths are used directly.}
 }
 
+\details{
+With \code{gen.type=NULL}, input recoding is available without a simulated
+generation sequence. Every supplied entry is one of \code{"f1"},
+\code{"bc"}, \code{"s"} or \code{"dh"}; unsupported generation types
+are rejected. In the first generation, \code{"f1"} and \code{"bc"}
+cross the donor and recurrent parents, \code{"s"} selfs the donor parent,
+and \code{"dh"} produces doubled haploids from the donor parent. In later
+generations, \code{"f1"} again crosses the supplied parents,
+\code{"bc"} crosses the previous selected population with the recurrent
+parent, and \code{"s"} and \code{"dh"} use the previous selected
+population.
+
+Every supplied target, flanking or recipient locus must occur on the linkage
+map. A list containing an unknown locus is rejected even when other supplied
+loci are present.
+
+Regional bounds are finite nonnegative distances in cM from the telomere.
+The beginning is strictly smaller than the effective end, and the end lies
+within the simulation chromosome. A zero end denotes the chromosome end.
+
+Simulation work uses a separate state scope. Caller populations, genome,
+linkage map, effects, individual identities and marker data point state are
+preserved on success and failure. Random draws intentionally advance the
+simulation RNG. Shared storage capacity and allocation diagnostics can
+change; this state preservation does not imply whole-operation rollback.
+}
 \value{
 On successful completion, invisibly returns a named \code{list} containing
 both the simulation definition and the simulation summaries. The parameter
@@ -282,7 +309,9 @@ Depending on the requested analyses, the result part can contain:
   regions.}
   \item{\code{LinkageDrag1}, \code{LinkageDrag2}, \dots}{Length of the donor
   chromosome segment attached to each target locus. Target loci are evaluated
-  separately and linkage drag is averaged over the two homologues.}
+  separately. For each individual, linkage drag is averaged over the
+  homologues carrying the donor allele at that target, and is zero when
+  neither homologue carries it.}
   \item{\code{SM}}{Summary of the number of marker data points attributed to
   single-marker assays. In the implemented accounting these arise from
   selection steps using flanking-marker assays.}
@@ -292,8 +321,10 @@ Depending on the requested analyses, the result part can contain:
   strategy.}
 }
 
-Validation failures return \code{NULL} invisibly. The same list is saved in
-the explicitly supplied \code{result.file}.
+Invalid requests either return \code{NULL} invisibly or signal an error,
+depending on the condition. Only successful simulations save a new result
+in the explicitly supplied \code{result.file}. Failures before saving leave
+any previously successful result file intact.
 }
 
 \seealso{

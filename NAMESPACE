@@ -1,5 +1,5 @@
 useDynLib(SelectionTools)
-# Export all names
+
 
 exportPattern(".")
 
@@ -136,6 +136,8 @@ S3method(multcomp::modelparm, st.lmm)
 S3method(print,st.gwas.summary)
 S3method(print,st.ocs)
 S3method(print,st.cross.plan)
+S3method(print,st.cross.frontier)
 S3method(print,st.oma)
 S3method(print,propsd)
 S3method(print,st.cross.allocation)
+S3method(print,st.cross.population)

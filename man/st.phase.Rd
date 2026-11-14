@@ -186,7 +186,7 @@ object is returned. The dry-run diagnostics contain:
 }
 }
 \section{Subsetting}{
-Restrict a copy of the source with \code{st.restrict.marker.data}
+A copy of the source can be restricted with \code{st.restrict.marker.data}
 before calling \code{st.phase()} when only a subset of chromosomes or
 individuals is wanted.
 }

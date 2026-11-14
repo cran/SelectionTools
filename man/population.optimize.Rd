@@ -1,6 +1,6 @@
 \name{population.optimize}
 \alias{population.optimize}
-\title{Optimize storage for simulation populations}
+\title{Optimizes storage for simulation populations}
 
 \description{
 Compacts segment storage for the requested simulation populations while
@@ -15,16 +15,19 @@ population.optimize(PopNames)
    \item{PopNames}{Population name or population specification.}
 }
 \details{
-Ordinary simulation operations retain allocated capacity for reuse. This
-function explicitly compacts each individual's segment buffer, keeping the
-segments of every allocated individual slot, including temporarily inactive
-slots. Segment capacity is rounded using the reservation set by
+Segment storage is compacted for the actual individuals in each requested
+population. Unused individual slots are released and the individual array is
+trimmed to the population size. Chromosomes, individual identities and complete
+derived caches are preserved. Segment capacity follows the reservation set by
 \code{set.NoLociInit}.
 
-Released storage becomes available to other simulation populations in the
-package's compiled memory pool. The pool retains its backing blocks for later
-operations, so compaction need not reduce the process's resident memory.
+Completely free backing blocks are released from the shared simulation memory
+pool after successful optimization. Blocks containing any live allocation are
+retained. Other populations' live allocations are not moved or released.
+Released memory need not immediately reduce the process's resident memory on
+every system. Later simulation growth can allocate storage again.
 }
+
 \value{
 An invisible \code{list} returned by the compiled routine. The list is an implementation-level result containing the arguments returned by the compiled routine; the function is primarily called for its side effect of optimizing the requested simulation populations.
 }

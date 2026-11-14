@@ -104,15 +104,3 @@ Fern\'andez-Gonz\'alez, J., Metwally, S. M., and Isidro y S\'anchez, J.
 Equations 14--15 and Appendix C.
 }
 \seealso{\code{st.cross.plan}, \code{st.get.A}, \code{st.options}}
-\examples{
-data("v-tropmaize-vcf")
-st.load.vcf.data(v.tropmaize.vcf, data.set = "propsd.example")
-st.restrict.marker.data(NoAll.MAX = 2, MaMis.MAX = 0.05,
-                        ExHet.MIN = 0.1, InMis.MAX = 0.1,
-                        data.set = "propsd.example")
-G <- st.get.A("propsd.example")/2
-slots <- rownames(G)[c(1, 1, 2, 3)]
-propsd(G, parents = slots)
-counts <- tabulate(match(slots, rownames(G)), nbins = nrow(G))
-propsd(G, counts = counts)
-}

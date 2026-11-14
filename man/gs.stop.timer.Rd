@@ -1,9 +1,9 @@
 \name{gs.stop.timer}
 \alias{gs.stop.timer}
-\title{Start or stop the genomic-selection timing helper}
+\title{Stops the genomic-selection timing helper}
 
 \description{
-Start or stop the genomic-selection timing helper.
+Stops the genomic-selection timing helper.
 }
 
 \usage{
@@ -11,7 +11,7 @@ gs.stop.timer(depth=1, info.level=0)
 }
 
 \arguments{
-   \item{depth}{Function argument used by this operation.}
+   \item{depth}{Timer depth, a finite whole number from 1 through 5.}
    \item{info.level}{Function argument used by this operation.}
 }
 \value{

@@ -3,7 +3,7 @@
 \title{Gs mme restcoeff}
 
 \description{
-Builds or returns the restricted coefficient matrix for genomic-selection mixed-model equations.
+Builds or returns the penalized coefficient matrix for genomic-selection mixed-model equations.
 }
 
 \usage{
@@ -15,5 +15,5 @@ gs.mme.restcoeff(out.filename = "mme.coeff", auxfiles = FALSE)
    \item{auxfiles}{Logical. If \code{TRUE}, the result is returned directly from memory.}
 }
 \value{
-Invisibly returns a numeric \code{matrix} containing the restricted mixed-model coefficient matrix when \code{auxfiles = TRUE} and the compiled calculation succeeds; otherwise \code{NULL}.
+Invisibly returns a numeric \code{matrix} containing the penalized mixed-model coefficient matrix when \code{auxfiles = TRUE} and the compiled calculation succeeds; otherwise \code{NULL}.
 }

@@ -13,7 +13,7 @@ void gs_marker_stats_01_df(gs_varset_type *gv, int *retval)
 SEXP gs_read_marker_data_DF_list(SEXP markermatrix, SEXP dataset)
 {
     gs_varset_type *dst;
-    gs_varset_type tmp;
+    gs_varset_type *tmp;
     SEXP col_ind, col_mar, col_all;
     R_xlen_t nrows;
     char **ind = NULL;
@@ -27,8 +27,8 @@ SEXP gs_read_marker_data_DF_list(SEXP markermatrix, SEXP dataset)
         (NA_STRING == STRING_ELT(dataset, 0)))
         return R_NilValue;
 
-    dst = gs_fdta((char *)translateCharUTF8(STRING_ELT(dataset, 0)));
-    gs_tmp_init_from(&tmp, dst);
+    dst = gs_fdta_checked((char *)translateCharUTF8(STRING_ELT(dataset, 0)));
+    tmp = gs_tmp_owned_from(dst);
 
     if ((TYPEOF(markermatrix) != VECSXP) || (XLENGTH(markermatrix) < 3))
     {
@@ -57,9 +57,9 @@ SEXP gs_read_marker_data_DF_list(SEXP markermatrix, SEXP dataset)
         return R_NilValue;
     }
 
-    ind = gs_malloc_array((size_t)nrows, sizeof(*ind));
-    mar = gs_malloc_array((size_t)nrows, sizeof(*mar));
-    names = gs_malloc_array((size_t)nrows, sizeof(*names));
+    ind = st_work_alloc((size_t)nrows, sizeof(*ind));
+    mar = st_work_alloc((size_t)nrows, sizeof(*mar));
+    names = st_work_alloc((size_t)nrows, sizeof(*names));
     if ((NULL == ind) || (NULL == mar) || (NULL == names))
     {
         gs_info(dst, -2, "Memory allocation error");
@@ -92,22 +92,22 @@ SEXP gs_read_marker_data_DF_list(SEXP markermatrix, SEXP dataset)
             goto cleanup;
         }
 
-        if ((int)li > tmp.MaxIL)
-            tmp.MaxIL = (int)li;
-        if ((int)lm > tmp.MaxML)
-            tmp.MaxML = (int)lm;
+        if ((int)li > tmp->MaxIL)
+            tmp->MaxIL = (int)li;
+        if ((int)lm > tmp->MaxML)
+            tmp->MaxML = (int)lm;
     }
 
     for (R_xlen_t k = 0; k < nrows; k++)
         names[k] = ind[k];
     qsort(names, (size_t)nrows, sizeof(*names), gs_string_cmp);
-    tmp.NoInd = 1;
+    tmp->NoInd = 1;
     for (R_xlen_t k = 1; k < nrows; k++)
         if (0 != strcmp(names[k - 1], names[k]))
-            tmp.NoInd++;
+            tmp->NoInd++;
 
-    tmp.IndName = calloc((size_t)tmp.NoInd, sizeof(*tmp.IndName));
-    if (NULL == tmp.IndName)
+    tmp->IndName = calloc((size_t)tmp->NoInd, sizeof(*tmp->IndName));
+    if (NULL == tmp->IndName)
     {
         gs_info(dst, -2, "Memory allocation error");
         failed = 1;
@@ -115,14 +115,14 @@ SEXP gs_read_marker_data_DF_list(SEXP markermatrix, SEXP dataset)
     }
     {
         gs_UNSIGNED i = 0;
-        if (st_identity_set(&tmp, i++, names[0], NULL))
+        if (st_identity_set(tmp, i++, names[0], NULL))
         {
             failed = 1;
             goto cleanup;
         }
         for (R_xlen_t k = 1; k < nrows; k++)
             if (0 != strcmp(names[k - 1], names[k]))
-                if (st_identity_set(&tmp, i++, names[k], NULL))
+                if (st_identity_set(tmp, i++, names[k], NULL))
                 {
                     failed = 1;
                     goto cleanup;
@@ -132,13 +132,13 @@ SEXP gs_read_marker_data_DF_list(SEXP markermatrix, SEXP dataset)
     for (R_xlen_t k = 0; k < nrows; k++)
         names[k] = mar[k];
     qsort(names, (size_t)nrows, sizeof(*names), gs_string_cmp);
-    tmp.NoMar = 1;
+    tmp->NoMar = 1;
     for (R_xlen_t k = 1; k < nrows; k++)
         if (0 != strcmp(names[k - 1], names[k]))
-            tmp.NoMar++;
+            tmp->NoMar++;
 
-    tmp.MarName = gs_malloc_array((size_t)tmp.NoMar, sizeof(*tmp.MarName));
-    if (NULL == tmp.MarName)
+    tmp->MarName = gs_malloc_array((size_t)tmp->NoMar, sizeof(*tmp->MarName));
+    if (NULL == tmp->MarName)
     {
         gs_info(dst, -2, "Memory allocation error");
         failed = 1;
@@ -146,30 +146,31 @@ SEXP gs_read_marker_data_DF_list(SEXP markermatrix, SEXP dataset)
     }
     {
         gs_UNSIGNED m = 0;
-        strcpy(tmp.MarName[m++], names[0]);
+        strcpy(tmp->MarName[m++], names[0]);
         for (R_xlen_t k = 1; k < nrows; k++)
             if (0 != strcmp(names[k - 1], names[k]))
-                strcpy(tmp.MarName[m++], names[k]);
+                strcpy(tmp->MarName[m++], names[k]);
     }
 
-    if (0 != gs_alloc_genotype_matrix(&tmp, tmp.NoMar, tmp.NoInd))
+    if (0 != gs_alloc_genotype_matrix(tmp, tmp->NoMar, tmp->NoInd))
     {
         gs_info(dst, -2, "Memory allocation error");
         failed = 1;
         goto cleanup;
     }
-    gs_set_genotypes_missing(&tmp);
+    gs_set_genotypes_missing(tmp);
 
     {
         size_t n_genotypes;
         if (0 !=
-            gs_size_mul((size_t)tmp.NoMar, (size_t)tmp.NoInd, &n_genotypes))
+            gs_size_mul((size_t)tmp->NoMar, (size_t)tmp->NoInd, &n_genotypes))
         {
             gs_info(dst, -2, "Memory allocation error");
             failed = 1;
             goto cleanup;
         }
-        geno_state = calloc(n_genotypes, sizeof(*geno_state));
+        geno_state = st_work_alloc(n_genotypes, sizeof(*geno_state));
+        memset(geno_state, 0, n_genotypes * sizeof(*geno_state));
         if (NULL == geno_state)
         {
             gs_info(dst, -2, "Memory allocation error");
@@ -181,8 +182,8 @@ SEXP gs_read_marker_data_DF_list(SEXP markermatrix, SEXP dataset)
     for (R_xlen_t k = 0; k < nrows; k++)
     {
         gs_UNSIGNED m =
-            gs_find_sorted_fixed_name(tmp.MarName, tmp.NoMar, mar[k]);
-        gs_UNSIGNED i = gs_find_sorted_ind_name(tmp.IndName, tmp.NoInd, ind[k]);
+            gs_find_sorted_fixed_name(tmp->MarName, tmp->NoMar, mar[k]);
+        gs_UNSIGNED i = gs_find_sorted_ind_name(tmp->IndName, tmp->NoInd, ind[k]);
         GS_ALLELE_TYPE a, b;
         size_t idx;
         int pair = 1;
@@ -217,9 +218,9 @@ SEXP gs_read_marker_data_DF_list(SEXP markermatrix, SEXP dataset)
                      (2 == allele_len)));
         }
 
-        idx = (size_t)m * (size_t)tmp.NoInd + (size_t)i;
-        if (0 != gs_aggregate_genotype(&(tmp.allele_raw1[idx]),
-                                       &(tmp.allele_raw2[idx]),
+        idx = (size_t)m * (size_t)tmp->NoInd + (size_t)i;
+        if (0 != gs_aggregate_genotype(&(tmp->allele_raw1[idx]),
+                                       &(tmp->allele_raw2[idx]),
                                        &(geno_state[idx]), a, b, pair))
         {
             gs_info(dst, -2,
@@ -229,27 +230,23 @@ SEXP gs_read_marker_data_DF_list(SEXP markermatrix, SEXP dataset)
         }
     }
 
-    gs_marker_stats_01_df(&tmp, &rv);
+    gs_marker_stats_01_df(tmp, &rv);
     if (-2 == rv)
     {
         failed = 1;
         goto cleanup;
     }
 
-    if (gs_tmp_commit(dst, &tmp))
+    if (gs_tmp_commit(dst, tmp))
     {
         failed = 1;
         goto cleanup;
     }
 
 cleanup:
-    free(ind);
-    free(mar);
-    free(names);
-    free(geno_state);
 
     if (failed)
-        gs_reset(&tmp);
+        gs_reset(tmp);
 
     return R_NilValue;
 }
@@ -362,56 +359,55 @@ SEXP gs_read_marker_data_DF_matrix(SEXP data, SEXP dataset)
     }
 
     gs_varset_type *dst =
-        gs_fdta((char *)translateCharUTF8(STRING_ELT(dataset, 0)));
-    gs_varset_type tmp;
-    gs_tmp_init_from(&tmp, dst);
-    tmp.phased = saw_phased && !saw_unphased;
-    tmp.NoInd = (gs_UNSIGNED)ni;
-    tmp.NoMar = (gs_UNSIGNED)nm;
-    tmp.IndName = calloc(ni, sizeof(*tmp.IndName));
-    tmp.MarName = gs_malloc_array(nm, sizeof(*tmp.MarName));
-    if (!tmp.IndName || !tmp.MarName || gs_alloc_genotype_matrix(&tmp, nm, ni))
+        gs_fdta_checked((char *)translateCharUTF8(STRING_ELT(dataset, 0)));
+    gs_varset_type *tmp = gs_tmp_owned_from(dst);
+    tmp->phased = saw_phased && !saw_unphased;
+    tmp->NoInd = (gs_UNSIGNED)ni;
+    tmp->NoMar = (gs_UNSIGNED)nm;
+    tmp->IndName = calloc(ni, sizeof(*tmp->IndName));
+    tmp->MarName = gs_malloc_array(nm, sizeof(*tmp->MarName));
+    if (!tmp->IndName || !tmp->MarName || gs_alloc_genotype_matrix(tmp, nm, ni))
     {
-        gs_reset(&tmp);
+        gs_reset(tmp);
         Rf_error("could not allocate marker data");
     }
     for (int i = 0; i < ni; i++)
     {
         const char *name = translateCharUTF8(STRING_ELT(VECTOR_ELT(dn, 0), i));
-        if (st_identity_set(&tmp, i, name, NULL))
+        if (st_identity_set(tmp, i, name, NULL))
         {
-            gs_reset(&tmp);
+            gs_reset(tmp);
             Rf_error("Cannot allocate individual name");
         }
-        if ((int)strlen(name) > tmp.MaxIL)
-            tmp.MaxIL = (int)strlen(name);
+        if ((int)strlen(name) > tmp->MaxIL)
+            tmp->MaxIL = (int)strlen(name);
     }
     for (int m = 0; m < nm; m++)
     {
         const char *name = translateCharUTF8(STRING_ELT(VECTOR_ELT(dn, 1), m));
-        strcpy(tmp.MarName[m], name);
-        if ((int)strlen(name) > tmp.MaxML)
-            tmp.MaxML = (int)strlen(name);
+        strcpy(tmp->MarName[m], name);
+        if ((int)strlen(name) > tmp->MaxML)
+            tmp->MaxML = (int)strlen(name);
         for (int i = 0; i < ni; i++)
         {
             R_xlen_t k = (R_xlen_t)m * ni + i;
             int a, b, kind;
 
             gs_df_matrix_cell(data, k, &a, &b, &kind);
-            tmp.allele_raw1[k] = a;
-            tmp.allele_raw2[k] = b;
+            tmp->allele_raw1[k] = a;
+            tmp->allele_raw2[k] = b;
         }
     }
     int rv = -2;
-    gs_marker_stats_01_df(&tmp, &rv);
+    gs_marker_stats_01_df(tmp, &rv);
     if (rv == -2)
     {
-        gs_reset(&tmp);
+        gs_reset(tmp);
         Rf_error("could not calculate marker statistics");
     }
-    if (gs_tmp_commit(dst, &tmp))
+    if (gs_tmp_commit(dst, tmp))
     {
-        gs_reset(&tmp);
+        gs_reset(tmp);
         Rf_error(
             "Cannot prepare allele storage; existing data set was preserved");
     }
@@ -753,6 +749,9 @@ SEXP st_read_map_df(SEXP data, SEXP stretch, SEXP dataset)
         {
             Rf_error("positions must be finite and non-negative");
         }
+        long double scaled = (long double)p * REAL(stretch)[0];
+        if (!isfinite(scaled) || scaled > DBL_MAX)
+            Rf_error("stretched map positions exceed the finite numeric range");
     }
 
     const char *name = CHAR(STRING_ELT(dataset, 0));
@@ -770,7 +769,7 @@ SEXP st_read_map_df(SEXP data, SEXP stretch, SEXP dataset)
         Rf_error("no marker data available in data.set");
     }
 
-    gs_mappoint_type *points = gs_malloc_array((size_t)n, sizeof(*points));
+    gs_mappoint_type *points = st_work_alloc((size_t)n, sizeof(*points));
     if (!points)
     {
         Rf_error("could not allocate map");
@@ -783,19 +782,17 @@ SEXP st_read_map_df(SEXP data, SEXP stretch, SEXP dataset)
         points[i].pos = REAL(pos)[i] * REAL(stretch)[0];
         points[i].nr = gs_UNSIGNED_MAX;
     }
-    gs_varset_type tmp;
-    gs_tmp_init_from(&tmp, dst);
-    int status = gs_prepare_marker_map_df(dst, points, (gs_UNSIGNED)n, &tmp);
-    free(points);
+    gs_varset_type *tmp = gs_tmp_owned_from(dst);
+    int status = gs_prepare_marker_map_df(dst, points, (gs_UNSIGNED)n, tmp);
     if (status)
     {
-        gs_reset(&tmp);
+        gs_reset(tmp);
         Rf_error(
             "map loading failed; existing data set was preserved (see preceding message)");
     }
-    if (gs_tmp_commit(dst, &tmp))
+    if (gs_tmp_commit(dst, tmp))
     {
-        gs_reset(&tmp);
+        gs_reset(tmp);
         Rf_error(
             "Cannot prepare allele storage; existing data set was preserved");
     }

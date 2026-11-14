@@ -21,7 +21,7 @@ gs.esteff.rmlc(maxiter = 1000, precision = 0.0001, hsq = 0.9,
 }
 
 \details{
-The restricted maximum likelihood (REML) method is used to estimate variance components.
+The REML method is used to estimate variance components.
 In a next step, lambda is calculated using the formula:
 
 \deqn{\lambda=\frac{\sigma_e^2}{\frac{\sigma_g^2}{m}}}

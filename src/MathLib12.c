@@ -988,7 +988,7 @@ void st_lbfgsb_minimize(int n, int history, double *x, const double *lower,
                 result->projected_gradient, x, n, monitor_data);
     while (result->projected_gradient > pgtol)
     {
-        if (result->iterations > maxit || result->iterations == INT_MAX)
+        if (result->iterations >= maxit || result->iterations == INT_MAX)
         {
             result->status = 1;
             result->message = "STOP: TOTAL NO. OF ITERATIONS REACHED LIMIT";

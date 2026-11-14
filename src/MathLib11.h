@@ -7,6 +7,25 @@
 #include <R_ext/BLAS.h>
 #include <R_ext/RS.h>
 
+static int st_math_matrix_size(gs_UNSIGNED rows, gs_UNSIGNED columns,
+                                size_t *count)
+{
+    if (rows > INT_MAX || columns > INT_MAX ||
+        (columns && rows > SIZE_MAX / columns))
+        return 0;
+    *count = (size_t)rows * (size_t)columns;
+    return *count <= SIZE_MAX / sizeof(double);
+}
+
+static int st_math_work_size(double query, int *length)
+{
+    if (!isfinite(query) || query < 1 || query > INT_MAX ||
+        query > (double)(SIZE_MAX / sizeof(double)))
+        return 0;
+    *length = (int)ceil(query);
+    return 1;
+}
+
 void st_daxpy(gs_UNSIGNED n, double a, double *x, double *y)
 
 {
@@ -46,7 +65,10 @@ static void cm_to_rm(const double *A_cm, int m, int n, int ldA_cm, double *A_rm,
 void st_dgemm(char T1[], char T2[], gs_UNSIGNED nra, gs_UNSIGNED nca,
               gs_UNSIGNED nrb, gs_UNSIGNED ncb, double *A, double *B, double *C)
 {
-
+    size_t count;
+    if (!st_math_matrix_size(nra, nca, &count) ||
+        !st_math_matrix_size(nrb, ncb, &count))
+        return;
     const int A_rows = (int)nra, A_cols = (int)nca;
     const int B_rows = (int)nrb, B_cols = (int)ncb;
 
@@ -60,6 +82,14 @@ void st_dgemm(char T1[], char T2[], gs_UNSIGNED nra, gs_UNSIGNED nca,
     const int Kb = transB ? B_cols : B_rows;
     if (K != Kb)
         return;
+    if (!st_math_matrix_size((gs_UNSIGNED)M, (gs_UNSIGNED)N, &count) ||
+        !count)
+        return;
+    if (!K)
+    {
+        memset(C, 0, count * sizeof(double));
+        return;
+    }
 
     const BLAS_INT ldA = (BLAS_INT)A_cols;
     const BLAS_INT ldB = (BLAS_INT)B_cols;
@@ -82,7 +112,15 @@ void st_dgemm(char T1[], char T2[], gs_UNSIGNED nra, gs_UNSIGNED nca,
 void st_dsymm_ZZt(gs_UNSIGNED n, gs_UNSIGNED m, const double *Z_rm,
                   double *G_rm)
 {
-
+    size_t count;
+    if (!st_math_matrix_size(n, m, &count) ||
+        !st_math_matrix_size(n, n, &count) || !count)
+        return;
+    if (!m)
+    {
+        memset(G_rm, 0, count * sizeof(double));
+        return;
+    }
     const int N = (int)n;
     const int K = (int)m;
 
@@ -110,7 +148,8 @@ void st_dsymm_ZZt(gs_UNSIGNED n, gs_UNSIGNED m, const double *Z_rm,
 
 void st_dcopy(gs_UNSIGNED n, double *dest, double *src)
 {
-    memcpy(dest, src, (size_t)n * sizeof(double));
+    if (n && dest != src && n <= SIZE_MAX / sizeof(double))
+        memcpy(dest, src, (size_t)n * sizeof(double));
 }
 
 void st_dscal(gs_UNSIGNED n, double a, double *X)
@@ -121,6 +160,10 @@ void st_dscal(gs_UNSIGNED n, double a, double *X)
 
 static int dgetrf_rm(int n, double *A_rm, int lda_rm, int *ipiv)
 {
+    if (n < 0 || (n && (size_t)n > SIZE_MAX / (size_t)n / sizeof(double)))
+        return -1010;
+    if (!n)
+        return 0;
     int info = 0;
     int ldA = (n > 0) ? n : 1;
 
@@ -141,6 +184,17 @@ static int dgetrf_rm(int n, double *A_rm, int lda_rm, int *ipiv)
 void st_dgetrf(double *a, gs_UNSIGNED nn, gs_UNSIGNED *indx, double *d)
 
 {
+    if (nn > INT_MAX || nn > SIZE_MAX / sizeof(int))
+    {
+        gs_info(gv, -1, "Invalid matrix size in st_dgetrf");
+        *d = -1010;
+        return;
+    }
+    if (!nn)
+    {
+        *d = 0;
+        return;
+    }
     int n = (int)nn;
     int lda_rm = (int)nn;
 
@@ -153,23 +207,35 @@ void st_dgetrf(double *a, gs_UNSIGNED nn, gs_UNSIGNED *indx, double *d)
     }
 
     int info = dgetrf_rm(n, a, lda_rm, ipiv);
+    if (info < 0)
+    {
+        *d = (double)info;
+        free(ipiv);
+        gs_info(gv, -1, "Error in dgetrf");
+        return;
+    }
 
     for (gs_UNSIGNED i = 0; i < nn; ++i)
         indx[i] = (gs_UNSIGNED)ipiv[i];
 
     *d = (double)info;
 
+    free(ipiv);
     if (info > 0)
     {
         gs_info(gv, -1, "Singular coefficient matrix in dgetrf");
     }
-
-    free(ipiv);
 }
 
 static int dgetrs_rm(int n, const double *A_rm, int lda_rm, const int *ipiv,
                      double *b_rm)
 {
+    size_t count;
+    if (n < 0 || !st_math_matrix_size((gs_UNSIGNED)n, (gs_UNSIGNED)n,
+                                     &count))
+        return -1010;
+    if (!n)
+        return 0;
     int info = 0;
     int nrhs = 1;
 
@@ -206,6 +272,15 @@ static int dgetrs_rm(int n, const double *A_rm, int lda_rm, const int *ipiv,
 
 void st_dgetrs(double *a, gs_UNSIGNED nn, gs_UNSIGNED *indx, double *b)
 {
+    size_t count;
+    if (!st_math_matrix_size(nn, nn, &count) ||
+        nn > SIZE_MAX / sizeof(int))
+    {
+        gs_info(gv, -1, "Invalid matrix size in st_dgetrs");
+        return;
+    }
+    if (!nn)
+        return;
     int n = (int)nn;
     int lda_rm = (int)nn;
 
@@ -217,18 +292,29 @@ void st_dgetrs(double *a, gs_UNSIGNED nn, gs_UNSIGNED *indx, double *b)
     }
 
     for (int i = 0; i < n; ++i)
+    {
+        if (!indx[i] || indx[i] > nn)
+        {
+            free(ipiv);
+            gs_info(gv, -1, "Invalid pivot in st_dgetrs");
+            return;
+        }
         ipiv[i] = (int)indx[i];
+    }
 
     int info = dgetrs_rm(n, a, lda_rm, ipiv, b);
 
+    free(ipiv);
     if (info != 0)
         gs_info(gv, -1, "Error in dgetrs");
-
-    free(ipiv);
 }
 
 static int dgetri_rm(int n, double *A_rm, int lda_rm, const int *ipiv)
 {
+    if (n < 0 || (n && (size_t)n > SIZE_MAX / (size_t)n / sizeof(double)))
+        return -1010;
+    if (!n)
+        return 0;
     int info = 0;
     int ldA = (n > 0) ? n : 1;
 
@@ -248,9 +334,11 @@ static int dgetri_rm(int n, double *A_rm, int lda_rm, const int *ipiv)
         return info;
     }
 
-    lwork = (int)work_query;
-    if (lwork < 1)
-        lwork = 1;
+    if (!st_math_work_size(work_query, &lwork))
+    {
+        free(A_cm);
+        return -1010;
+    }
 
     double *work = (double *)malloc((size_t)lwork * sizeof(double));
     if (!work)
@@ -271,6 +359,13 @@ static int dgetri_rm(int n, double *A_rm, int lda_rm, const int *ipiv)
 
 void st_dgetri(double *a, gs_UNSIGNED nn, gs_UNSIGNED *indx, double *inv)
 {
+    if (!nn)
+        return;
+    if (nn > INT_MAX || nn > SIZE_MAX / sizeof(int))
+    {
+        gs_info(gv, -1, "Invalid matrix size in st_dgetri");
+        return;
+    }
     int n = (int)nn;
     int lda_rm = (int)nn;
 
@@ -282,31 +377,58 @@ void st_dgetri(double *a, gs_UNSIGNED nn, gs_UNSIGNED *indx, double *inv)
     }
 
     for (int i = 0; i < n; ++i)
+    {
+        if (!indx[i] || indx[i] > nn)
+        {
+            free(ipiv);
+            gs_info(gv, -1, "Invalid pivot in st_dgetri");
+            return;
+        }
         ipiv[i] = (int)indx[i];
+    }
 
     int info = dgetri_rm(n, a, lda_rm, ipiv);
 
     if (info != 0)
     {
-        gs_info(gv, -1, "Error in dgetri");
         free(ipiv);
+        gs_info(gv, -1, "Error in dgetri");
         return;
     }
 
-    memcpy(inv, a, (size_t)n * (size_t)n * sizeof(double));
+    if (inv != a)
+        memcpy(inv, a, (size_t)n * (size_t)n * sizeof(double));
 
     free(ipiv);
 }
 
 void st_dgetri_inv(double *a, double *inva, gs_UNSIGNED n)
 {
-    double d;
-    gs_UNSIGNED *indx = malloc(n * sizeof(gs_UNSIGNED));
-
-    st_dgetrf(a, n, indx, &d);
-    st_dgetri(a, n, indx, inva);
-
-    free(indx);
+    size_t count;
+    if (!st_math_matrix_size(n, n, &count) || n > SIZE_MAX / sizeof(int))
+    {
+        gs_info(gv, -1, "Invalid matrix size in st_dgetri_inv");
+        return;
+    }
+    if (!n)
+        return;
+    int *piv = malloc((size_t)n * sizeof(*piv));
+    if (!piv)
+    {
+        gs_info(gv, -1, "Out of memory in st_dgetri_inv");
+        return;
+    }
+    int info = dgetrf_rm((int)n, a, (int)n, piv);
+    if (!info)
+        info = dgetri_rm((int)n, a, (int)n, piv);
+    free(piv);
+    if (info)
+    {
+        gs_info(gv, -1, "Error in st_dgetri_inv");
+        return;
+    }
+    if (inva != a)
+        memcpy(inva, a, count * sizeof(double));
 }
 
 void st_inv(double *a, double *inva, int *nn)
@@ -318,6 +440,12 @@ void st_inv(double *a, double *inva, int *nn)
 
 static int dgesv_rm(int n, double *A_rm, int lda_rm, double *x_rm, int *ipiv)
 {
+    size_t count;
+    if (n < 0 || !st_math_matrix_size((gs_UNSIGNED)n, (gs_UNSIGNED)n,
+                                     &count))
+        return -1010;
+    if (!n)
+        return 0;
     int info = 0;
     int nrhs = 1;
 
@@ -354,7 +482,19 @@ static int dgesv_rm(int n, double *A_rm, int lda_rm, double *x_rm, int *ipiv)
 void st_dgesv(gs_UNSIGNED nra, gs_UNSIGNED nca, double *A, double *x, double *b,
               int *retval)
 {
-    (void)nca;
+    size_t count;
+    if (nra != nca || !st_math_matrix_size(nra, nca, &count) ||
+        nra > SIZE_MAX / sizeof(int))
+    {
+        gs_info(gv, -1, "Invalid matrix size in st_dgesv");
+        *retval = -2;
+        return;
+    }
+    if (!nra)
+    {
+        *retval = 0;
+        return;
+    }
 
     int n = (int)nra;
     int lda_rm = (int)nra;
@@ -374,9 +514,10 @@ void st_dgesv(gs_UNSIGNED nra, gs_UNSIGNED nca, double *A, double *x, double *b,
 
     free(ipiv);
 
-    if (info > 0)
+    if (info != 0)
     {
-        gs_info(gv, -1, "Singular matrix in the MME (dgesv)");
+        gs_info(gv, -1, info > 0 ? "Singular matrix in the MME (dgesv)"
+                                : "Error in dgesv");
         *retval = -2;
         return;
     }
@@ -387,10 +528,18 @@ void st_dgesv(gs_UNSIGNED nra, gs_UNSIGNED nca, double *A, double *x, double *b,
 static int dsyevr_vals_rm_m(int n, double *A_rm, int lda_rm, double *w,
                             int *m_out)
 {
+    size_t count;
+    if (m_out)
+        *m_out = 0;
+    if (n < 0 || !st_math_matrix_size((gs_UNSIGNED)n, (gs_UNSIGNED)n,
+                                     &count))
+        return -1010;
+    if (!n)
+        return 0;
     int info = 0;
 
-    int ldA = (n > 0) ? n : 1;
-    double *A_cm = (double *)malloc((size_t)ldA * (size_t)n * sizeof(double));
+    int ldA = n;
+    double *A_cm = (double *)malloc(count * sizeof(double));
     if (!A_cm)
         return -1010;
 
@@ -425,12 +574,13 @@ static int dsyevr_vals_rm_m(int n, double *A_rm, int lda_rm, double *w,
         return info;
     }
 
-    lwork = (int)work_query;
-    liwork = (int)iwork_query;
-    if (lwork < 1)
-        lwork = 1;
-    if (liwork < 1)
-        liwork = 1;
+    if (!st_math_work_size(work_query, &lwork) || iwork_query < 1 ||
+        (size_t)iwork_query > SIZE_MAX / sizeof(int))
+    {
+        free(A_cm);
+        return -1010;
+    }
+    liwork = iwork_query;
 
     double *work = (double *)malloc((size_t)lwork * sizeof(double));
     int *iwork = (int *)malloc((size_t)liwork * sizeof(int));
@@ -459,6 +609,14 @@ static int dsyevr_vals_rm_m(int n, double *A_rm, int lda_rm, double *w,
 
 void st_dsyevr(double *a, double *w, gs_UNSIGNED N)
 {
+    size_t count;
+    if (!st_math_matrix_size(N, N, &count))
+    {
+        gs_info(gv, -1, "Invalid matrix size in st_dsyevr");
+        return;
+    }
+    if (!N)
+        return;
     int n = (int)N;
     int lda_rm = (int)N;
 
@@ -470,7 +628,7 @@ void st_dsyevr(double *a, double *w, gs_UNSIGNED N)
         gs_info(gv, -2, "Matrix is not positive definite");
     }
 
-    if (info > 0)
+    if (info != 0)
     {
         gs_info(gv, -2, "Computation of eigenvalues failed");
     }
@@ -485,10 +643,18 @@ void st_eigen(double *a, double *w, int *NN)
 static int dsyevr_vecs_rm(int n, double *A_rm, int lda_rm, double *w,
                           double *Z_rm, int ldZ_rm, int *m_out)
 {
+    size_t count;
+    if (m_out)
+        *m_out = 0;
+    if (n < 0 || !st_math_matrix_size((gs_UNSIGNED)n, (gs_UNSIGNED)n,
+                                     &count))
+        return -1010;
+    if (!n)
+        return 0;
     int info = 0;
 
-    int ldA = (n > 0) ? n : 1;
-    double *A_cm = (double *)malloc((size_t)ldA * (size_t)n * sizeof(double));
+    int ldA = n;
+    double *A_cm = (double *)malloc(count * sizeof(double));
     if (!A_cm)
         return -1010;
 
@@ -534,12 +700,15 @@ static int dsyevr_vecs_rm(int n, double *A_rm, int lda_rm, double *w,
         return info;
     }
 
-    lwork = (int)work_query;
-    liwork = (int)iwork_query;
-    if (lwork < 1)
-        lwork = 1;
-    if (liwork < 1)
-        liwork = 1;
+    if (!st_math_work_size(work_query, &lwork) || iwork_query < 1 ||
+        (size_t)iwork_query > SIZE_MAX / sizeof(int))
+    {
+        free(isuppz);
+        free(Z_cm);
+        free(A_cm);
+        return -1010;
+    }
+    liwork = iwork_query;
 
     double *work = (double *)malloc((size_t)lwork * sizeof(double));
     int *iwork = (int *)malloc((size_t)liwork * sizeof(int));
@@ -578,6 +747,14 @@ static int dsyevr_vecs_rm(int n, double *A_rm, int lda_rm, double *w,
 
 void st_dsyevr_v(double *a, double *w, double *z, gs_UNSIGNED N)
 {
+    size_t count;
+    if (!st_math_matrix_size(N, N, &count))
+    {
+        gs_info(gv, -1, "Invalid matrix size in st_dsyevr_v");
+        return;
+    }
+    if (!N)
+        return;
     int n = (int)N;
     int lda_rm = (int)N;
     int ldz_rm = (int)N;
@@ -585,7 +762,7 @@ void st_dsyevr_v(double *a, double *w, double *z, gs_UNSIGNED N)
     int m = 0;
     int info = dsyevr_vecs_rm(n, a, lda_rm, w, z, ldz_rm, &m);
 
-    if (info > 0)
+    if (info != 0)
     {
         gs_info(gv, -1, "Error in st_dsyevr_v");
     }
@@ -601,9 +778,16 @@ void st_dsyevr_v_R(double *a, double *w, double *z, int *nn)
 static int dgesvd_rm_S(int m, int n, double *A_rm, int lda_rm, double *Svals,
                        double *U_rm, int ldu_rm, double *VT_rm, int ldvt_rm)
 {
+    size_t count;
+    if (m < 0 || n < 0 ||
+        !st_math_matrix_size((gs_UNSIGNED)m, (gs_UNSIGNED)n, &count))
+        return -1010;
+    if (!m || !n)
+        return 0;
+    int rank = m < n ? m : n;
     int info = 0;
 
-    if (m >= n && lda_rm == n && ldu_rm == n && ldvt_rm == n)
+    if (lda_rm == n && ldu_rm == rank && ldvt_rm == n)
     {
         char jobu = 'S';
         char jobvt = 'S';
@@ -613,7 +797,7 @@ static int dgesvd_rm_S(int m, int n, double *A_rm, int lda_rm, double *Svals,
 
         int ldA = (n > 0) ? n : 1;
         int ldU = (n > 0) ? n : 1;
-        int ldVT = (n > 0) ? n : 1;
+        int ldVT = rank;
 
         int lwork = -1;
         double work_query = 0.0;
@@ -625,9 +809,8 @@ static int dgesvd_rm_S(int m, int n, double *A_rm, int lda_rm, double *Svals,
         if (info != 0)
             return info;
 
-        lwork = (int)work_query;
-        if (lwork < 1)
-            lwork = 1;
+        if (!st_math_work_size(work_query, &lwork))
+            return -1010;
 
         double *work = (double *)malloc((size_t)lwork * sizeof(double));
         if (!work)
@@ -642,10 +825,10 @@ static int dgesvd_rm_S(int m, int n, double *A_rm, int lda_rm, double *Svals,
 
     int ldA = (m > 0) ? m : 1;
     int ldU = (m > 0) ? m : 1;
-    int ldVT = (n > 0) ? n : 1;
+    int ldVT = rank;
 
     double *A_cm = (double *)malloc((size_t)ldA * (size_t)n * sizeof(double));
-    double *U_cm = (double *)malloc((size_t)ldU * (size_t)n * sizeof(double));
+    double *U_cm = (double *)malloc((size_t)ldU * (size_t)rank * sizeof(double));
     double *VT_cm = (double *)malloc((size_t)ldVT * (size_t)n * sizeof(double));
     if (!A_cm || !U_cm || !VT_cm)
     {
@@ -674,9 +857,13 @@ static int dgesvd_rm_S(int m, int n, double *A_rm, int lda_rm, double *Svals,
         return info;
     }
 
-    lwork = (int)work_query;
-    if (lwork < 1)
-        lwork = 1;
+    if (!st_math_work_size(work_query, &lwork))
+    {
+        free(VT_cm);
+        free(U_cm);
+        free(A_cm);
+        return -1010;
+    }
 
     double *work = (double *)malloc((size_t)lwork * sizeof(double));
     if (!work)
@@ -693,9 +880,9 @@ static int dgesvd_rm_S(int m, int n, double *A_rm, int lda_rm, double *Svals,
     if (info == 0)
     {
 
-        cm_to_rm(U_cm, m, n, ldU, U_rm, ldu_rm);
+        cm_to_rm(U_cm, m, rank, ldU, U_rm, ldu_rm);
 
-        cm_to_rm(VT_cm, n, n, ldVT, VT_rm, ldvt_rm);
+        cm_to_rm(VT_cm, rank, n, ldVT, VT_rm, ldvt_rm);
     }
 
     free(work);
@@ -708,16 +895,25 @@ static int dgesvd_rm_S(int m, int n, double *A_rm, int lda_rm, double *Svals,
 
 void st_dgesvd_ginv(double *a, double *inva, gs_UNSIGNED nrow, gs_UNSIGNED ncol)
 {
+    size_t count;
+    if (!st_math_matrix_size(nrow, ncol, &count))
+    {
+        gs_info(gv, -1, "Invalid matrix size in st_dgesvd_ginv");
+        return;
+    }
+    if (!count)
+        return;
     int m = (int)nrow;
     int n = (int)ncol;
+    int rank = m < n ? m : n;
 
     int lda_rm = n;
-    int ldu_rm = n;
+    int ldu_rm = rank;
     int ldvt_rm = n;
 
-    double *u = (double *)malloc((size_t)m * (size_t)n * sizeof(double));
-    double *s = (double *)malloc((size_t)n * sizeof(double));
-    double *vt = (double *)malloc((size_t)n * (size_t)n * sizeof(double));
+    double *u = (double *)malloc((size_t)m * (size_t)rank * sizeof(double));
+    double *s = (double *)malloc((size_t)rank * sizeof(double));
+    double *vt = (double *)malloc((size_t)rank * (size_t)n * sizeof(double));
 
     double *tmp = (double *)malloc((size_t)m * (size_t)n * sizeof(double));
 
@@ -734,16 +930,16 @@ void st_dgesvd_ginv(double *a, double *inva, gs_UNSIGNED nrow, gs_UNSIGNED ncol)
     int info = dgesvd_rm_S(m, n, a, lda_rm, s, u, ldu_rm, vt, ldvt_rm);
     if (info != 0)
     {
-        gs_info(gv, -1, "Error in dgesvd (st_dgesvd_ginv)");
         free(tmp);
         free(vt);
         free(s);
         free(u);
+        gs_info(gv, -1, "Error in dgesvd (st_dgesvd_ginv)");
         return;
     }
 
     const double tol = 1.0e-9;
-    for (int i = 0; i < n; ++i)
+    for (int i = 0; i < rank; ++i)
     {
         double di = (s[i] > tol) ? (1.0 / s[i]) : 0.0;
         double *row = vt + (size_t)i * (size_t)n;
@@ -751,7 +947,7 @@ void st_dgesvd_ginv(double *a, double *inva, gs_UNSIGNED nrow, gs_UNSIGNED ncol)
             row[j] *= di;
     }
 
-    st_dgemm("N", "N", (gs_UNSIGNED)m, (gs_UNSIGNED)n, (gs_UNSIGNED)n,
+    st_dgemm("N", "N", (gs_UNSIGNED)m, (gs_UNSIGNED)rank, (gs_UNSIGNED)rank,
              (gs_UNSIGNED)n, u, vt, tmp);
 
     for (int i = 0; i < n; ++i)
@@ -772,9 +968,16 @@ void st_dgesvd_ginv(double *a, double *inva, gs_UNSIGNED nrow, gs_UNSIGNED ncol)
 static int dgesdd_rm_S(int m, int n, double *A_rm, int lda_rm, double *Svals,
                        double *U_rm, int ldu_rm, double *VT_rm, int ldvt_rm)
 {
+    size_t count;
+    if (m < 0 || n < 0 ||
+        !st_math_matrix_size((gs_UNSIGNED)m, (gs_UNSIGNED)n, &count))
+        return -1010;
+    if (!m || !n)
+        return 0;
+    int rank = m < n ? m : n;
     int info = 0;
 
-    if (m >= n && lda_rm == n && ldu_rm == n && ldvt_rm == n)
+    if (lda_rm == n && ldu_rm == rank && ldvt_rm == n)
     {
         char jobz = 'S';
 
@@ -783,9 +986,9 @@ static int dgesdd_rm_S(int m, int n, double *A_rm, int lda_rm, double *Svals,
         int ldA = (n > 0) ? n : 1;
 
         int ldU = (n > 0) ? n : 1;
-        int ldVT = (n > 0) ? n : 1;
+        int ldVT = rank;
 
-        int *iwork = (int *)malloc((size_t)8 * (size_t)n * sizeof(int));
+        int *iwork = (int *)malloc((size_t)8 * (size_t)rank * sizeof(int));
         if (!iwork)
             return -1010;
 
@@ -801,9 +1004,11 @@ static int dgesdd_rm_S(int m, int n, double *A_rm, int lda_rm, double *Svals,
             return info;
         }
 
-        lwork = (int)work_query;
-        if (lwork < 1)
-            lwork = 1;
+        if (!st_math_work_size(work_query, &lwork))
+        {
+            free(iwork);
+            return -1010;
+        }
 
         double *work = (double *)malloc((size_t)lwork * sizeof(double));
         if (!work)
@@ -825,16 +1030,25 @@ static int dgesdd_rm_S(int m, int n, double *A_rm, int lda_rm, double *Svals,
 
 void st_dgesdd_ginv(double *a, double *inva, gs_UNSIGNED nrow, gs_UNSIGNED ncol)
 {
+    size_t count;
+    if (!st_math_matrix_size(nrow, ncol, &count))
+    {
+        gs_info(gv, -1, "Invalid matrix size in st_dgesdd_ginv");
+        return;
+    }
+    if (!count)
+        return;
     int m = (int)nrow;
     int n = (int)ncol;
+    int rank = m < n ? m : n;
 
     int lda_rm = n;
-    int ldu_rm = n;
+    int ldu_rm = rank;
     int ldvt_rm = n;
 
-    double *u = (double *)malloc((size_t)m * (size_t)n * sizeof(double));
-    double *s = (double *)malloc((size_t)n * sizeof(double));
-    double *vt = (double *)malloc((size_t)n * (size_t)n * sizeof(double));
+    double *u = (double *)malloc((size_t)m * (size_t)rank * sizeof(double));
+    double *s = (double *)malloc((size_t)rank * sizeof(double));
+    double *vt = (double *)malloc((size_t)rank * (size_t)n * sizeof(double));
 
     if (!u || !s || !vt)
     {
@@ -848,15 +1062,15 @@ void st_dgesdd_ginv(double *a, double *inva, gs_UNSIGNED nrow, gs_UNSIGNED ncol)
     int info = dgesdd_rm_S(m, n, a, lda_rm, s, u, ldu_rm, vt, ldvt_rm);
     if (info != 0)
     {
-        gs_info(gv, -1, "Error in dgesdd (st_dgesdd_ginv)");
         free(vt);
         free(s);
         free(u);
+        gs_info(gv, -1, "Error in dgesdd (st_dgesdd_ginv)");
         return;
     }
 
     const double tol = 1.0e-9;
-    for (int i = 0; i < n; ++i)
+    for (int i = 0; i < rank; ++i)
     {
         double di = (s[i] > tol) ? (1.0 / s[i]) : 0.0;
         double *row = vt + (size_t)i * (size_t)n;
@@ -864,8 +1078,8 @@ void st_dgesdd_ginv(double *a, double *inva, gs_UNSIGNED nrow, gs_UNSIGNED ncol)
             row[j] *= di;
     }
 
-    st_dgemm("T", "T", (gs_UNSIGNED)n, (gs_UNSIGNED)n, (gs_UNSIGNED)m,
-             (gs_UNSIGNED)n, vt, u, inva);
+    st_dgemm("T", "T", (gs_UNSIGNED)rank, (gs_UNSIGNED)n, (gs_UNSIGNED)m,
+             (gs_UNSIGNED)rank, vt, u, inva);
 
     free(vt);
     free(s);
@@ -919,41 +1133,71 @@ static void symmetrize_from_lower_rm(double *A_rm, int n)
     }
 }
 
+static int st_math_R_dimension(SEXP value, const char *name)
+{
+    if (XLENGTH(value) != 1 ||
+        !(isInteger(value) || isReal(value)))
+        error("%s must be one nonnegative integer", name);
+    double dimension = asReal(value);
+    if (!isfinite(dimension) || dimension < 0 || dimension > INT_MAX ||
+        dimension != floor(dimension))
+        error("%s must be one nonnegative integer", name);
+    return (int)dimension;
+}
+
 SEXP call_st_dgemm_R(SEXP T1_, SEXP T2_, SEXP A_, SEXP B_, SEXP nra_, SEXP nca_,
                      SEXP nrb_, SEXP ncb_)
 {
+    if (TYPEOF(T1_) != STRSXP || XLENGTH(T1_) != 1 ||
+        STRING_ELT(T1_, 0) == NA_STRING ||
+        TYPEOF(T2_) != STRSXP || XLENGTH(T2_) != 1 ||
+        STRING_ELT(T2_, 0) == NA_STRING)
+        error("Transpose flags must be one string each");
     const char *T1 = CHAR(STRING_ELT(T1_, 0));
     const char *T2 = CHAR(STRING_ELT(T2_, 0));
+    if ((strcmp(T1, "N") && strcmp(T1, "T") && strcmp(T1, "C")) ||
+        (strcmp(T2, "N") && strcmp(T2, "T") && strcmp(T2, "C")))
+        error("Transpose flags must be N, T or C");
 
-    unsigned int nra = (unsigned int)asInteger(nra_);
-    unsigned int nca = (unsigned int)asInteger(nca_);
-    unsigned int nrb = (unsigned int)asInteger(nrb_);
-    unsigned int ncb = (unsigned int)asInteger(ncb_);
-
-    int transA = (strcmp(T1, "N") == 0) ? 0 : 1;
-    int transB = (strcmp(T2, "N") == 0) ? 0 : 1;
-    unsigned int m = transA ? nca : nra;
-    unsigned int kA = transA ? nra : nca;
-    unsigned int kB = transB ? ncb : nrb;
-    unsigned int n = transB ? nrb : ncb;
-
+    int nra = st_math_R_dimension(nra_, "nra");
+    int nca = st_math_R_dimension(nca_, "nca");
+    int nrb = st_math_R_dimension(nrb_, "nrb");
+    int ncb = st_math_R_dimension(ncb_, "ncb");
+    int transA = strcmp(T1, "N") != 0;
+    int transB = strcmp(T2, "N") != 0;
+    int m = transA ? nca : nra;
+    int kA = transA ? nra : nca;
+    int kB = transB ? ncb : nrb;
+    int n = transB ? nrb : ncb;
+    size_t countA, countB, countC;
+    if (!st_math_matrix_size((gs_UNSIGNED)nra, (gs_UNSIGNED)nca, &countA) ||
+        !st_math_matrix_size((gs_UNSIGNED)nrb, (gs_UNSIGNED)ncb, &countB) ||
+        !st_math_matrix_size((gs_UNSIGNED)m, (gs_UNSIGNED)n, &countC) ||
+        (uint64_t)countC > (uint64_t)R_XLEN_T_MAX)
+        error("Matrix dimensions exceed supported storage");
     if (kA != kB)
-        error("nonconformable: kA=%u, kB=%u", kA, kB);
-
+        error("nonconformable: kA=%d, kB=%d", kA, kB);
     if (!isReal(A_) || !isReal(B_))
         error("A and B must be double");
-    if ((unsigned int)XLENGTH(A_) < nra * nca)
+    if ((uint64_t)XLENGTH(A_) < (uint64_t)countA)
         error("A too short");
-    if ((unsigned int)XLENGTH(B_) < nrb * ncb)
+    if ((uint64_t)XLENGTH(B_) < (uint64_t)countB)
         error("B too short");
 
-    SEXP C_ = PROTECT(allocVector(REALSXP, (R_xlen_t)m * (R_xlen_t)n));
-
-    char t1buf[2] = {T1[0], '\0'};
-    char t2buf[2] = {T2[0], '\0'};
-
-    st_dgemm(t1buf, t2buf, nra, nca, nrb, ncb, REAL(A_), REAL(B_), REAL(C_));
-
+    SEXP C_ = PROTECT(allocVector(REALSXP, (R_xlen_t)countC));
+    if (countC)
+    {
+        if (kA)
+        {
+            char t1buf[2] = {T1[0], '\0'};
+            char t2buf[2] = {T2[0], '\0'};
+            st_dgemm(t1buf, t2buf, (gs_UNSIGNED)nra, (gs_UNSIGNED)nca,
+                     (gs_UNSIGNED)nrb, (gs_UNSIGNED)ncb, REAL(A_), REAL(B_),
+                     REAL(C_));
+        }
+        else
+            memset(REAL(C_), 0, countC * sizeof(double));
+    }
     UNPROTECT(1);
     return C_;
 }
@@ -962,57 +1206,49 @@ void st_dgetrf_R(double *a, int *nn, int *indx, double *d)
 {
     if (!a || !nn || !indx || !d)
         return;
-
-    gs_UNSIGNED n = (gs_UNSIGNED)(*nn);
-
-    gs_UNSIGNED *piv = (gs_UNSIGNED *)malloc((size_t)n * sizeof(gs_UNSIGNED));
-    if (!piv)
+    size_t count;
+    if (*nn < 0 ||
+        !st_math_matrix_size((gs_UNSIGNED)*nn, (gs_UNSIGNED)*nn, &count))
+    {
+        *d = -1010;
         return;
-
-    st_dgetrf(a, n, piv, d);
-
-    for (gs_UNSIGNED i = 0; i < n; ++i)
-        indx[i] = (int)piv[i];
-
-    free(piv);
+    }
+    *d = dgetrf_rm(*nn, a, *nn, indx);
+    if (*d)
+        gs_info(gv, -1, "Error in dgetrf");
 }
 
 void st_dgetrs_R(double *a, int *nn, int *indx, double *b)
 {
-    if (!a || !nn || !indx || !b)
+    if (!a || !nn || !indx || !b || *nn < 0)
         return;
-
-    gs_UNSIGNED n = (gs_UNSIGNED)(*nn);
-
-    gs_UNSIGNED *piv = (gs_UNSIGNED *)malloc((size_t)n * sizeof(gs_UNSIGNED));
-    if (!piv)
+    size_t count;
+    if (!st_math_matrix_size((gs_UNSIGNED)*nn, (gs_UNSIGNED)*nn, &count))
         return;
-
-    for (gs_UNSIGNED i = 0; i < n; ++i)
-        piv[i] = (gs_UNSIGNED)indx[i];
-
-    st_dgetrs(a, n, piv, b);
-
-    free(piv);
+    for (int i = 0; i < *nn; i++)
+        if (indx[i] < 1 || indx[i] > *nn)
+            return;
+    if (dgetrs_rm(*nn, a, *nn, indx, b))
+        gs_info(gv, -1, "Error in dgetrs");
 }
 
 void st_dgetri_R(double *a, int *nn, int *indx, double *inv)
 {
-    if (!a || !nn || !indx || !inv)
+    if (!a || !nn || !indx || !inv || *nn < 0)
         return;
-
-    gs_UNSIGNED n = (gs_UNSIGNED)(*nn);
-
-    gs_UNSIGNED *piv = (gs_UNSIGNED *)malloc((size_t)n * sizeof(gs_UNSIGNED));
-    if (!piv)
+    size_t count;
+    if (!st_math_matrix_size((gs_UNSIGNED)*nn, (gs_UNSIGNED)*nn, &count))
         return;
-
-    for (gs_UNSIGNED i = 0; i < n; ++i)
-        piv[i] = (gs_UNSIGNED)indx[i];
-
-    st_dgetri(a, n, piv, inv);
-
-    free(piv);
+    for (int i = 0; i < *nn; i++)
+        if (indx[i] < 1 || indx[i] > *nn)
+            return;
+    if (dgetri_rm(*nn, a, *nn, indx))
+    {
+        gs_info(gv, -1, "Error in dgetri");
+        return;
+    }
+    if (count && inv != a)
+        memcpy(inv, a, count * sizeof(double));
 }
 
 void st_dgetri_inv_R(double *a, double *inva, int *n)

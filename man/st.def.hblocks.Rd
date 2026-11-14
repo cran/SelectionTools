@@ -58,7 +58,7 @@ marker pairs exceeding \code{ld.threshold} and extends them while the selected
 LD criterion remains at least the threshold. Markers that cannot be joined to
 another marker under the criterion form single-marker blocks.
 
-This function only defines the blocks; it does not yet replace the marker data
+This function only defines the blocks; it does not replace the marker data
 by haplotype loci. That replacement occurs when \code{st.recode.hil} is
 called.
 }

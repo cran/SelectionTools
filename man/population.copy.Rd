@@ -1,6 +1,6 @@
 \name{population.copy}
 \alias{population.copy}
-\title{Copy a simulation population}
+\title{Copies a simulation population}
 
 \description{
 Copies all or a contiguous subset of a source population into a destination
@@ -23,7 +23,11 @@ An invisible \code{list} returned by the compiled routine. The list is an implem
 }
 
 \details{
-The source population is not modified. Raw chromosome data are copied.
+Each derived cache is complete for all individuals or absent throughout a
+population. A mixed source cache causes all marker-genotype, genetic-value and
+phenotype caches to be cleared silently in the source and result.
+
+The source individuals are retained. Raw chromosome data are copied.
 Complete cached genotype, genetic-value, and phenotypic-value categories are
 deep-copied when present in the source. Derived categories are maintained as
 all-or-none population data; allocation failure cannot leave only a subset of

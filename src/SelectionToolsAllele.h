@@ -257,7 +257,9 @@ static inline void st_text_array_free(char **strings, size_t n)
 static inline int st_identity_set(gs_varset_type *x, size_t i, const char *name,
                                   const char *pedigree)
 {
-    if (!x || i >= x->NoInd || !name)
+    if (!x || i >= x->NoInd || !name ||
+        (size_t)x->NoInd > SIZE_MAX / sizeof(*x->IndName) ||
+        (size_t)x->NoInd > SIZE_MAX / sizeof(*x->Pedigree))
         return -1;
     char *n = st_text_dup(name), *p = pedigree ? st_text_dup(pedigree) : NULL;
     if (!n || (pedigree && !p))

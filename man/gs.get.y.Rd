@@ -12,7 +12,7 @@ gs.get.y(data.set = "default", names = FALSE)
 
 \arguments{
    \item{data.set}{Name of the SelectionTools data set.}
-   \item{names}{Logical. Attach individual identifiers as vector names.}
+   \item{names}{Logical. A value of \code{TRUE} attaches individual identifiers as vector names.}
 }
 \value{
 Invisibly returns the current numeric response vector \code{y} in internal

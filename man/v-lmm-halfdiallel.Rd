@@ -33,11 +33,6 @@ unordered cross factor is included, so the model needs no preprocessing.
 The redundant source column \code{geno} is omitted: \code{cross} identifies
 the same crosses and supplies the SCA term.
 It is self-contained: neither source package is needed to load it.
-
-The shared-parent model uses \code{random=~overlay(female, male) + cross},
-using the already prepared \code{cross} factor. The
-\pkg{lme4breeding} reference example has an intercept-only fixed model;
-repetition labels are not fitted as a block effect in that comparison.
 }
 \value{A data frame named \code{halfdiallel}, loaded into the selected
 environment by \code{data}.}

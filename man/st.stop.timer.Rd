@@ -1,9 +1,9 @@
 \name{st.stop.timer}
 \alias{st.stop.timer}
-\title{Start or stop the SelectionTools timing helper}
+\title{Stops the SelectionTools timing helper}
 
 \description{
-Start or stop the SelectionTools timing helper.
+Stops the SelectionTools timing helper.
 }
 
 \usage{
@@ -11,7 +11,7 @@ st.stop.timer(depth=1, info.level=0)
 }
 
 \arguments{
-   \item{depth}{Function argument used by this operation.}
+   \item{depth}{Timer depth, a finite whole number from 1 through 5.}
    \item{info.level}{Function argument used by this operation.}
 }
 \value{

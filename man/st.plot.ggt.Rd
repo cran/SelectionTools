@@ -68,7 +68,7 @@ or another graphics device followed by \code{dev.off()}.
 
 If neither \code{sort.performance} nor \code{show.performance} is requested,
 the established individual-selection and ordering behavior is unchanged.
-When \code{sort.performance = TRUE}, sorting is restricted to the individuals
+When \code{sort.performance = TRUE}, sorting applies only to the individuals
 selected by \code{i.list} or \code{ifilename}; if neither is supplied, all
 individuals in the data set are eligible.  The range \code{f.ind:l.ind} is then
 applied after sorting.  With \code{sort.performance = FALSE}, \code{f.ind} and

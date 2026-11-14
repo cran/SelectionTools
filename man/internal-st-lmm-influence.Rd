@@ -25,7 +25,7 @@ fitting interface.
 all unit IDs and an exact serializable numeric/structural model identity.}
 \item{id}{One integer inventory unit ID.}
 \item{control}{Named fitting-control overrides.}
-\item{keep.fit}{Retain the complete deletion model when TRUE.}
+\item{keep.fit}{The complete deletion model is retained when TRUE.}
 \item{results}{A list in inventory-ID order, with one slot per unit.
 NULL slots are retained as not requested. Present records must belong to
 the fitted model and their stated unit.}

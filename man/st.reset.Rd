@@ -1,9 +1,9 @@
 \name{st.reset}
 \alias{st.reset}
-\title{Reset SelectionTools data and settings}
+\title{Resets SelectionTools data and settings}
 
 \description{
-Reset SelectionTools data and settings.
+Resets SelectionTools data and settings.
 }
 
 \usage{

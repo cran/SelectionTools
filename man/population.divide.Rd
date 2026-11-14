@@ -1,6 +1,6 @@
 \name{population.divide}
 \alias{population.divide}
-\title{Divide a simulation population}
+\title{Divides a simulation population}
 
 \description{
 Moves the first requested individuals of a source population into a new
@@ -21,6 +21,10 @@ An invisible \code{list} returned by the compiled routine. The list is an implem
 }
 
 \details{
+Each derived cache is complete for all individuals or absent throughout a
+population. A mixed source cache causes all marker-genotype, genetic-value and
+phenotype caches to be cleared silently in the source and result.
+
 The operation moves complete individual structures. Therefore chromosome
 data, information fields, genotype data, genetic values, and phenotypic
 values remain attached to the same individuals. No value category is

@@ -37,42 +37,24 @@ synthetic observations; they are illustrative construction choices, not
 variance estimates or independent errors from the original study.
 Plots order is independently randomized within each complete block.
 
-For the field-only model \code{y ~ gen} with random term \code{~block}
-and a common residual variance, genotype marginal means reproduce
+The genotype arithmetic means across the three complete blocks reproduce
 \code{v.tropmaize.phe$yy}, matched by \code{v.tropmaize.phe$ii}, to
-floating-point precision. In this balanced complete-block design the
-fixed-genotype BLUEs equal the genotype arithmetic means, regardless of
-the positive block and residual variance components.
+floating-point precision. With fixed genotype effects, a random block
+effect and a common residual variance, genotype BLUEs equal these arithmetic
+means, regardless of the positive block and residual variance components.
 
-The genomic model has fixed formula \code{y ~ 1}, random formula
-\code{~gen + block}, and \code{ucov = list(gen = A)}, where \code{A}
-is constructed from the tropical-maize markers with \code{gs.make.A}.
-The genomic BLUPs are predictions and are not constrained to reproduce
-the target BLUEs. Both models use the same 792 plot records.
+Genomic predictions are not constrained to reproduce these genotype means.
 
-This three-block, one-environment example replaces the earlier 3960-plot,
-five-environment alpha-lattice construction. The object name and data topic
-are unchanged; the previous \code{env} and \code{rep} columns are absent.
+The data represent one environment; no \code{env} or \code{rep} column
+is stored.
 }
 \source{
 Constructed for the SelectionTools linear mixed-model vignette from the
 genotype identifiers and phenotypic values in \code{v-tropmaize-phe}.
 The original phenotype and marker source is Crossa et al. (2010),
 \emph{Genetics} 186, 713--724, \doi{10.1534/genetics.110.118521}.
-The generator and validation are retained with the development checkpoint.
 }
 \seealso{\code{\link{st.lmm}}, \code{\link{st.lsm}},
 \code{\link{gs.make.A}}, \code{\link{v-tropmaize-phe}},
 \code{\link{v-tropmaize-vcf}}}
-\examples{
-data("v-lmm-tropmaize", package = "SelectionTools")
-dim(tropmaize)
-table(tropmaize$block)
-head(tropmaize)
-\dontrun{
-maize.field <- st.lmm(y ~ gen, random = ~block,
-    data = tropmaize, ddf = "asymptotic", random.test = "none")
-st.lsm(maize.field, ~gen)
-}
-}
 \keyword{datasets}

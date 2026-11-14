@@ -5,6 +5,10 @@
 #define REVISION "$Revision: 19.2 $"
 
 #include <stdio.h>
+#include <R_ext/Print.h>
+int st_text_write(char *, size_t, const char *, ...) R_PRINTF_FORMAT(3, 4);
+void st_text_message(char *, size_t, const char *);
+
 #include "SelectionToolsAllele.h"
 #include <stdlib.h>
 #include <stddef.h>
@@ -47,7 +51,7 @@
 #define omp_set_num_threads(thr)                                               \
     {                                                                          \
     }
-#define omp_get_num_threads() 0
+#define omp_get_num_threads() 1
 #define omp_set_dynamic(thr)                                                   \
     {                                                                          \
     }
@@ -497,31 +501,47 @@ void rng_init_seed(int *seeds, int *nseeds, int *retval)
 #define CCTIME __TIME__
 #define CCDATE __DATE__
 
-#define yCalloc(n, t) (t *)malloc((size_t)(n) * sizeof(t))
+static void *yCalloc_impl(size_t count, size_t size)
+{
+    if (!count || !size || count > SIZE_MAX / size)
+        return NULL;
+    return malloc(count * size);
+}
+
+#define yCalloc(n, t) (t *)yCalloc_impl((size_t)(n), sizeof(t))
 
 static void *yRealloc_impl(void *ptr, size_t count, size_t size)
 {
-    void *new_ptr;
-
-    if ((count == 0) || (size == 0))
-        goto fail;
+    if (!count || !size)
+    {
+        free(ptr);
+        return NULL;
+    }
     if (count > SIZE_MAX / size)
-        goto fail;
-
-    new_ptr = realloc(ptr, count * size);
-
-    if (new_ptr == NULL)
-        goto fail;
-
-    return new_ptr;
-
-fail:
-    free(ptr);
-    return NULL;
+        return NULL;
+    return realloc(ptr, count * size);
 }
 
 #define yRealloc(p, n, t)                                                      \
     (t *)yRealloc_impl((void *)(p), (size_t)(n), sizeof(t))
+
+#define yResize(p, n, t, failure)                                              \
+    do                                                                        \
+    {                                                                         \
+        size_t st_resize_count = (size_t)(n);                                  \
+        if (!st_resize_count)                                                 \
+        {                                                                     \
+            free(p);                                                          \
+            (p) = NULL;                                                       \
+            failure;                                                          \
+        }                                                                     \
+        t *st_resize_result = yRealloc_impl((p), st_resize_count, sizeof(t));   \
+        if (!st_resize_result)                                                \
+        {                                                                     \
+            failure;                                                          \
+        }                                                                     \
+        (p) = st_resize_result;                                                \
+    } while (0)
 
 #define yFree(p) (free((void *)(p)), (p) = NULL)
 
@@ -548,6 +568,7 @@ typedef struct
 } TLoc;
 
 typedef struct st_sim_storage st_sim_storage;
+typedef struct st_sim_ancestry st_sim_ancestry;
 
 typedef struct
 {
@@ -583,8 +604,7 @@ typedef struct
     float *PValue;
     int *genotype;
     char *info;
-    char *name;
-    char *pedigree;
+    st_sim_ancestry *identity;
 } TInd;
 
 typedef struct
@@ -675,7 +695,7 @@ TSet *AllSet;
 unsigned long int MDP = 0;
 
 static uint64_t st_identity_serial = 0;
-static const char **st_cross_left = NULL, **st_cross_right = NULL;
+static st_sim_ancestry **st_cross_left = NULL, **st_cross_right = NULL;
 static uint64_t st_cross_first = 0;
 static size_t st_cross_count = 0;
 void ps_identity_observe(const char *name)
@@ -1294,6 +1314,33 @@ size_t st_sim_pool_validate(void)
 }
 #endif
 
+static void st_sim_pool_trim(void)
+{
+#ifdef MT
+#pragma omp critical(st_sim_pool_lock)
+#endif
+    {
+        st_sim_pool_block **link = &st_sim_pool_blocks;
+
+        while (*link)
+        {
+            st_sim_pool_block *block = *link;
+            st_sim_pool_span *span = block->first;
+
+            if (!span->used && !span->prev && !span->next)
+            {
+                st_sim_pool_bin_remove(span);
+                *link = block->next;
+                st_sim_pool_stats.reserved_bytes -= block->bytes;
+                free(block);
+                ST_SIM_POOL_COUNT(backing_frees);
+            }
+            else
+                link = &block->next;
+        }
+    }
+}
+
 #undef ST_SIM_POOL_COUNT
 
 static void *st_sim_alloc_array(size_t count, size_t size)
@@ -1308,23 +1355,6 @@ static void *st_sim_resize_array(void *ptr, size_t count, size_t size)
     if (!count || !size || count > SIZE_MAX / size)
         return NULL;
     return st_sim_pool_resize(ptr, count * size);
-}
-
-static char *st_sim_text_dup(const char *text)
-{
-    size_t bytes;
-    char *copy;
-
-    if (!text)
-        return NULL;
-    bytes = strlen(text);
-    if (bytes >= INT_MAX || bytes == SIZE_MAX)
-        return NULL;
-    bytes++;
-    copy = st_sim_pool_alloc(bytes);
-    if (copy)
-        memcpy(copy, text, bytes);
-    return copy;
 }
 
 #define st_sim_alloc(n, t) \
@@ -1373,15 +1403,17 @@ static int st_sim_loci_capacity(int current, size_t needed, int *capacity)
         *capacity = current;
         return 0;
     }
-    result = (size_t)current;
+    result = needed;
     if (result < (size_t)NoLociInit)
         result = (size_t)NoLociInit;
-    while (result < needed)
+    if (result % (size_t)NoLociInit)
     {
-        if (result > (size_t)INT_MAX / 2)
+        size_t extra = (size_t)NoLociInit - result % (size_t)NoLociInit;
+
+        if (result > (size_t)INT_MAX - extra)
             result = INT_MAX;
         else
-            result *= 2;
+            result += extra;
     }
     *capacity = (int)result;
     return 0;
@@ -1404,13 +1436,7 @@ static int st_sim_storage_grow(st_sim_storage *storage, size_t needed)
         return 0;
     if (needed > maximum)
         return -1;
-    capacity = storage->NoLociAlloc;
-    if (capacity <= maximum / 2)
-        capacity *= 2;
-    else
-        capacity = maximum;
-    if (capacity < needed)
-        capacity = needed;
+    capacity = needed;
     loci = (TLoc *)st_sim_resize_array(storage->Loc, capacity, sizeof(TLoc));
     if (!loci)
         return -1;
@@ -1471,8 +1497,9 @@ static int st_sim_prepare_capacity(const st_sim_storage *storage,
         if (parent->Hom[start].NoLociUsed < 0 ||
             parent->Hom[start + 1].NoLociUsed < 0)
             return -1;
-        needed = (size_t)parent->Hom[start].NoLociUsed +
-                 (size_t)parent->Hom[start + 1].NoLociUsed;
+        needed = (size_t)parent->Hom[start].NoLociUsed;
+        if ((size_t)parent->Hom[start + 1].NoLociUsed > needed)
+            needed = (size_t)parent->Hom[start + 1].NoLociUsed;
         if (NoLociInit <= 0 || needed > (size_t)INT_MAX - NoLociInit)
             return -1;
         needed += (size_t)NoLociInit;
@@ -1589,187 +1616,524 @@ static int st_sim_storage_compact(st_sim_storage *storage)
     return 0;
 }
 
-static int st_sim_text_alias(const char *text, const char *buffer)
+struct st_sim_ancestry
 {
-    uintptr_t source, destination;
+    size_t references;
+    st_sim_ancestry *left;
+    st_sim_ancestry *right;
+    st_sim_ancestry *release_next;
+    size_t prefix_length;
+    size_t extra_length;
+    size_t name_length;
+    size_t pedigree_length;
+    size_t depth;
+    unsigned int overflow;
+    char text[];
+};
 
-    if (!text || !buffer)
-        return 0;
-    source = (uintptr_t)(const void *)text;
-    destination = (uintptr_t)(const void *)buffer;
-    return source >= destination &&
-           source - destination < st_sim_pool_capacity(buffer);
+typedef struct
+{
+    const st_sim_ancestry *node;
+    int pedigree;
+    int stage;
+} st_sim_ancestry_frame;
+
+typedef struct
+{
+    st_sim_ancestry_frame *frames;
+    size_t count;
+    size_t capacity;
+} st_sim_ancestry_iterator;
+
+static int st_sim_ancestry_retain(st_sim_ancestry *node)
+{
+    int failed = 0;
+    if (!node)
+        return -1;
+#ifdef MT
+#pragma omp critical(st_sim_ancestry_lock)
+#endif
+    {
+        if (!node->references || node->references == SIZE_MAX)
+            failed = 1;
+        else
+            node->references++;
+    }
+    return failed ? -1 : 0;
+}
+
+static int st_sim_ancestry_drop(st_sim_ancestry *node)
+{
+    int last = 0;
+#ifdef MT
+#pragma omp critical(st_sim_ancestry_lock)
+#endif
+    {
+        if (node->references)
+        {
+            node->references--;
+            last = node->references == 0;
+        }
+    }
+    return last;
+}
+
+static void st_sim_ancestry_release(st_sim_ancestry *node)
+{
+    st_sim_ancestry *pending = NULL;
+    if (node && st_sim_ancestry_drop(node))
+    {
+        node->release_next = NULL;
+        pending = node;
+    }
+    while (pending)
+    {
+        st_sim_ancestry *current = pending;
+        pending = current->release_next;
+        st_sim_ancestry *children[] = {current->left, current->right};
+        for (int i = 0; i < 2; i++)
+            if (children[i] && st_sim_ancestry_drop(children[i]))
+            {
+                children[i]->release_next = pending;
+                pending = children[i];
+            }
+        st_sim_pool_free(current);
+    }
+}
+
+static void st_sim_identity_clear(TInd *ind)
+{
+    st_sim_ancestry_release(ind->identity);
+    ind->identity = NULL;
+}
+
+static st_sim_ancestry *st_sim_ancestry_allocate(size_t prefix, size_t extra)
+{
+    if (prefix == SIZE_MAX || extra > SIZE_MAX - prefix - 1 ||
+        prefix + 1 + extra == SIZE_MAX ||
+        prefix + 1 + extra + 1 > SIZE_MAX - sizeof(st_sim_ancestry))
+        return NULL;
+    st_sim_ancestry *node = st_sim_pool_alloc(
+        sizeof(*node) + prefix + 1 + extra + 1);
+    if (!node)
+        return NULL;
+    memset(node, 0, sizeof(*node));
+    node->references = 1;
+    node->prefix_length = prefix;
+    node->extra_length = extra;
+    node->depth = 1;
+    node->text[prefix] = '\0';
+    node->text[prefix + 1 + extra] = '\0';
+    return node;
+}
+
+static st_sim_ancestry *st_sim_ancestry_leaf(const char *name,
+                                           const char *pedigree)
+{
+    if (!name)
+        return NULL;
+    if (!pedigree)
+        pedigree = name;
+    size_t nn = strlen(name), np = strlen(pedigree);
+    if (nn >= INT_MAX || np >= INT_MAX)
+        return NULL;
+    st_sim_ancestry *node = st_sim_ancestry_allocate(nn, np);
+    if (!node)
+        return NULL;
+    memcpy(node->text, name, nn + 1);
+    memcpy(node->text + nn + 1, pedigree, np + 1);
+    node->name_length = nn;
+    node->pedigree_length = np;
+    return node;
+}
+
+static unsigned int st_sim_ancestry_sum(size_t a, size_t b, size_t *out)
+{
+    if (a > SIZE_MAX - b)
+    {
+        *out = SIZE_MAX;
+        return 1;
+    }
+    *out = a + b;
+    return 0;
 }
 
 static int st_sim_identity_set(TInd *ind, const char *name,
                                const char *pedigree)
 {
-    const char *source_pedigree = pedigree ? pedigree : name;
-    char *new_name = ind->name, *new_pedigree = ind->pedigree;
-    size_t name_bytes, pedigree_bytes;
-
-    if (!name)
+    st_sim_ancestry *node = st_sim_ancestry_leaf(name, pedigree);
+    if (!node)
         return -1;
-    name_bytes = strlen(name);
-    pedigree_bytes = strlen(source_pedigree);
-    if (name_bytes >= INT_MAX || pedigree_bytes >= INT_MAX)
-        return -1;
-    name_bytes++;
-    pedigree_bytes++;
-    if (!new_name || st_sim_pool_capacity(new_name) < name_bytes)
-        new_name = (char *)st_sim_pool_alloc(name_bytes);
-    if (!new_name)
-        goto fail;
-    if (!new_pedigree || st_sim_pool_capacity(new_pedigree) < pedigree_bytes)
-        new_pedigree = (char *)st_sim_pool_alloc(pedigree_bytes);
-    if (!new_pedigree)
-        goto fail;
-    if (st_sim_text_alias(source_pedigree, new_name) &&
-        st_sim_text_alias(name, new_pedigree))
-    {
-        new_name = (char *)st_sim_pool_alloc(name_bytes);
-        if (!new_name)
-            goto fail;
-    }
-    if (st_sim_text_alias(source_pedigree, new_name))
-    {
-        memmove(new_pedigree, source_pedigree, pedigree_bytes);
-        memmove(new_name, name, name_bytes);
-    }
-    else
-    {
-        memmove(new_name, name, name_bytes);
-        memmove(new_pedigree, source_pedigree, pedigree_bytes);
-    }
-    if (ind->name && ind->name != new_name)
-        st_sim_pool_free(ind->name);
-    if (ind->pedigree && ind->pedigree != new_pedigree)
-        st_sim_pool_free(ind->pedigree);
-    ind->name = new_name;
-    ind->pedigree = new_pedigree;
-    ps_identity_observe(new_name);
+    st_sim_identity_clear(ind);
+    ind->identity = node;
+    ps_identity_observe(node->text);
     return 0;
-
-fail:
-
-    if (new_name && new_name != ind->name)
-        st_sim_pool_free(new_name);
-    if (new_pedigree && new_pedigree != ind->pedigree)
-        st_sim_pool_free(new_pedigree);
-    return -1;
 }
+
 static int st_sim_identity_copy(TInd *dst, const TInd *src)
 {
-    if (!src->name)
+    st_sim_ancestry *node = src->identity;
+    if (st_sim_ancestry_retain(node))
         return -1;
-    return st_sim_identity_set(dst, src->name, src->pedigree);
+    st_sim_identity_clear(dst);
+    dst->identity = node;
+    return 0;
 }
+
 static int st_sim_identity_new(TInd *ind, const char *population,
                                uint64_t serial, const TInd *left,
                                const TInd *right, const char *operation)
 {
-    const char *a = left ? left->pedigree : NULL;
-    const char *b = right ? right->pedigree : NULL;
-    char *name = ind->name, *pedigree = ind->pedigree;
-    char serial_text[32], *cursor;
-    size_t la, lb, lo, population_len, pedigree_len, serial_len;
-    size_t name_bytes, pedigree_bytes;
-    int serial_chars;
-
-    if (!population || (right && !left) || (left && !right && !operation))
+    char serial_text[32];
+    if (!population || (right && !left) || (left && !right && !operation) ||
+        (left && !left->identity) || (right && !right->identity))
         return -1;
-    if (left && !a)
-        a = left->name;
-    if (right && !b)
-        b = right->name;
-    if ((left && !a) || (right && !b))
+    int written = snprintf(serial_text, sizeof(serial_text), ".%llu",
+                           (unsigned long long)serial);
+    if (written < 0 || (size_t)written >= sizeof(serial_text))
         return -1;
-    la = a ? strlen(a) : 0;
-    lb = b ? strlen(b) : 0;
-    lo = operation ? strlen(operation) : 0;
-    if (la > (size_t)INT_MAX - 8 || lb > (size_t)INT_MAX - 8 - la ||
-        lo > (size_t)INT_MAX - 8 - la - lb)
+    size_t population_length = strlen(population), prefix;
+    if (st_sim_ancestry_sum(population_length, (size_t)written, &prefix))
         return -1;
-    pedigree_len = right ? la + lb + 5 : left ? la + lo + 2 : 0;
-    serial_chars = snprintf(serial_text, sizeof(serial_text), ".%llu",
-                            (unsigned long long)serial);
-    if (serial_chars < 0 || (size_t)serial_chars >= sizeof(serial_text))
+    size_t extra = left && !right ? strlen(operation) : left ? 0 : prefix;
+    st_sim_ancestry *node = st_sim_ancestry_allocate(prefix, extra);
+    if (!node)
         return -1;
-    serial_len = (size_t)serial_chars;
-    population_len = strlen(population);
-    if (population_len > (size_t)INT_MAX - serial_len - 2 ||
-        pedigree_len > (size_t)INT_MAX - serial_len - 2 - population_len)
-        return -1;
-    name_bytes = population_len + serial_len + pedigree_len + 1;
-    pedigree_bytes = left ? pedigree_len + 1 : name_bytes;
-    if (!name || st_sim_pool_capacity(name) < name_bytes)
-        name = (char *)st_sim_pool_alloc(name_bytes);
-    if (!name)
-        goto fail;
-    if (!pedigree || st_sim_pool_capacity(pedigree) < pedigree_bytes ||
-        (left && (st_sim_text_alias(a, pedigree) ||
-                  st_sim_text_alias(b, pedigree) ||
-                  st_sim_text_alias(population, pedigree) ||
-                  st_sim_text_alias(operation, pedigree))))
-        pedigree = (char *)st_sim_pool_alloc(pedigree_bytes);
-    if (!pedigree)
-        goto fail;
-    if (left)
+    memcpy(node->text, population, population_length);
+    memcpy(node->text + population_length, serial_text, (size_t)written + 1);
+    if (!left)
     {
-        cursor = pedigree;
-        *cursor++ = '(';
-        memcpy(cursor, a, la);
-        cursor += la;
-        if (right)
-        {
-            memcpy(cursor, "_x_", 3);
-            cursor += 3;
-            memcpy(cursor, b, lb);
-            cursor += lb;
-        }
-        else
-        {
-            memcpy(cursor, operation, lo);
-            cursor += lo;
-        }
-        *cursor++ = ')';
-        *cursor = '\0';
+        memcpy(node->text + prefix + 1, node->text, prefix + 1);
+        node->name_length = node->pedigree_length = prefix;
     }
-    memmove(name, population, population_len);
-    memcpy(name + population_len, serial_text, serial_len);
-    if (left)
-        memcpy(name + population_len + serial_len, pedigree, pedigree_len + 1);
     else
     {
-        name[population_len + serial_len] = '\0';
-        memcpy(pedigree, name, name_bytes);
+        if (st_sim_ancestry_retain(left->identity))
+            goto fail;
+        node->left = left->identity;
+        if (right)
+        {
+            if (st_sim_ancestry_retain(right->identity))
+                goto fail;
+            node->right = right->identity;
+        }
+        else
+            memcpy(node->text + prefix + 1, operation, extra + 1);
+        size_t depth = node->left->depth;
+        if (node->right && node->right->depth > depth)
+            depth = node->right->depth;
+        if (depth == SIZE_MAX)
+            goto fail;
+        node->depth = depth + 1;
+        unsigned int overflow = node->left->overflow & 2;
+        size_t length = node->left->pedigree_length;
+        if (node->right)
+        {
+            overflow |= node->right->overflow & 2;
+            overflow |= st_sim_ancestry_sum(length,
+                node->right->pedigree_length, &length) ? 2 : 0;
+        }
+        overflow |= st_sim_ancestry_sum(length,
+            node->right ? 5 : extra, &length) ? 2 : 0;
+        if (!node->right)
+            overflow |= st_sim_ancestry_sum(length, 2, &length) ? 2 : 0;
+        node->pedigree_length = length;
+        node->overflow = overflow;
+        if (st_sim_ancestry_sum(prefix, length, &node->name_length) || overflow)
+            node->overflow |= 1;
     }
-    if (ind->name && ind->name != name)
-        st_sim_pool_free(ind->name);
-    if (ind->pedigree && ind->pedigree != pedigree)
-        st_sim_pool_free(ind->pedigree);
-    if (ind->info)
-        st_sim_pool_free(ind->info);
-    ind->name = name;
-    ind->pedigree = pedigree;
-    ind->info = NULL;
     if (st_cross_left && right && serial >= st_cross_first &&
         serial - st_cross_first < st_cross_count)
     {
         size_t i = (size_t)(serial - st_cross_first);
-        st_cross_left[i] = left->name;
-        st_cross_right[i] = right->name;
+        if (st_sim_ancestry_retain(left->identity))
+            goto fail;
+        if (st_sim_ancestry_retain(right->identity))
+        {
+            st_sim_ancestry_release(left->identity);
+            goto fail;
+        }
+        st_cross_left[i] = left->identity;
+        st_cross_right[i] = right->identity;
     }
+    st_sim_identity_clear(ind);
+    ind->identity = node;
+    st_sim_pool_free(ind->info);
+    ind->info = NULL;
     return 0;
 
 fail:
-
-    if (name && name != ind->name)
-        st_sim_pool_free(name);
-    if (pedigree && pedigree != ind->pedigree)
-        st_sim_pool_free(pedigree);
+    st_sim_ancestry_release(node);
     return -1;
 }
+
+static void st_sim_ancestry_iterator_init(st_sim_ancestry_iterator *iterator,
+                                         st_sim_ancestry_frame *frames,
+                                         size_t capacity,
+                                         const st_sim_ancestry *node,
+                                         int pedigree)
+{
+    iterator->frames = frames;
+    iterator->capacity = capacity;
+    iterator->count = 1;
+    frames[0] = (st_sim_ancestry_frame){node, pedigree, 0};
+}
+
+static int st_sim_ancestry_next(st_sim_ancestry_iterator *iterator,
+                                const char **text, size_t *length)
+{
+    while (iterator->count)
+    {
+        st_sim_ancestry_frame *frame = iterator->frames + iterator->count - 1;
+        const st_sim_ancestry *node = frame->node;
+        if (!frame->pedigree)
+        {
+            if (!frame->stage)
+            {
+                frame->stage = 1;
+                *text = node->text;
+                *length = node->prefix_length;
+                if (*length)
+                    return 1;
+            }
+            if (!node->left)
+            {
+                iterator->count--;
+                continue;
+            }
+            frame->pedigree = 1;
+            frame->stage = 0;
+        }
+        if (!node->left)
+        {
+            iterator->count--;
+            *text = node->text + node->prefix_length + 1;
+            *length = node->extra_length;
+            if (*length)
+                return 1;
+            continue;
+        }
+        int stage = frame->stage++;
+        if (stage == 0 || stage == 4)
+        {
+            *text = stage ? ")" : "(";
+            *length = 1;
+            if (stage)
+                iterator->count--;
+            return 1;
+        }
+        if (stage == 1 || (stage == 3 && node->right))
+        {
+            if (iterator->count == iterator->capacity)
+                return -1;
+            iterator->frames[iterator->count++] =
+                (st_sim_ancestry_frame){stage == 1 ? node->left : node->right,
+                                        1, 0};
+            continue;
+        }
+        if (stage == 2)
+        {
+            *text = node->right ? "_x_" : node->text + node->prefix_length + 1;
+            *length = node->right ? 3 : node->extra_length;
+            if (*length)
+                return 1;
+        }
+    }
+    return 0;
+}
+
+static int st_sim_ancestry_render(const st_sim_ancestry *node, int pedigree,
+                                 char **result)
+{
+    *result = NULL;
+    if (!node)
+        return -1;
+    size_t length = pedigree ? node->pedigree_length : node->name_length;
+    if ((node->overflow & (pedigree ? 2 : 1)) || length >= INT_MAX ||
+        node->depth == SIZE_MAX ||
+        node->depth + 1 > SIZE_MAX / sizeof(st_sim_ancestry_frame))
+        return -2;
+    char *buffer = malloc(length + 1);
+    st_sim_ancestry_frame *frames = malloc(
+        (node->depth + 1) * sizeof(*frames));
+    if (!buffer || !frames)
+    {
+        free(buffer);
+        free(frames);
+        return -1;
+    }
+    st_sim_ancestry_iterator iterator;
+    st_sim_ancestry_iterator_init(&iterator, frames, node->depth + 1,
+                                 node, pedigree);
+    const char *text;
+    size_t bytes, used = 0;
+    int status;
+    while ((status = st_sim_ancestry_next(&iterator, &text, &bytes)) > 0)
+    {
+        if (bytes > length - used)
+        {
+            status = -1;
+            break;
+        }
+        memcpy(buffer + used, text, bytes);
+        used += bytes;
+    }
+    free(frames);
+    if (status < 0 || used != length)
+    {
+        free(buffer);
+        return -1;
+    }
+    buffer[length] = '\0';
+    *result = buffer;
+    return 0;
+}
+
+static SEXP st_sim_ancestry_char(const st_sim_ancestry *node, int pedigree)
+{
+    if (!node)
+        return NA_STRING;
+    char *text;
+    int status = st_sim_ancestry_render(node, pedigree, &text);
+    if (status)
+        error(status == -2 ? "Complete simulation identity exceeds supported string size"
+                           : "Cannot expand complete simulation identity");
+    st_work_adopt(text, free);
+    SEXP value = mkCharCE(text, CE_UTF8);
+    st_work_detach(text);
+    free(text);
+    return value;
+}
+
+static int st_sim_ancestry_compare(const st_sim_ancestry *a,
+                                  const st_sim_ancestry *b, int *comparison)
+{
+    if (a == b)
+    {
+        *comparison = 0;
+        return 0;
+    }
+    if (!a || !b)
+        return -1;
+    size_t depth = a->depth > b->depth ? a->depth : b->depth;
+    if (depth == SIZE_MAX ||
+        depth + 1 > SIZE_MAX / (2 * sizeof(st_sim_ancestry_frame)))
+        return -1;
+    size_t capacity = depth + 1;
+    st_sim_ancestry_frame *frames = malloc(2 * capacity * sizeof(*frames));
+    if (!frames)
+        return -1;
+    st_sim_ancestry_iterator left, right;
+    st_sim_ancestry_iterator_init(&left, frames, capacity, a, 0);
+    st_sim_ancestry_iterator_init(&right, frames + capacity, capacity, b, 0);
+    const char *at = NULL, *bt = NULL;
+    size_t an = 0, bn = 0;
+    int as = 1, bs = 1, result = 0;
+    for (;;)
+    {
+        if (!an && as > 0)
+            as = st_sim_ancestry_next(&left, &at, &an);
+        if (!bn && bs > 0)
+            bs = st_sim_ancestry_next(&right, &bt, &bn);
+        if (as < 0 || bs < 0)
+        {
+            free(frames);
+            return -1;
+        }
+        if (!as || !bs)
+        {
+            result = as > bs ? 1 : as < bs ? -1 : 0;
+            break;
+        }
+        size_t n = an < bn ? an : bn;
+        result = memcmp(at, bt, n);
+        if (result)
+            break;
+        at += n;
+        bt += n;
+        an -= n;
+        bn -= n;
+    }
+    free(frames);
+    *comparison = result < 0 ? -1 : result > 0;
+    return 0;
+}
+
+static int st_sim_ancestry_matches(const st_sim_ancestry *node,
+                                  const char *text)
+{
+    if (!node || !text || (node->overflow & 1))
+        return 0;
+    size_t length = strlen(text);
+    if (length != node->name_length)
+        return 0;
+    if (node->depth == SIZE_MAX ||
+        node->depth + 1 > SIZE_MAX / sizeof(st_sim_ancestry_frame))
+        return -1;
+    st_sim_ancestry_frame *frames = malloc((node->depth + 1) * sizeof(*frames));
+    if (!frames)
+        return -1;
+    st_sim_ancestry_iterator iterator;
+    st_sim_ancestry_iterator_init(&iterator, frames, node->depth + 1, node, 0);
+    const char *part;
+    size_t bytes, offset = 0;
+    int status, matches = 1;
+    while ((status = st_sim_ancestry_next(&iterator, &part, &bytes)) > 0)
+    {
+        if (bytes > length - offset || memcmp(part, text + offset, bytes))
+        {
+            matches = 0;
+            break;
+        }
+        offset += bytes;
+    }
+    free(frames);
+    return status < 0 ? -1 : matches && offset == length;
+}
+
+typedef struct
+{
+    st_sim_ancestry **items;
+    size_t count;
+} st_sim_identity_stage;
+
+static void st_sim_identity_stage_free(void *pointer)
+{
+    st_sim_identity_stage *stage = pointer;
+    if (stage->items && st_cross_left == stage->items)
+    {
+        st_cross_left = st_cross_right = NULL;
+        st_cross_first = 0;
+        st_cross_count = 0;
+    }
+    if (stage->items)
+        for (size_t i = 0; i < stage->count; i++)
+            st_sim_ancestry_release(stage->items[i]);
+    free(stage->items);
+    free(stage);
+}
+
+static st_sim_identity_stage *st_sim_identity_stage_new(size_t count)
+{
+    if (count > SIZE_MAX / sizeof(st_sim_ancestry *))
+        error("Simulation identity staging size overflow");
+    st_sim_identity_stage *stage = calloc(1, sizeof(*stage));
+    if (!stage)
+        error("Cannot stage simulation identities");
+    st_work_adopt(stage, st_sim_identity_stage_free);
+    stage->count = count;
+    stage->items = calloc(count ? count : 1, sizeof(*stage->items));
+    if (!stage->items)
+        error("Cannot stage simulation identities");
+    return stage;
+}
+
+static void st_sim_identity_stage_close(st_sim_identity_stage *stage)
+{
+    st_work_detach(stage);
+    st_sim_identity_stage_free(stage);
+}
+
 static int st_sim_name_cmp(const void *a, const void *b)
 {
     return strcmp(*(const char *const *)a, *(const char *const *)b);
@@ -1780,14 +2144,24 @@ static int st_sim_export_identity(TPop *pop, char ***names, char ***pedigree)
     char **order = calloc(n ? n : 1, sizeof(*order));
     if (!order)
         return -1;
+    *names = calloc(n ? n : 1, sizeof(**names));
+    *pedigree = calloc(n ? n : 1, sizeof(**pedigree));
+    if (!*names || !*pedigree)
+    {
+        free(order);
+        return -1;
+    }
     for (size_t i = 0; i < n; i++)
     {
-        if (!pop->Ind[i].name)
+        int status = st_sim_ancestry_render(pop->Ind[i].identity, 0, &(*names)[i]);
+        if (!status)
+            status = st_sim_ancestry_render(pop->Ind[i].identity, 1, &(*pedigree)[i]);
+        if (status)
         {
             free(order);
-            return -1;
+            return status == -2 ? -3 : -1;
         }
-        order[i] = pop->Ind[i].name;
+        order[i] = (*names)[i];
     }
     qsort(order, n, sizeof(*order), st_sim_name_cmp);
     for (size_t i = 1; i < n; i++)
@@ -1797,17 +2171,6 @@ static int st_sim_export_identity(TPop *pop, char ***names, char ***pedigree)
             return -2;
         }
     free(order);
-    *names = calloc(n ? n : 1, sizeof(**names));
-    *pedigree = calloc(n ? n : 1, sizeof(**pedigree));
-    if (!*names || !*pedigree)
-        return -1;
-    for (size_t i = 0; i < n; i++)
-    {
-        (*names)[i] = st_text_dup(pop->Ind[i].name);
-        (*pedigree)[i] = st_text_dup(pop->Ind[i].pedigree);
-        if (!(*names)[i] || !(*pedigree)[i])
-            return -1;
-    }
     return 0;
 }
 int ps_population_exists(const char *name)
@@ -1838,13 +2201,8 @@ SEXP ps_population_pedigree(const char *name)
          rn = PROTECT(allocVector(INTSXP, n ? 2 : 0));
     for (int i = 0; i < n; i++)
     {
-        SET_STRING_ELT(ids, i,
-                       pop->Ind[i].name ? mkCharCE(pop->Ind[i].name, CE_UTF8)
-                                        : NA_STRING);
-        SET_STRING_ELT(ped, i,
-                       pop->Ind[i].pedigree
-                           ? mkCharCE(pop->Ind[i].pedigree, CE_UTF8)
-                           : NA_STRING);
+        SET_STRING_ELT(ids, i, st_sim_ancestry_char(pop->Ind[i].identity, 0));
+        SET_STRING_ELT(ped, i, st_sim_ancestry_char(pop->Ind[i].identity, 1));
     }
     SET_STRING_ELT(nm, 0, mkChar("name"));
     SET_STRING_ELT(nm, 1, mkChar("pedigree"));
@@ -1910,8 +2268,12 @@ void info(int level, char *info, ...)
         char Info[200];
 
         va_start(ap, info);
-        vsnprintf(Info, sizeof(Info), info, ap);
+        int written = vsnprintf(Info, sizeof(Info), info, ap);
         va_end(ap);
+        if (written < 0)
+            st_text_message(Info, sizeof(Info), "Cannot format information output\n");
+        else if ((size_t)written >= sizeof(Info))
+            memcpy(Info + sizeof(Info) - 5, "...\n", 5);
 
         if (0 <= level)
             Rprintf("M: %s", Info);
@@ -1929,7 +2291,7 @@ void r_info(int *level, char **message)
 
 void plabsim_info_cctime_get(char **message)
 {
-    snprintf(*message, strlen(CCTIME) + strlen(CCDATE) + 4, "%s - %s", CCTIME,
+    st_text_write(*message, strlen(CCTIME) + strlen(CCDATE) + 4, "%s - %s", CCTIME,
              CCDATE);
 }
 
@@ -2021,10 +2383,7 @@ void remove_individuum(TInd *DelInd)
         st_sim_free(DelInd->genotype);
     if (NULL != DelInd->info)
         st_sim_free(DelInd->info);
-    st_sim_pool_free(DelInd->name);
-    DelInd->name = NULL;
-    st_sim_pool_free(DelInd->pedigree);
-    DelInd->pedigree = NULL;
+    st_sim_identity_clear(DelInd);
 }
 
 int new_individuum(TInd *NewInd)
@@ -2039,8 +2398,7 @@ int new_individuum(TInd *NewInd)
     NewInd->PValue = NULL;
     NewInd->genotype = NULL;
     NewInd->info = NULL;
-    NewInd->name = NULL;
-    NewInd->pedigree = NULL;
+    NewInd->identity = NULL;
 
     if (NoChroms <= 0 || NoHoms <= 0 || NoLociInit <= 0 ||
         (size_t)NoChroms > SIZE_MAX / (size_t)NoHoms)
@@ -2204,6 +2562,27 @@ static int st_population_all_pvalue(TPop *Pop)
     }
 
     return 1;
+}
+
+static int st_population_normalize_caches(TPop *Pop)
+{
+    if (!Pop || !Pop->NoInds || !Pop->Ind)
+        return 0;
+
+    int genotype = Pop->Ind[0].genotype != NULL;
+    int gvalue = Pop->Ind[0].GValue != NULL;
+    int pvalue = Pop->Ind[0].PValue != NULL;
+
+    for (POPULATION i = 1; i < Pop->NoInds; i++)
+        if ((Pop->Ind[i].genotype != NULL) != genotype ||
+            (Pop->Ind[i].GValue != NULL) != gvalue ||
+            (Pop->Ind[i].PValue != NULL) != pvalue)
+        {
+            st_clear_population_genotype(Pop);
+            st_clear_population_gvalue(Pop);
+            return 1;
+        }
+    return 0;
 }
 
 static int st_copy_value_array(float **target, const float *source)
@@ -2399,6 +2778,8 @@ void set_genome_par(int *_NoChroms, int *_NoHoms, double *_ChromLen)
     (void)set_genome_par_impl(_NoChroms, _NoHoms, _ChromLen);
 }
 
+void int_resize_population(char **PopName, POPULATION newSize);
+
 void optimize_population(char **PopNames)
 {
     TPopListEl *PopListEl;
@@ -2416,7 +2797,7 @@ void optimize_population(char **PopNames)
             return;
         }
         Pop = PopListEl->Pop;
-        for (ind = 0; ind < Pop->NoIndsAlloc; ind++)
+        for (ind = 0; ind < Pop->NoInds; ind++)
         {
             if (st_sim_storage_compact(Pop->Ind[ind].Storage))
             {
@@ -2425,12 +2806,10 @@ void optimize_population(char **PopNames)
             }
         }
         if (Pop->NoInds != Pop->NoIndsAlloc)
-        {
-            info(-1, "NoIndsAlloc is greater than NoInds\n");
-            info(-1, "use resize to remove unused individuals\n");
-        }
+            int_resize_population(&PopName, Pop->NoInds);
         PopName = strtok(NULL, "[' ','\n']");
     }
+    st_sim_pool_trim();
 }
 
 void int_resize_population(char **PopName, POPULATION newSize)
@@ -2680,6 +3059,15 @@ static void st_remove_population_entry(TPopListEl *entry)
     st_sim_free(entry);
 }
 
+static void st_remove_population_named(const char *name)
+{
+    TPopListEl *entry = NULL;
+
+    find_list_element((char *)name, &entry);
+    if (entry)
+        st_remove_population_entry(entry);
+}
+
 void st_simulation_unload(void)
 {
     while (PopListStart)
@@ -2693,7 +3081,13 @@ void remove_population(char **PopNames)
     TPopListEl *DelPopListEl;
     char *_PopNames;
 
-    _PopNames = (char *)yCalloc(strlen(*PopNames) + 2, char);
+    size_t name_length = strlen(*PopNames);
+    if (name_length > SIZE_MAX - 2)
+    {
+        info(-2, "Population names are too long in remove_population\n");
+        return;
+    }
+    _PopNames = (char *)yCalloc(name_length + 2, char);
 
     if (NULL == _PopNames)
     {
@@ -2721,21 +3115,69 @@ void remove_population(char **PopNames)
 TPop *exist_population(char *PopName, POPULATION NoInds, int empty)
 {
     TPopListEl *PopListEl;
+    TPop *Pop;
+    typedef struct
+    {
+        POPULATION index;
+        TInd individual;
+    } st_sim_materialized;
+    st_sim_materialized *staged = NULL;
+    size_t missing = 0, built = 0;
+    POPULATION checked;
 
     find_list_element(PopName, &PopListEl);
 
     if (PopListEl == NULL)
-    {
         return new_population(&PopName, &NoInds);
+
+    Pop = PopListEl->Pop;
+    if (NoInds < 0 || Pop->NoInds < 0 || Pop->NoIndsAlloc < Pop->NoInds ||
+        (Pop->NoIndsAlloc && !Pop->Ind))
+    {
+        info(-2, "Invalid population size or storage\n");
+        return NULL;
+    }
+    checked = NoInds < Pop->NoIndsAlloc ? NoInds : Pop->NoIndsAlloc;
+    for (POPULATION i = 0; i < checked; i++)
+        if (!Pop->Ind[i].Storage)
+        {
+            TInd *individual = Pop->Ind + i;
+
+            if (i < Pop->NoInds || individual->Chrom || individual->GValue ||
+                individual->PValue || individual->genotype || individual->info ||
+                individual->identity)
+            {
+                info(-2, "Population has an incomplete individual owner\n");
+                return NULL;
+            }
+            missing++;
+        }
+    if (missing)
+    {
+        if (missing > SIZE_MAX / sizeof(*staged))
+            goto fail;
+        staged = malloc(missing * sizeof(*staged));
+        if (!staged)
+            goto fail;
+        for (POPULATION i = 0; i < checked; i++)
+            if (!Pop->Ind[i].Storage)
+            {
+                staged[built].index = i;
+                if (new_individuum(&staged[built].individual))
+                    goto fail;
+                built++;
+            }
     }
 
-    if (PopListEl->Pop->NoIndsAlloc != NoInds)
+    if (Pop->NoIndsAlloc != NoInds)
     {
         int_resize_population(&PopName, NoInds);
-
-        if (PopListEl->Pop->NoIndsAlloc != NoInds)
-            return NULL;
+        if (Pop->NoIndsAlloc != NoInds)
+            goto fail;
     }
+    for (size_t i = 0; i < built; i++)
+        Pop->Ind[staged[i].index] = staged[i].individual;
+    free(staged);
 
     if (1 == empty)
     {
@@ -2743,7 +3185,15 @@ TPop *exist_population(char *PopName, POPULATION NoInds, int empty)
         remove_evaluate_population(&PopName);
     }
 
-    return PopListEl->Pop;
+    return Pop;
+
+fail:
+
+    for (size_t i = 0; i < built; i++)
+        remove_individuum(&staged[i].individual);
+    free(staged);
+    info(-2, "Cannot prepare population individual storage\n");
+    return NULL;
 }
 
 int insertLocus(unsigned short All, CPOS Pos, THom *Hom)
@@ -2794,6 +3244,15 @@ void init_population(char **Name, char **cCount, int *_Ind, int *_Chrom,
 
     for (row = 0; row < Count; row++)
     {
+        if (_Ind[row] < 1 || _Chrom[row] < 1 || _Chrom[row] > NoChroms ||
+            _Hom[row] < 1 || _Hom[row] > NoHoms || !PopDescr ||
+            !R_FINITE(_Pos[row]) || _Pos[row] < 0 ||
+            _Pos[row] > PopDescr[_Chrom[row] - 1].ChromLen ||
+            _All[row] < 0 || (unsigned int)_All[row] > USHRT_MAX)
+        {
+            info(-2, "Invalid individual, chromosome, homologue, position or allele\n");
+            return;
+        }
         max_chrom =
             (*(_Chrom + row) - 1 > max_chrom) ? *(_Chrom + row) - 1 : max_chrom;
         min_chrom =
@@ -2830,14 +3289,14 @@ void init_population(char **Name, char **cCount, int *_Ind, int *_Chrom,
     uint64_t first;
     if (st_sim_reserve(Pop->NoInds, &first))
     {
-        remove_population(Name);
+        st_remove_population_named(*Name);
         return;
     }
     for (POPULATION i = 0; i < Pop->NoInds; i++)
         if (st_sim_identity_new(&Pop->Ind[i], Pop->Name, first + (uint64_t)i,
                                 NULL, NULL, NULL))
         {
-            remove_population(Name);
+            st_remove_population_named(*Name);
             return;
         }
 
@@ -2848,7 +3307,7 @@ void init_population(char **Name, char **cCount, int *_Ind, int *_Chrom,
 
         if (-1 == insertLocus(_All[row], _Pos[row], Hom))
         {
-            remove_population(Name);
+            st_remove_population_named(*Name);
             return;
         }
 
@@ -2997,12 +3456,12 @@ static int meiosis_impl(THom *PgHom, THom *PHom, double Length,
         PHom[1].NoLociUsed < 0 || NuCO > (unsigned int)INT_MAX - 2)
         return -1;
     needed = (size_t)NuCO + 2;
-    if ((size_t)PHom[0].NoLociUsed > (size_t)INT_MAX - needed)
+    size_t parent_loci = (size_t)PHom[0].NoLociUsed;
+    if ((size_t)PHom[1].NoLociUsed > parent_loci)
+        parent_loci = (size_t)PHom[1].NoLociUsed;
+    if (parent_loci > (size_t)INT_MAX - needed)
         return -1;
-    needed += (size_t)PHom[0].NoLociUsed;
-    if ((size_t)PHom[1].NoLociUsed > (size_t)INT_MAX - needed)
-        return -1;
-    needed += (size_t)PHom[1].NoLociUsed;
+    needed += parent_loci;
     if ((size_t)PgHom->NoLociUsed > (size_t)INT_MAX - needed)
         return -1;
     needed += (size_t)PgHom->NoLociUsed;
@@ -3174,7 +3633,7 @@ void cross(char **NamePg, char **NameP1, char **NameP2, double *Self,
     uint64_t first;
     if (st_sim_reserve(NoPg, &first))
     {
-        remove_population(NamePg);
+        st_remove_population_named(*NamePg);
         return;
     }
 
@@ -3298,12 +3757,26 @@ void cross(char **NamePg, char **NameP1, char **NameP2, double *Self,
     if (parallel_error || st_parallel_info_error_get())
     {
         st_parallel_info_error_clear();
-        remove_population(NamePg);
+        st_remove_population_named(*NamePg);
         info(-2, "Error during parallel crossing\n");
         return;
     }
 
     st_parallel_info_error_clear();
+}
+
+static int st_locus_label(char *out, size_t capacity, const char *prefix,
+                          int index)
+{
+    char suffix[3 + sizeof(int) * CHAR_BIT];
+    int count = snprintf(suffix, sizeof(suffix), "%d", index);
+    size_t length = strlen(prefix);
+    if (count < 0 || (size_t)count >= sizeof(suffix) ||
+        length >= capacity || (size_t)count >= capacity - length)
+        return -1;
+    memcpy(out, prefix, length);
+    memcpy(out + length, suffix, (size_t)count + 1);
+    return (int)(length + (size_t)count);
 }
 
 void ps_set_num_threads(int *activate)
@@ -3384,6 +3857,14 @@ void ssd_mating(char **NamePg, char **NameP1, char **cNoPg, int *maxcycles,
     }
 
     NoPg = P1Pop->NoInds * NoPg;
+
+    if (NoLociInit < 1 ||
+        (size_t)NoHoms > SIZE_MAX / sizeof(*tmpHomA) ||
+        (size_t)NoLociInit > SIZE_MAX / sizeof(TLoc))
+    {
+        info(-2, "Scratch allocation size exceeds supported range in ssd_mating\n");
+        return;
+    }
 
     tmpHomA = (THom *)malloc((size_t)NoHoms * sizeof(THom));
 
@@ -3526,7 +4007,7 @@ fail_population:
 
     if (destination_prepared)
     {
-        remove_population(NamePg);
+        st_remove_population_named(*NamePg);
         PgPop = NULL;
         destination_prepared = 0;
     }
@@ -3659,7 +4140,7 @@ void dh(char **NamePg, char **NameP1, char **cNoPg, double *significant)
 fail_population:
 
     if (destination_prepared)
-        remove_population(NamePg);
+        st_remove_population_named(*NamePg);
 
     return;
 }
@@ -3747,6 +4228,37 @@ static void free_mappoints(TMappoint *points, int n)
 
         free(points);
     }
+}
+
+typedef struct
+{
+    TMappoint *points;
+    int n;
+    char *description;
+} st_map_extension;
+static void st_map_extension_free(void *pointer)
+{
+    st_map_extension *stage = pointer;
+    if (stage)
+    {
+        free_mappoints(stage->points, stage->n);
+        free(stage->description);
+        free(stage);
+    }
+}
+
+static st_map_extension *st_map_extension_new(void)
+{
+    st_map_extension *stage = calloc(1, sizeof(*stage));
+    if (stage)
+        st_work_adopt(stage, st_map_extension_free);
+    return stage;
+}
+
+static void st_map_extension_close(st_map_extension *stage)
+{
+    st_work_detach(stage);
+    st_map_extension_free(stage);
 }
 
 static int append_mappoint(TMappoint **points, int *n, int chrom, CPOS pos,
@@ -4082,7 +4594,6 @@ static int prepare_mappoints(TMappoint *points, int n, int disperse,
 static int read_mappoint_file(char *fName, TMappoint **points, int *nMP)
 {
     FILE *fp = NULL;
-    TMappoint *newMPs = NULL;
     char line[4 * MAXNAME + 128];
     char *cChrom;
     char *cPos;
@@ -4156,7 +4667,7 @@ static int read_mappoint_file(char *fName, TMappoint **points, int *nMP)
             goto fail;
         }
 
-        if (!append_mappoint(&newMPs, nMP, chrom, pos, lociname, lociclass))
+        if (!append_mappoint(points, nMP, chrom, pos, lociname, lociclass))
             goto fail_alloc;
     }
 
@@ -4184,8 +4695,6 @@ static int read_mappoint_file(char *fName, TMappoint **points, int *nMP)
         goto fail;
     }
 
-    *points = newMPs;
-
     return 1;
 
 fail_alloc:
@@ -4197,8 +4706,8 @@ fail:
     if (NULL != fp)
         fileclose(fp);
 
-    free_mappoints(newMPs, *nMP);
-
+    free_mappoints(*points, *nMP);
+    *points = NULL;
     *nMP = 0;
 
     return 0;
@@ -4244,6 +4753,30 @@ fail:
     return 0;
 }
 
+typedef struct
+{
+    TMappoint **map;
+    int *count;
+    int chromosomes;
+} st_map_install_stage;
+
+static void st_map_install_stage_free(void *pointer)
+{
+    st_map_install_stage *stage = pointer;
+    if (stage->map)
+        for (int chrom = 0; chrom < stage->chromosomes; chrom++)
+            free(stage->map[chrom]);
+    free(stage->map);
+    free(stage->count);
+    free(stage);
+}
+
+static void st_map_install_stage_close(st_map_install_stage *stage)
+{
+    st_work_detach(stage);
+    st_map_install_stage_free(stage);
+}
+
 static int install_mappoints(TMappoint *points, int n)
 {
     TMappoint **newMap = NULL;
@@ -4260,24 +4793,23 @@ static int install_mappoints(TMappoint *points, int n)
     if ((size_t)NoChroms > SIZE_MAX / sizeof(TMappoint *))
         return 0;
 
-    newMap = (TMappoint **)malloc((size_t)NoChroms * sizeof(TMappoint *));
+    st_map_install_stage *stage = calloc(1, sizeof(*stage));
+    if (!stage)
+        return 0;
+    stage->chromosomes = NoChroms;
+    st_work_adopt(stage, st_map_install_stage_free);
+    newMap = stage->map = calloc((size_t)NoChroms, sizeof(*newMap));
 
     if (NULL == newMap)
-        return 0;
-
-    for (chrom = 0; chrom < NoChroms; chrom++)
-        newMap[chrom] = NULL;
+        goto fail;
 
     if ((size_t)NoChroms > SIZE_MAX / sizeof(int))
         goto fail;
 
-    count = (int *)malloc((size_t)NoChroms * sizeof(int));
+    count = stage->count = calloc((size_t)NoChroms, sizeof(*count));
 
     if (NULL == count)
         goto fail;
-
-    for (chrom = 0; chrom < NoChroms; chrom++)
-        count[chrom] = 0;
 
     for (i = 0; i < n; i++)
     {
@@ -4321,17 +4853,18 @@ static int install_mappoints(TMappoint *points, int n)
     if (i != n)
         goto fail;
 
+    remove_map();
+
     for (i = 0; i < n; i++)
     {
         points[i].name = NULL;
         points[i].class = NULL;
     }
 
-    remove_map();
-
     for (chrom = 0; chrom < NoChroms; chrom++)
     {
         PopDescr[chrom].Mappoint = newMap[chrom];
+        newMap[chrom] = NULL;
 
         PopDescr[chrom].NrMappoints = count[chrom];
     }
@@ -4339,21 +4872,13 @@ static int install_mappoints(TMappoint *points, int n)
     cMP = n;
     cMPhom = NoHoms * n;
 
-    free(newMap);
-    free(count);
+    st_map_install_stage_close(stage);
 
     return 1;
 
 fail:
 
-    if (NULL != newMap)
-    {
-        for (chrom = 0; chrom < NoChroms; chrom++)
-            free(newMap[chrom]);
-    }
-
-    free(newMap);
-    free(count);
+    st_map_install_stage_close(stage);
 
     return 0;
 }
@@ -4383,8 +4908,19 @@ void linkage_map_load(char **fName, int *disperse, char **fNameDisperse,
     if (!validate_map_genome())
         return;
 
-    if (!read_mappoint_file(*fName, &points, &nMP))
+    st_map_extension *stage = st_map_extension_new();
+    if (!stage)
+    {
+        info(-2, "Memory allocation failed in linkage_map_load\n");
         return;
+    }
+    if (!read_mappoint_file(*fName, &stage->points, &stage->n))
+    {
+        st_map_extension_close(stage);
+        return;
+    }
+    points = stage->points;
+    nMP = stage->n;
 
     if (!prepare_mappoints(points, nMP, *disperse, *factor, &modified))
         goto fail;
@@ -4403,7 +4939,7 @@ void linkage_map_load(char **fName, int *disperse, char **fNameDisperse,
         goto fail;
     }
 
-    free_mappoints(points, nMP);
+    st_map_extension_close(stage);
 
     if (*disperse)
     {
@@ -4430,7 +4966,7 @@ void linkage_map_load(char **fName, int *disperse, char **fNameDisperse,
 
 fail:
 
-    free_mappoints(points, nMP);
+    st_map_extension_close(stage);
 
     return;
 }
@@ -4472,6 +5008,13 @@ void define_linkage_map(int *dim, int *chrom, double *pos, char **names,
         return;
     }
 
+    st_map_extension *stage = st_map_extension_new();
+    if (!stage)
+    {
+        info(-2, "Memory allocation failed in define_linkage_map\n");
+        return;
+    }
+
     for (i = 0; i < *dim; i++)
     {
         if ((NULL == names[i]) || (NULL == class[i]))
@@ -4480,10 +5023,12 @@ void define_linkage_map(int *dim, int *chrom, double *pos, char **names,
             goto fail;
         }
 
-        if (!append_mappoint(&newMPs, &nMP, chrom[i], pos[i], names[i],
+        if (!append_mappoint(&stage->points, &stage->n, chrom[i], pos[i], names[i],
                              class[i]))
             goto fail_alloc;
     }
+    newMPs = stage->points;
+    nMP = stage->n;
 
     if (!prepare_mappoints(newMPs, nMP, 1, MAP_DISPERSE_FACTOR_DEFAULT,
                            &modified))
@@ -4492,7 +5037,7 @@ void define_linkage_map(int *dim, int *chrom, double *pos, char **names,
     if (!install_mappoints(newMPs, nMP))
         goto fail_alloc;
 
-    free_mappoints(newMPs, nMP);
+    st_map_extension_close(stage);
 
     if (0 < modified)
         info(0, "%d loci positions modified\n", modified);
@@ -4507,21 +5052,21 @@ fail_alloc:
 
 fail:
 
-    free_mappoints(newMPs, nMP);
+    st_map_extension_close(stage);
 
     return;
 }
 
 void generate_map_file(char **fName, char **Description, int *retval)
 {
-    TMappoint *newMPs = NULL;
+    st_map_extension *stage = NULL;
     char *description = NULL;
+    size_t description_size;
     char *token;
     char name[MAXNAME];
     char classname[MAXNAME];
     int status = 0;
     int number = 1;
-    int cMPs = 0;
     int maxMP;
     int i;
     FILE *fp = NULL;
@@ -4546,7 +5091,13 @@ void generate_map_file(char **fName, char **Description, int *retval)
 
     maxMP = INT_MAX / NoHoms;
 
-    description = (char *)malloc(strlen(*Description) + 1);
+    stage = st_map_extension_new();
+    if (!stage)
+        goto fail_alloc;
+    description_size = strlen(*Description);
+    if (description_size == SIZE_MAX)
+        goto fail_alloc;
+    description = stage->description = malloc(description_size + 1);
 
     if (NULL == description)
         goto fail_alloc;
@@ -4617,7 +5168,7 @@ void generate_map_file(char **fName, char **Description, int *retval)
 
         case 3:
 
-            if (number > maxMP - cMPs)
+            if (number > maxMP - stage->n)
             {
                 info(-2, "Linkage map contains too many loci\n");
 
@@ -4656,8 +5207,7 @@ void generate_map_file(char **fName, char **Description, int *retval)
                         goto fail;
                     }
 
-                    nchars = snprintf(tmpstring, sizeof(tmpstring), "%s%d",
-                                      name, lNR++);
+                    nchars = st_locus_label(tmpstring, sizeof(tmpstring), name, lNR++);
 
                     if ((nchars < 0) || (nchars >= MAXNAME))
                     {
@@ -4666,7 +5216,7 @@ void generate_map_file(char **fName, char **Description, int *retval)
                         goto fail;
                     }
 
-                    if (!append_mappoint(&newMPs, &cMPs, chrom + 1, pos,
+                    if (!append_mappoint(&stage->points, &stage->n, chrom + 1, pos,
                                          tmpstring, classname))
                         goto fail_alloc;
                 }
@@ -4702,8 +5252,7 @@ void generate_map_file(char **fName, char **Description, int *retval)
                         int nchars;
                         CPOS pos = delta * j;
 
-                        nchars = snprintf(tmpstring, sizeof(tmpstring), "%s%d",
-                                          name, lNR++);
+                        nchars = st_locus_label(tmpstring, sizeof(tmpstring), name, lNR++);
 
                         if ((nchars < 0) || (nchars >= MAXNAME))
                         {
@@ -4712,7 +5261,7 @@ void generate_map_file(char **fName, char **Description, int *retval)
                             goto fail;
                         }
 
-                        if (!append_mappoint(&newMPs, &cMPs, chrom + 1, pos,
+                        if (!append_mappoint(&stage->points, &stage->n, chrom + 1, pos,
                                              tmpstring, classname))
                             goto fail_alloc;
                     }
@@ -4747,8 +5296,7 @@ void generate_map_file(char **fName, char **Description, int *retval)
                         int nchars;
                         CPOS pos = delta * j;
 
-                        nchars = snprintf(tmpstring, sizeof(tmpstring), "%s%d",
-                                          name, lNR++);
+                        nchars = st_locus_label(tmpstring, sizeof(tmpstring), name, lNR++);
 
                         if ((nchars < 0) || (nchars >= MAXNAME))
                         {
@@ -4757,7 +5305,7 @@ void generate_map_file(char **fName, char **Description, int *retval)
                             goto fail;
                         }
 
-                        if (!append_mappoint(&newMPs, &cMPs, chrom + 1, pos,
+                        if (!append_mappoint(&stage->points, &stage->n, chrom + 1, pos,
                                              tmpstring, classname))
                             goto fail_alloc;
                     }
@@ -4797,7 +5345,7 @@ void generate_map_file(char **fName, char **Description, int *retval)
                     goto fail;
                 }
 
-                if (!append_mappoint(&newMPs, &cMPs, chrom, pos, name,
+                if (!append_mappoint(&stage->points, &stage->n, chrom, pos, name,
                                      classname))
                     goto fail_alloc;
 
@@ -4817,25 +5365,25 @@ void generate_map_file(char **fName, char **Description, int *retval)
         goto fail;
     }
 
-    if (0 == cMPs)
+    if (0 == stage->n)
     {
         info(-2, "Linkage map contains no loci\n");
         goto fail;
     }
 
-    qsort(newMPs, cMPs, sizeof(TMappoint), mnamecmp);
+    qsort(stage->points, stage->n, sizeof(TMappoint), mnamecmp);
 
-    for (i = 1; i < cMPs; i++)
+    for (i = 1; i < stage->n; i++)
     {
-        if (0 == strcmp(newMPs[i - 1].name, newMPs[i].name))
+        if (0 == strcmp(stage->points[i - 1].name, stage->points[i].name))
         {
-            info(-2, "Duplicate locus name: %s\n", newMPs[i].name);
+            info(-2, "Duplicate locus name: %s\n", stage->points[i].name);
 
             goto fail;
         }
     }
 
-    qsort(newMPs, cMPs, sizeof(TMappoint), mccmp);
+    qsort(stage->points, stage->n, sizeof(TMappoint), mccmp);
 
     fp = fileopen(*fName, "w");
 
@@ -4844,10 +5392,11 @@ void generate_map_file(char **fName, char **Description, int *retval)
 
     outputOpened = 1;
 
-    for (i = 0; i < cMPs; i++)
+    for (i = 0; i < stage->n; i++)
     {
-        if (0 > fprintf(fp, "%d\t%.17g\t%s\t%s\n", newMPs[i].chrom,
-                        newMPs[i].Pos, newMPs[i].name, newMPs[i].class))
+        if (0 > fprintf(fp, "%d\t%.17g\t%s\t%s\n", stage->points[i].chrom,
+                        stage->points[i].Pos, stage->points[i].name,
+                        stage->points[i].class))
         {
             info(-2, "Error writing map file %s\n", *fName);
 
@@ -4866,8 +5415,7 @@ void generate_map_file(char **fName, char **Description, int *retval)
 
     fp = NULL;
 
-    free_mappoints(newMPs, cMPs);
-    free(description);
+    st_map_extension_close(stage);
 
     *retval = 0;
     return;
@@ -4887,8 +5435,8 @@ fail:
     if (outputOpened)
         remove(*fName);
 
-    free_mappoints(newMPs, cMPs);
-    free(description);
+    if (stage)
+        st_map_extension_close(stage);
 
     return;
 }
@@ -5241,11 +5789,235 @@ IntNode *find_next_leaf(IntNode *Node)
     return (NULL);
 }
 
+
+typedef struct st_eval_block
+{
+    void *data;
+    size_t bytes;
+    struct st_eval_block *next;
+} st_eval_block;
+
+typedef struct
+{
+    st_eval_block *blocks;
+    IntNode *root;
+    int failed;
+} st_eval_workspace;
+
+typedef struct
+{
+    int nr_marker;
+    TMappoint *Mappoint;
+    int *order;
+} st_eval_chrom;
+
+static void st_eval_destroy(void *data)
+{
+    st_eval_workspace *w = data;
+    while (w->blocks)
+    {
+        st_eval_block *block = w->blocks;
+        w->blocks = block->next;
+        free(block->data);
+        free(block);
+    }
+    free(w);
+}
+
+static st_eval_workspace *st_eval_new(void)
+{
+    st_eval_workspace *w = calloc(1, sizeof(*w));
+    if (w)
+        st_work_adopt(w, st_eval_destroy);
+    return w;
+}
+
+static void st_eval_close(st_eval_workspace *w)
+{
+    if (w)
+    {
+        st_work_detach(w);
+        st_eval_destroy(w);
+    }
+}
+
+static void *st_eval_alloc(st_eval_workspace *w, size_t count, size_t size)
+{
+    if (size && count > SIZE_MAX / size)
+    {
+        w->failed = 1;
+        return NULL;
+    }
+    size_t bytes = count * size;
+    st_eval_block *block = malloc(sizeof(*block));
+    if (!block)
+    {
+        w->failed = 1;
+        return NULL;
+    }
+    block->data = calloc(bytes ? bytes : 1, 1);
+    if (!block->data)
+    {
+        free(block);
+        w->failed = 1;
+        return NULL;
+    }
+    block->bytes = bytes;
+    block->next = w->blocks;
+    w->blocks = block;
+    return block->data;
+}
+
+static void *st_eval_resize(st_eval_workspace *w, void *old, size_t count,
+                            size_t size)
+{
+    if (!old)
+        return st_eval_alloc(w, count, size);
+    if (size && count > SIZE_MAX / size)
+    {
+        w->failed = 1;
+        return NULL;
+    }
+    st_eval_block **link = &w->blocks;
+    while (*link && (*link)->data != old)
+        link = &(*link)->next;
+    if (!*link)
+    {
+        w->failed = 1;
+        return NULL;
+    }
+    st_eval_block *block = *link;
+    size_t bytes = count * size;
+    if (!bytes)
+    {
+        *link = block->next;
+        free(block->data);
+        free(block);
+        return NULL;
+    }
+    void *replacement = realloc(old, bytes);
+    if (!replacement)
+    {
+        w->failed = 1;
+        return NULL;
+    }
+    block->data = replacement;
+    block->bytes = bytes;
+    return replacement;
+}
+
+static void st_eval_take(st_eval_workspace *w, void *pointer)
+{
+    if (!pointer)
+        return;
+    st_eval_block **link = &w->blocks;
+    while (*link && (*link)->data != pointer)
+        link = &(*link)->next;
+    if (!*link)
+        error("Evaluation storage is not owned by its workspace");
+    st_eval_block *block = *link;
+    *link = block->next;
+    free(block);
+}
+
+static IntNode *st_eval_insert(st_eval_workspace *w, IntNode *root,
+                                const int *values, int count, int *groups)
+{
+    IntNode *at = root;
+    if (!root)
+    {
+        root = st_eval_alloc(w, 1, sizeof(*root));
+        if (!root)
+            return NULL;
+        if (!count)
+        {
+            if (*groups == INT_MAX)
+            {
+                w->failed = 1;
+                return NULL;
+            }
+            root->number = 1;
+            (*groups)++;
+        }
+        else
+        {
+            root->number = values[0];
+            root->child = st_eval_insert(w, NULL, values + 1, count - 1, groups);
+            if (!root->child)
+                return NULL;
+            root->child->parent = root;
+        }
+        return root;
+    }
+    if (!count)
+    {
+        if (root->number == INT_MAX)
+        {
+            w->failed = 1;
+            return NULL;
+        }
+        root->number++;
+        return root;
+    }
+    do
+    {
+        if (at->number != values[0])
+        {
+            if (at->number > values[0])
+            {
+                IntNode *node = st_eval_alloc(w, 1, sizeof(*node));
+                if (!node)
+                    return NULL;
+                node->parent = at->parent;
+                node->next = at;
+                at->prev = node;
+                if (at->parent)
+                    at->parent->child = node;
+                node->number = values[0];
+                root = at = node;
+            }
+            else if (at->next && at->next->number <= values[0])
+                at = at->next;
+            else
+            {
+                IntNode *node = st_eval_alloc(w, 1, sizeof(*node));
+                if (!node)
+                    return NULL;
+                node->parent = at->parent;
+                node->prev = at;
+                node->next = at->next;
+                node->number = values[0];
+                at->next = node;
+                if (node->next)
+                    node->next->prev = node;
+                at = node;
+            }
+        }
+    } while (at->number < values[0]);
+    at->child = st_eval_insert(w, at->child, values + 1, count - 1, groups);
+    if (!at->child)
+        return NULL;
+    at->child->parent = at;
+    return root;
+}
+
+static IntNode *st_eval_next_leaf(IntNode *node)
+{
+    while (node->parent)
+    {
+        node = node->parent;
+        if (node->next)
+            return go_down(node->next);
+    }
+    return NULL;
+}
+
 SEXP genotype_evaluate(SEXP _PopName, SEXP _Loci, SEXP _mode)
 {
     TPopListEl *PopListEl = NULL;
     int mode = 0;
     char *PopName = NULL;
+    st_eval_workspace *w = NULL;
 
     if (0 == cMP)
     {
@@ -5269,7 +6041,17 @@ SEXP genotype_evaluate(SEXP _PopName, SEXP _Loci, SEXP _mode)
         return R_NilValue;
     }
 
-    PopName = (char *)yCalloc(strlen(CHAR(STRING_ELT(_PopName, 0))) + 2, char);
+    w = st_eval_new();
+    if (!w)
+    {
+        info(-2, "Memory allocation failed in population evaluation\n");
+        return R_NilValue;
+    }
+    if (NoChroms < 1 || NoHoms < 1)
+        goto memory_failure;
+    PopName = st_eval_alloc(w, strlen(CHAR(STRING_ELT(_PopName, 0))) + 2, 1);
+    if (!PopName)
+        goto memory_failure;
 
     strcpy(PopName, CHAR(STRING_ELT(_PopName, 0)));
 
@@ -5290,16 +6072,9 @@ SEXP genotype_evaluate(SEXP _PopName, SEXP _Loci, SEXP _mode)
     else
     {
 
-        typedef struct
-        {
-            int nr_marker;
-            TMappoint *Mappoint;
-            int *order;
-        }
 
-        TEvChrom;
 
-        TEvChrom *EvChrom = (TEvChrom *)yCalloc(NoChroms, TEvChrom);
+        st_eval_chrom *EvChrom = st_eval_alloc(w, (size_t)NoChroms, sizeof(*EvChrom));
         int chrom, i, j, l;
 
         int nrLoci = 0;
@@ -5308,12 +6083,14 @@ SEXP genotype_evaluate(SEXP _PopName, SEXP _Loci, SEXP _mode)
         int *pnrGt = &nrGt;
 
         SEXP matrix, xAxis, yAxis, matrixDim, matrixDimNames;
-        int *locus_idx = (int *)yCalloc(length(_Loci), int);
+        int *locus_idx = st_eval_alloc(w, (size_t)length(_Loci), sizeof(*locus_idx));
 
         POPULATION ind;
         CPOS Pos;
 
-        startNode = NULL;
+        if (!EvChrom || !locus_idx)
+            goto memory_failure;
+        w->root = NULL;
 
         for (chrom = 0; chrom < NoChroms; chrom++)
         {
@@ -5342,28 +6119,32 @@ SEXP genotype_evaluate(SEXP _PopName, SEXP _Loci, SEXP _mode)
                         if (EvChrom[chrom].nr_marker == 1)
                         {
                             EvChrom[chrom].Mappoint =
-                                (TMappoint *)yCalloc(1, TMappoint);
+                                st_eval_alloc(w, 1, sizeof(TMappoint));
 
-                            EvChrom[chrom].order = (int *)yCalloc(1, int);
+                            EvChrom[chrom].order = st_eval_alloc(w, 1, sizeof(int));
                         }
 
                         else
                         {
-                            EvChrom[chrom].Mappoint = (TMappoint *)yRealloc(
+                            EvChrom[chrom].Mappoint = st_eval_resize(w,
                                 EvChrom[chrom].Mappoint,
-                                EvChrom[chrom].nr_marker, TMappoint);
+                                (size_t)EvChrom[chrom].nr_marker, sizeof(TMappoint));
 
                             EvChrom[chrom].order =
-                                (int *)yRealloc(EvChrom[chrom].order,
-                                                EvChrom[chrom].nr_marker, int);
+                                st_eval_resize(w, EvChrom[chrom].order,
+                                               (size_t)EvChrom[chrom].nr_marker, sizeof(int));
                         }
 
+                        if (w->failed)
+                            goto memory_failure;
                         EvChrom[chrom].Mappoint[EvChrom[chrom].nr_marker - 1] =
                             PopDescr[chrom].Mappoint[j];
 
                         EvChrom[chrom].order[EvChrom[chrom].nr_marker - 1] =
                             nrLoci;
 
+                        if (nrLoci > INT_MAX - 2 - NoHoms)
+                            goto memory_failure;
                         nrLoci += NoHoms;
                     }
                 }
@@ -5386,9 +6167,12 @@ SEXP genotype_evaluate(SEXP _PopName, SEXP _Loci, SEXP _mode)
             TChrom *Chrom;
             TInd *Ind;
             IntNode *Node;
-            int *alleles = (int *)yCalloc(NoHoms, int);
-            int *IndGT = (int *)yCalloc(nrLoci + 1, int);
+            int *alleles = st_eval_alloc(w, (size_t)NoHoms, sizeof(int));
+            int *IndGT = st_eval_alloc(w, (size_t)nrLoci + 1, sizeof(int));
             int hom, tmp_counter = 0;
+            if (w->failed || PopListEl->Pop->NoInds < 0 ||
+                PopListEl->Pop->NoInds > INT_MAX)
+                goto memory_failure;
 
             for (ind = 0; ind < PopListEl->Pop->NoInds; ind++)
             {
@@ -5450,16 +6234,24 @@ SEXP genotype_evaluate(SEXP _PopName, SEXP _Loci, SEXP _mode)
                     }
                 }
 
-                startNode = insertIntLinkList(startNode, IndGT, nrLoci, pnrGt);
+                w->root = st_eval_insert(w, w->root, IndGT, nrLoci, pnrGt);
+                if (w->failed)
+                    goto memory_failure;
             }
 
             {
-                int *_matrix = (int *)yCalloc((nrLoci + 1) * nrGt, int);
+                int *_matrix;
+                if (nrGt && (size_t)nrLoci + 2 > (size_t)INT_MAX / (size_t)nrGt)
+                    goto memory_failure;
+                _matrix = st_eval_alloc(w, (size_t)nrLoci + 1,
+                                        (size_t)nrGt * sizeof(int));
+                if (!_matrix)
+                    goto memory_failure;
                 int offset;
                 char tmp[1024];
                 int N = 0;
 
-                Node = startNode;
+                Node = w->root;
 
                 if (NULL != (Node = go_down(Node)))
                 {
@@ -5469,9 +6261,9 @@ SEXP genotype_evaluate(SEXP _PopName, SEXP _Loci, SEXP _mode)
                                    &_matrix[tmp_counter++]);
                     }
 
-                    while (NULL != (Node = find_next_leaf(Node)));
+                    while (NULL != (Node = st_eval_next_leaf(Node)));
 
-                    startNode = NULL;
+                    w->root = NULL;
                 }
 
                 PROTECT(matrix = allocMatrix(INTSXP, nrGt, nrLoci + 2));
@@ -5508,7 +6300,7 @@ SEXP genotype_evaluate(SEXP _PopName, SEXP _Loci, SEXP _mode)
                     {
                         for (hom = 1; hom <= NoHoms; hom++)
                         {
-                            snprintf(tmp, sizeof(tmp), "%s-%d ",
+                            st_text_write(tmp, sizeof(tmp), "%s-%d ",
                                      CHAR(STRING_ELT(_Loci, i)), hom);
 
                             SET_STRING_ELT(xAxis, offset++, mkChar(tmp));
@@ -5522,7 +6314,7 @@ SEXP genotype_evaluate(SEXP _PopName, SEXP _Loci, SEXP _mode)
 
                 for (i = 0; i < nrGt; i++)
                 {
-                    snprintf(tmp, sizeof(tmp), "%d ", i + 1);
+                    st_text_write(tmp, sizeof(tmp), "%d ", i + 1);
 
                     SET_STRING_ELT(yAxis, i, mkChar(tmp));
                 }
@@ -5533,46 +6325,33 @@ SEXP genotype_evaluate(SEXP _PopName, SEXP _Loci, SEXP _mode)
 
                 UNPROTECT(5);
 
-                yFree(PopName);
 
-                for (chrom = 0; chrom < NoChroms; chrom++)
-                {
-                    yFree(EvChrom[chrom].Mappoint);
-                    yFree(EvChrom[chrom].order);
-                }
 
-                yFree(EvChrom);
-                yFree(locus_idx);
-                yFree(alleles);
-                yFree(IndGT);
-                yFree(_matrix);
 
-                return (matrix);
+
+
+
+                st_eval_close(w);
+                return matrix;
             }
         }
 
     fail_data:
-
-        for (chrom = 0; chrom < NoChroms; chrom++)
-        {
-            yFree(EvChrom[chrom].Mappoint);
-            yFree(EvChrom[chrom].order);
-        }
-
-        yFree(EvChrom);
-        yFree(locus_idx);
+        goto fail;
     }
 
+memory_failure:
+    info(-2, "Memory allocation or size limit failure in population evaluation\n");
 fail:
-
-    yFree(PopName);
-    return (R_NilValue);
+    st_eval_close(w);
+    return R_NilValue;
 }
 
 SEXP allele_evaluate(SEXP _PopName, SEXP _Loci, SEXP _missing, SEXP _bg)
 
 {
     char *PopName = NULL;
+    st_eval_workspace *w = NULL;
     int bg = 0;
     int missing = 0;
     TPopListEl *PopListEl = NULL;
@@ -5589,7 +6368,17 @@ SEXP allele_evaluate(SEXP _PopName, SEXP _Loci, SEXP _missing, SEXP _bg)
         return R_NilValue;
     }
 
-    PopName = (char *)yCalloc(strlen(CHAR(STRING_ELT(_PopName, 0))) + 2, char);
+    w = st_eval_new();
+    if (!w)
+    {
+        info(-2, "Memory allocation failed in population evaluation\n");
+        return R_NilValue;
+    }
+    if (NoChroms < 1 || NoHoms < 1)
+        goto memory_failure;
+    PopName = st_eval_alloc(w, strlen(CHAR(STRING_ELT(_PopName, 0))) + 2, 1);
+    if (!PopName)
+        goto memory_failure;
 
     strcpy(PopName, CHAR(STRING_ELT(_PopName, 0)));
 
@@ -5626,26 +6415,21 @@ SEXP allele_evaluate(SEXP _PopName, SEXP _Loci, SEXP _missing, SEXP _bg)
     else
     {
 
-        int *locus_idx = (int *)yCalloc(length(_Loci), int);
+        int *locus_idx = st_eval_alloc(w, (size_t)length(_Loci), sizeof(*locus_idx));
 
         int nrGt = 0;
         int *pnrGt = &nrGt;
 
-        typedef struct
-        {
-            int nr_marker;
-            TMappoint *Mappoint;
-            int *order;
-        }
 
-        TEvChrom;
 
-        TEvChrom *EvChrom = (TEvChrom *)yCalloc(NoChroms, TEvChrom);
+        st_eval_chrom *EvChrom = st_eval_alloc(w, (size_t)NoChroms, sizeof(*EvChrom));
         int j, l, chrom;
         int nrLoci = 0;
         int *pnrLoci = &nrLoci;
 
-        startNode = NULL;
+        if (!EvChrom || !locus_idx)
+            goto memory_failure;
+        w->root = NULL;
 
         for (chrom = 0; chrom < NoChroms; chrom++)
         {
@@ -5674,27 +6458,31 @@ SEXP allele_evaluate(SEXP _PopName, SEXP _Loci, SEXP _missing, SEXP _bg)
                         if (1 == EvChrom[chrom].nr_marker)
                         {
                             EvChrom[chrom].Mappoint =
-                                (TMappoint *)yCalloc(1, TMappoint);
-                            EvChrom[chrom].order = (int *)yCalloc(1, int);
+                                st_eval_alloc(w, 1, sizeof(TMappoint));
+                            EvChrom[chrom].order = st_eval_alloc(w, 1, sizeof(int));
                         }
 
                         else
                         {
-                            EvChrom[chrom].Mappoint = (TMappoint *)yRealloc(
+                            EvChrom[chrom].Mappoint = st_eval_resize(w,
                                 EvChrom[chrom].Mappoint,
-                                EvChrom[chrom].nr_marker, TMappoint);
+                                (size_t)EvChrom[chrom].nr_marker, sizeof(TMappoint));
 
                             EvChrom[chrom].order =
-                                (int *)yRealloc(EvChrom[chrom].order,
-                                                EvChrom[chrom].nr_marker, int);
+                                st_eval_resize(w, EvChrom[chrom].order,
+                                               (size_t)EvChrom[chrom].nr_marker, sizeof(int));
                         }
 
+                        if (w->failed)
+                            goto memory_failure;
                         EvChrom[chrom].Mappoint[EvChrom[chrom].nr_marker - 1] =
                             PopDescr[chrom].Mappoint[j];
 
                         EvChrom[chrom].order[EvChrom[chrom].nr_marker - 1] =
                             nrLoci;
 
+                        if (nrLoci >= INT_MAX - 2)
+                            goto memory_failure;
                         nrLoci++;
                     }
                 }
@@ -5717,10 +6505,14 @@ SEXP allele_evaluate(SEXP _PopName, SEXP _Loci, SEXP _missing, SEXP _bg)
         {
             CPOS Pos;
             int chrom, hom, l, temp, i;
-            int *all = (int *)yCalloc(nrLoci, int);
+            int *all = st_eval_alloc(w, (size_t)nrLoci, sizeof(int));
             POPULATION ind;
             TInd *Ind;
             TChrom *Chrom;
+            if (w->failed || PopListEl->Pop->NoInds < 0 ||
+                (size_t)PopListEl->Pop->NoInds >
+                (size_t)INT_MAX / (size_t)NoHoms / (size_t)nrLoci)
+                goto memory_failure;
 
             for (i = 0; i < nrLoci; i++)
             {
@@ -5755,8 +6547,9 @@ SEXP allele_evaluate(SEXP _PopName, SEXP _Loci, SEXP _missing, SEXP _bg)
 
                                 else
                                 {
-                                    startNode = insertIntLinkList(
-                                        startNode, all, nrLoci, pnrGt);
+                                    w->root = st_eval_insert(w, w->root, all, nrLoci, pnrGt);
+                                    if (w->failed)
+                                        goto memory_failure;
                                 }
                             }
                         }
@@ -5780,8 +6573,9 @@ SEXP allele_evaluate(SEXP _PopName, SEXP _Loci, SEXP _missing, SEXP _bg)
 
                                 else
                                 {
-                                    startNode = insertIntLinkList(
-                                        startNode, all, nrLoci, pnrGt);
+                                    w->root = st_eval_insert(w, w->root, all, nrLoci, pnrGt);
+                                    if (w->failed)
+                                        goto memory_failure;
                                 }
                             }
                         }
@@ -5791,14 +6585,15 @@ SEXP allele_evaluate(SEXP _PopName, SEXP _Loci, SEXP _missing, SEXP _bg)
                 }
             }
 
-            for (chrom = 0; chrom < NoChroms; chrom++)
-            {
-                yFree(EvChrom[chrom].Mappoint);
-                yFree(EvChrom[chrom].order);
-            }
 
             {
-                int *_matrix = (int *)yCalloc((nrLoci + 1) * nrGt, int);
+                int *_matrix;
+                if (nrGt && (size_t)nrLoci + 2 > (size_t)INT_MAX / (size_t)nrGt)
+                    goto memory_failure;
+                _matrix = st_eval_alloc(w, (size_t)nrLoci + 1,
+                                        (size_t)nrGt * sizeof(int));
+                if (!_matrix)
+                    goto memory_failure;
                 int offset;
                 char tmp[1024];
                 int N = 0;
@@ -5806,7 +6601,7 @@ SEXP allele_evaluate(SEXP _PopName, SEXP _Loci, SEXP _missing, SEXP _bg)
                 int tmp_counter = 0;
                 SEXP matrix, xAxis, yAxis, matrixDim, matrixDimNames;
 
-                Node = startNode;
+                Node = w->root;
 
                 if ((NULL != Node) && (NULL != (Node = go_down(Node))))
                 {
@@ -5816,9 +6611,9 @@ SEXP allele_evaluate(SEXP _PopName, SEXP _Loci, SEXP _missing, SEXP _bg)
                                    &_matrix[tmp_counter++]);
                     }
 
-                    while (NULL != (Node = find_next_leaf(Node)));
+                    while (NULL != (Node = st_eval_next_leaf(Node)));
 
-                    startNode = NULL;
+                    w->root = NULL;
                 }
 
                 PROTECT(matrix = allocMatrix(INTSXP, nrGt, nrLoci + 2));
@@ -5852,7 +6647,7 @@ SEXP allele_evaluate(SEXP _PopName, SEXP _Loci, SEXP _missing, SEXP _bg)
                 {
                     if (locus_idx[i])
                     {
-                        snprintf(tmp, sizeof(tmp), "%s",
+                        st_text_write(tmp, sizeof(tmp), "%s",
                                  CHAR(STRING_ELT(_Loci, i)));
 
                         SET_STRING_ELT(xAxis, offset++, mkChar(tmp));
@@ -5864,7 +6659,7 @@ SEXP allele_evaluate(SEXP _PopName, SEXP _Loci, SEXP _missing, SEXP _bg)
 
                 for (i = 0; i < nrGt; i++)
                 {
-                    snprintf(tmp, sizeof(tmp), "%d ", i + 1);
+                    st_text_write(tmp, sizeof(tmp), "%d ", i + 1);
 
                     SET_STRING_ELT(yAxis, i, mkChar(tmp));
                 }
@@ -5875,31 +6670,24 @@ SEXP allele_evaluate(SEXP _PopName, SEXP _Loci, SEXP _missing, SEXP _bg)
 
                 UNPROTECT(5);
 
-                yFree(PopName);
-                yFree(locus_idx);
-                yFree(EvChrom);
-                yFree(all);
-                yFree(_matrix);
 
-                return (matrix);
+
+
+
+
+                st_eval_close(w);
+                return matrix;
             }
         }
 
     fail_data:
-
-        for (chrom = 0; chrom < NoChroms; chrom++)
-        {
-            yFree(EvChrom[chrom].Mappoint);
-            yFree(EvChrom[chrom].order);
-        }
-
-        yFree(locus_idx);
-        yFree(EvChrom);
+        goto fail;
     }
 
+memory_failure:
+    info(-2, "Memory allocation or size limit failure in population evaluation\n");
 fail:
-
-    yFree(PopName);
+    st_eval_close(w);
     return R_NilValue;
 }
 
@@ -6040,6 +6828,13 @@ SEXP evaluate_haplotype(SEXP _PopName, SEXP _Loci, SEXP _missing, SEXP _bg)
     }
 
     {
+        st_eval_workspace *workspace = st_eval_new();
+        if (!workspace)
+        {
+            info(-2, "Cannot allocate haplotype workspace\n");
+            return R_NilValue;
+        }
+        IntNode *startNode = NULL;
         TPopListEl *PopListEl;
         POPULATION ind;
         TMappoint *Mappoint = NULL;
@@ -6048,13 +6843,17 @@ SEXP evaluate_haplotype(SEXP _PopName, SEXP _Loci, SEXP _missing, SEXP _bg)
         int nGt = 0;
         int *pGt = &nGt;
         int *hap = NULL;
-        int free_startNode = 0;
 
         char *PopName =
-            (char *)yCalloc(strlen(CHAR(STRING_ELT(_PopName, 0))) + 2, char);
+            (char *)st_eval_alloc(workspace, strlen(CHAR(STRING_ELT(_PopName, 0))) + 2, sizeof(char));
         char *Loci =
-            (char *)yCalloc(strlen(CHAR(STRING_ELT(_Loci, 0))) + 2, char);
+            (char *)st_eval_alloc(workspace, strlen(CHAR(STRING_ELT(_Loci, 0))) + 2, sizeof(char));
 
+        if (!PopName || !Loci)
+        {
+            info(-2, "Cannot allocate haplotype labels\n");
+            goto fail;
+        }
         strcpy(PopName, CHAR(STRING_ELT(_PopName, 0)));
         strcpy(Loci, CHAR(STRING_ELT(_Loci, 0)));
 
@@ -6094,15 +6893,17 @@ SEXP evaluate_haplotype(SEXP _PopName, SEXP _Loci, SEXP _missing, SEXP _bg)
                                 if (0 == nLoci)
                                 {
                                     Mappoint =
-                                        (TMappoint *)yCalloc(1, TMappoint);
+                                        (TMappoint *)st_eval_alloc(workspace, 1, sizeof(TMappoint));
                                 }
 
                                 else
                                 {
-                                    Mappoint = (TMappoint *)yRealloc(
-                                        Mappoint, nLoci + 1, TMappoint);
+                                    Mappoint = st_eval_resize(workspace, Mappoint,
+                                        (size_t)nLoci + 1, sizeof(*Mappoint));
                                 }
 
+                                if (!Mappoint)
+                                    goto allocation_fail;
                                 Mappoint[nLoci] =
                                     (PopDescr[chrom].Mappoint[loc]);
                                 nLoci++;
@@ -6126,7 +6927,9 @@ SEXP evaluate_haplotype(SEXP _PopName, SEXP _Loci, SEXP _missing, SEXP _bg)
             TInd *Ind;
             int loc, hom, nrmissing;
 
-            hap = (int *)yCalloc(nLoci, int);
+            hap = (int *)st_eval_alloc(workspace, nLoci, sizeof(int));
+            if (!hap)
+                goto allocation_fail;
 
             startNode = NULL;
 
@@ -6135,8 +6938,9 @@ SEXP evaluate_haplotype(SEXP _PopName, SEXP _Loci, SEXP _missing, SEXP _bg)
                 hap[loc] = 0;
             }
 
-            startNode = insertIntLinkList(startNode, hap, nLoci, pGt);
-            free_startNode = 1;
+            startNode = st_eval_insert(workspace, startNode, hap, nLoci, pGt);
+            if (workspace->failed)
+                goto allocation_fail;
 
             for (ind = 0; ind < PopListEl->Pop->NoInds; ind++)
             {
@@ -6166,12 +6970,13 @@ SEXP evaluate_haplotype(SEXP _PopName, SEXP _Loci, SEXP _missing, SEXP _bg)
                     if (0 == nrmissing)
                     {
                         startNode =
-                            insertIntLinkList(startNode, hap, nLoci, pGt);
+                            st_eval_insert(workspace, startNode, hap, nLoci, pGt);
+                        if (workspace->failed)
+                            goto allocation_fail;
                     }
                 }
             }
 
-            yFree(hap);
         }
 
         {
@@ -6185,7 +6990,7 @@ SEXP evaluate_haplotype(SEXP _PopName, SEXP _Loci, SEXP _missing, SEXP _bg)
                 info(-2,"Haplotype result dimensions overflow\n");
                 goto fail;
             }
-            values = calloc(y_dim ? (size_t)y_dim * x_dim : 1,sizeof(int));
+            values = st_eval_alloc(workspace, y_dim ? (size_t)y_dim * x_dim : 1, sizeof(int));
             if (!values)
             {
                 info(-2,"Cannot allocate haplotype counts\n");
@@ -6195,7 +7000,11 @@ SEXP evaluate_haplotype(SEXP _PopName, SEXP _Loci, SEXP _missing, SEXP _bg)
             output_columns = x_dim;
             if ((NULL != Node) && (NULL != (Node = go_down(Node))))
             {
-                int *path = (int *)yCalloc(nGt * x_dim, int);
+                if ((size_t)nGt > SIZE_MAX / sizeof(int) / (size_t)x_dim)
+                    goto allocation_fail;
+                int *path = (int *)st_eval_alloc(workspace, (size_t)nGt * x_dim, sizeof(int));
+                if (!path)
+                    goto allocation_fail;
                 int ttt = 0;
                 int iii;
 
@@ -6204,7 +7013,7 @@ SEXP evaluate_haplotype(SEXP _PopName, SEXP _Loci, SEXP _missing, SEXP _bg)
                     print_path(Node, &nLoci, &nGt, &path[ttt++]);
                 }
 
-                while (NULL != (Node = find_next_leaf(Node)));
+                while (NULL != (Node = st_eval_next_leaf(Node)));
 
                 startNode = NULL;
 
@@ -6216,134 +7025,14 @@ SEXP evaluate_haplotype(SEXP _PopName, SEXP _Loci, SEXP _missing, SEXP _bg)
                     }
                 }
 
-                yFree(path);
             }
 
 
         }
 
-        if (2 <= nLoci)
-        {
-            int x;
-            int **table = NULL;
-            int dimLA = 0, dimLB = 0;
-            int lx, ly, xPos, yPos;
 
-            for (x = 0; x < nGt; x++)
-            {
-                xPos = 0;
-                yPos = 0;
 
-                if ((0 == dimLA) && (0 == dimLB))
-                {
-                    dimLA = 1;
-                    dimLB = 1;
-                    table = yCalloc(dimLA + 1, int *);
-                    table[0] = (int *)yCalloc(dimLB + 1, int);
-                    table[1] = (int *)yCalloc(dimLB + 1, int);
-                    table[0][0] = values[x + 2 * nGt];
-                    table[1][0] = values[x];
-                    table[0][1] = values[x + nGt];
-                    table[1][1] = values[x + 2 * nGt];
-                }
 
-                else
-                {
-                    for (lx = 1; lx <= dimLB; lx++)
-                    {
-                        if (table[0][lx] == values[x + nGt])
-                        {
-                            xPos = lx;
-                        }
-                    }
-
-                    if (0 == xPos)
-                    {
-                        dimLB++;
-
-                        for (ly = 0; ly <= dimLA; ly++)
-                        {
-                            table[ly] =
-                                (int *)yRealloc(table[ly], dimLB + 1, int);
-                            table[ly][dimLB] = 0;
-                        }
-
-                        lx = 1;
-
-                        while (table[0][lx] < values[x + nGt])
-                        {
-                            lx++;
-
-                            if (lx >= dimLB)
-                                break;
-                        }
-
-                        xPos = lx;
-
-                        if (lx != dimLB)
-                        {
-                            for (ly = 0; ly <= dimLA; ly++)
-                            {
-                                for (lx = dimLB; lx > xPos; lx--)
-                                {
-                                    table[ly][lx] = table[ly][lx - 1];
-                                }
-                            }
-
-                            for (ly = 0; ly <= dimLA; ly++)
-                            {
-                                table[ly][xPos] = 0;
-                            }
-                        }
-
-                        table[0][xPos] = values[x + nGt];
-                    }
-
-                    for (ly = 1; ly <= dimLA; ly++)
-                    {
-                        if (table[ly][0] == values[x])
-                        {
-                            yPos = ly;
-                        }
-                    }
-
-                    if (0 == yPos)
-                    {
-                        dimLA++;
-                        table = (int **)yRealloc(table, dimLA + 1, int *);
-                        table[dimLA] = (int *)yCalloc(dimLB + 1, int);
-
-                        table[dimLA][0] = values[x];
-
-                        for (lx = 1; lx <= dimLB; lx++)
-                        {
-                            table[dimLA][lx] = 0;
-                        }
-
-                        yPos = dimLA;
-                    }
-
-                    if ((xPos != 0) && (yPos != 0))
-                    {
-                        table[0][0] += values[x + 2 * nGt];
-                        table[yPos][xPos] = values[x + 2 * nGt];
-                    }
-                }
-            }
-
-            for (ly = 0; ly <= dimLA; ly++)
-            {
-                yFree(table[ly]);
-            }
-
-            yFree(table);
-        }
-
-        yFree(Mappoint);
-        yFree(PopName);
-        yFree(Loci);
-
-        st_work_adopt(values,free);
         int rows = output_rows ? output_rows-1 : 0, np = 0;
         SEXP result = PROTECT(allocVector(VECSXP,output_columns));np++;
         SEXP names = PROTECT(allocVector(STRSXP,output_columns));np++;
@@ -6370,29 +7059,15 @@ SEXP evaluate_haplotype(SEXP _PopName, SEXP _Loci, SEXP _missing, SEXP _bg)
         setAttrib(result,R_NamesSymbol,names);
         setAttrib(result,R_RowNamesSymbol,rownames);
         setAttrib(result,R_ClassSymbol,cls);
-        UNPROTECT(np);return result;
+        st_eval_close(workspace);
+        UNPROTECT(np);
+        return result;
 
 
+    allocation_fail:
+        info(-2, "Cannot allocate haplotype workspace\n");
     fail:
-
-        free(values);
-
-        if (free_startNode)
-        {
-            IntNode *Node = go_down(startNode);
-
-            while (NULL != (Node = find_next_leaf(Node)))
-            {
-            }
-
-            startNode = NULL;
-        }
-
-        yFree(hap);
-        yFree(Mappoint);
-        yFree(PopName);
-        yFree(Loci);
-
+        st_eval_close(workspace);
         return R_NilValue;
     }
 }
@@ -6474,12 +7149,21 @@ void haplotype_next(int *_locusA, int *_locusB, int *_noTI, int *_noI,
     dimLA = 0;
     dimLB = 0;
 
+    st_eval_workspace *workspace = st_eval_new();
+    if (!workspace)
+    {
+        info(-2, "Cannot allocate haplotype workspace\n");
+        return;
+    }
+    int *next_genotype = NULL, **next_table = NULL;
+    int next_nrGeno = 0, next_dimLA = 0, next_dimLB = 0;
+    IntNode *next_root = NULL;
     locusA = *_locusA;
     locusA *= 2;
     locusB = *_locusB;
     locusB *= 2;
 
-    startNode = NULL;
+    next_root = NULL;
     *_noTI = PopListEl->Pop->NoInds;
 
     for (ind = 0; ind < PopListEl->Pop->NoInds; ind++)
@@ -6488,26 +7172,9 @@ void haplotype_next(int *_locusA, int *_locusB, int *_noTI, int *_noI,
 
         if (NULL == Ind->genotype)
         {
-            IntNode *Node;
-
             info(-2, "first genotype_population\n");
 
-            if (NULL != startNode)
-            {
-                Node = go_down(startNode);
-
-                while (NULL != (Node = find_next_leaf(Node)))
-                {
-                }
-
-                startNode = NULL;
-            }
-
-            yFree(genotype);
-            nrGeno = 0;
-            *_noI = 0;
-
-            return;
+            goto evaluation_fail;
         }
 
         if (doubleHetero &&
@@ -6526,35 +7193,49 @@ void haplotype_next(int *_locusA, int *_locusB, int *_noTI, int *_noI,
             {
                 hap[0] = Ind->genotype[locusA];
                 hap[1] = Ind->genotype[locusB];
-                startNode = insertIntLinkList(startNode, hap, 2, pGt);
+                next_root = st_eval_insert(workspace, next_root, hap, 2, pGt);
+                if (workspace->failed)
+                    goto allocation_fail;
                 hap[0] = Ind->genotype[locusA + 1];
                 hap[1] = Ind->genotype[locusB + 1];
                 (*_noI)++;
-                nrGeno += 4;
+                if (next_nrGeno > INT_MAX - 4)
+                    goto allocation_fail;
+                next_nrGeno += 4;
 
-                if (4 == nrGeno)
-                    genotype = (int *)yCalloc(nrGeno, int);
+                if (4 == next_nrGeno)
+                    next_genotype = st_eval_alloc(workspace, next_nrGeno,
+                                                   sizeof(*next_genotype));
                 else
-                    genotype = (int *)yRealloc(genotype, nrGeno, int);
+                    next_genotype = st_eval_resize(workspace, next_genotype,
+                                                    next_nrGeno, sizeof(*next_genotype));
+                if (!next_genotype)
+                    goto allocation_fail;
 
-                genotype[nrGeno - 4] = Ind->genotype[locusA];
-                genotype[nrGeno - 3] = Ind->genotype[locusB];
-                genotype[nrGeno - 2] = Ind->genotype[locusA + 1];
-                genotype[nrGeno - 1] = Ind->genotype[locusB + 1];
+                next_genotype[next_nrGeno - 4] = Ind->genotype[locusA];
+                next_genotype[next_nrGeno - 3] = Ind->genotype[locusB];
+                next_genotype[next_nrGeno - 2] = Ind->genotype[locusA + 1];
+                next_genotype[next_nrGeno - 1] = Ind->genotype[locusB + 1];
 
-                startNode = insertIntLinkList(startNode, hap, 2, pGt);
+                next_root = st_eval_insert(workspace, next_root, hap, 2, pGt);
+                if (workspace->failed)
+                    goto allocation_fail;
             }
         }
     }
 
     {
-        IntNode *Node = startNode;
+        IntNode *Node = next_root;
 
         if ((NULL != Node) && (NULL != (Node = go_down(Node))))
         {
             int ttt = 0;
             int x, xPos = 0, yPos = 0;
-            int *path = (int *)yCalloc(nGt * 3, int);
+            if (nGt > INT_MAX / 3)
+                goto allocation_fail;
+            int *path = st_eval_alloc(workspace, (size_t)nGt * 3, sizeof(*path));
+            if (!path)
+                goto allocation_fail;
             int lx, ly;
 
             for (x = 0; x < nGt * 3; x++)
@@ -6565,78 +7246,84 @@ void haplotype_next(int *_locusA, int *_locusB, int *_noTI, int *_noI,
             do
             {
                 print_path(Node, &nLoci, &nGt, &path[ttt++]);
-            } while (NULL != (Node = find_next_leaf(Node)));
+            } while (NULL != (Node = st_eval_next_leaf(Node)));
 
-            startNode = NULL;
+            next_root = NULL;
 
             for (x = 0; x < nGt; x++)
             {
-                if ((0 == dimLA) && (0 == dimLB))
+                if ((0 == next_dimLA) && (0 == next_dimLB))
                 {
-                    dimLA = 1;
-                    dimLB = 1;
-                    table = yCalloc(dimLA + 1, int *);
-                    table[0] = yCalloc(dimLB + 1, int);
-                    table[1] = yCalloc(dimLB + 1, int);
-                    table[0][0] = path[x + 2 * nGt];
-                    table[1][0] = path[x];
-                    table[0][1] = path[x + nGt];
-                    table[1][1] = path[x + 2 * nGt];
+                    next_dimLA = 1;
+                    next_dimLB = 1;
+                    next_table = st_eval_alloc(workspace, next_dimLA + 1, sizeof(int *));
+                    if (!next_table)
+                        goto allocation_fail;
+                    next_table[0] = st_eval_alloc(workspace, next_dimLB + 1, sizeof(int));
+                    next_table[1] = st_eval_alloc(workspace, next_dimLB + 1, sizeof(int));
+                    if (!next_table[0] || !next_table[1])
+                        goto allocation_fail;
+                    next_table[0][0] = path[x + 2 * nGt];
+                    next_table[1][0] = path[x];
+                    next_table[0][1] = path[x + nGt];
+                    next_table[1][1] = path[x + 2 * nGt];
                 }
                 else
                 {
-                    for (lx = 1, xPos = 0; lx <= dimLB; lx++)
+                    for (lx = 1, xPos = 0; lx <= next_dimLB; lx++)
                     {
-                        if (table[0][lx] == path[x + nGt])
+                        if (next_table[0][lx] == path[x + nGt])
                         {
                             xPos = lx;
                         }
                     }
                     if (0 == xPos)
                     {
-                        dimLB++;
+                        next_dimLB++;
 
-                        for (ly = 0; ly <= dimLA; ly++)
+                        for (ly = 0; ly <= next_dimLA; ly++)
                         {
-                            table[ly] =
-                                (int *)yRealloc(table[ly], dimLB + 1, int);
-                            table[ly][dimLB] = 0;
+                            next_table[ly] = st_eval_resize(workspace,
+                                next_table[ly], (size_t)next_dimLB + 1, sizeof(int));
+                            if (!next_table[ly])
+                                goto allocation_fail;
+                            next_table[ly][next_dimLB] = 0;
                         }
 
                         lx = 1;
 
-                        while (table[0][lx] < path[x + nGt])
+                        while (next_table[0][lx] < path[x + nGt])
                         {
                             lx++;
 
-                            if (lx >= dimLB)
+                            if (lx >= next_dimLB)
                                 break;
                         }
 
                         xPos = lx;
 
-                        if (lx != dimLB)
+                        if (lx != next_dimLB)
                         {
-                            for (ly = 0; ly <= dimLA; ly++)
+                            for (ly = 0; ly <= next_dimLA; ly++)
                             {
-                                for (lx = dimLB; lx > xPos; lx--)
+                                for (lx = next_dimLB; lx > xPos; lx--)
                                 {
-                                    table[ly][lx] = table[ly][lx - 1];
+                                    next_table[ly][lx] = next_table[ly][lx - 1];
                                 }
                             }
 
-                            for (ly = 0; ly <= dimLA; ly++)
+                            for (ly = 0; ly <= next_dimLA; ly++)
                             {
-                                table[ly][xPos] = 0;
+                                next_table[ly][xPos] = 0;
                             }
                         }
 
-                        table[0][xPos] = path[x + nGt];
+                        next_table[0][xPos] = path[x + nGt];
                     }
 
-                    for (ly = 1, yPos = 0; ly <= dimLA; ly++)
+                    for (ly = 1, yPos = 0; ly <= next_dimLA; ly++)
                     {
-                        if (table[ly][0] == path[x])
+                        if (next_table[ly][0] == path[x])
                         {
                             yPos = ly;
                         }
@@ -6644,35 +7331,40 @@ void haplotype_next(int *_locusA, int *_locusB, int *_noTI, int *_noI,
 
                     if (0 == yPos)
                     {
-                        dimLA++;
-                        table = (int **)yRealloc(table, dimLA + 1, int *);
-                        table[dimLA] = (int *)yCalloc(dimLB + 1, int);
+                        next_dimLA++;
+                        next_table = st_eval_resize(workspace, next_table,
+                            (size_t)next_dimLA + 1, sizeof(*next_table));
+                        if (!next_table)
+                            goto allocation_fail;
+                        next_table[next_dimLA] = st_eval_alloc(workspace,
+                            (size_t)next_dimLB + 1, sizeof(int));
+                        if (!next_table[next_dimLA])
+                            goto allocation_fail;
 
-                        table[dimLA][0] = path[x];
+                        next_table[next_dimLA][0] = path[x];
 
-                        for (lx = 1; lx <= dimLB; lx++)
+                        for (lx = 1; lx <= next_dimLB; lx++)
                         {
-                            table[dimLA][lx] = 0;
+                            next_table[next_dimLA][lx] = 0;
                         }
 
-                        yPos = dimLA;
+                        yPos = next_dimLA;
                     }
 
                     if ((xPos != 0) && (yPos != 0))
                     {
-                        table[0][0] += path[x + 2 * nGt];
-                        table[yPos][xPos] = path[x + 2 * nGt];
+                        next_table[0][0] += path[x + 2 * nGt];
+                        next_table[yPos][xPos] = path[x + 2 * nGt];
                     }
                 }
             }
 
-            yFree(path);
         }
     }
 
     *_nodH = dH;
-    *_dLocA = dimLA;
-    *_dLocB = dimLB;
+    *_dLocA = next_dimLA;
+    *_dLocB = next_dimLB;
 
     {
         int maxAllelA = 0;
@@ -6683,24 +7375,26 @@ void haplotype_next(int *_locusA, int *_locusB, int *_noTI, int *_noI,
 
         int i;
 
-        for (i = 1; i <= dimLA; i++)
+        for (i = 1; i <= next_dimLA; i++)
         {
-            if (maxAllelA < table[i][0])
+            if (maxAllelA < next_table[i][0])
             {
-                maxAllelA = table[i][0];
+                maxAllelA = next_table[i][0];
             }
         }
 
-        for (i = 1; i <= dimLB; i++)
+        for (i = 1; i <= next_dimLB; i++)
         {
-            if (maxAllelB < table[0][i])
+            if (maxAllelB < next_table[0][i])
             {
-                maxAllelB = table[0][i];
+                maxAllelB = next_table[0][i];
             }
         }
 
-        transAllelA = (int *)yCalloc(maxAllelA + 1, int);
-        transAllelB = (int *)yCalloc(maxAllelB + 1, int);
+        transAllelA = (int *)st_eval_alloc(workspace, (size_t)maxAllelA + 1, sizeof(int));
+        transAllelB = (int *)st_eval_alloc(workspace, (size_t)maxAllelB + 1, sizeof(int));
+        if (!transAllelA || !transAllelB)
+            goto allocation_fail;
 
         for (i = 0; i <= maxAllelA; i++)
         {
@@ -6712,25 +7406,43 @@ void haplotype_next(int *_locusA, int *_locusB, int *_noTI, int *_noI,
             transAllelB[i] = 0;
         }
 
-        for (i = 1; i <= dimLA; i++)
+        for (i = 1; i <= next_dimLA; i++)
         {
-            transAllelA[table[i][0]] = i - 1;
+            transAllelA[next_table[i][0]] = i - 1;
         }
 
-        for (i = 1; i <= dimLB; i++)
+        for (i = 1; i <= next_dimLB; i++)
         {
-            transAllelB[table[0][i]] = (i - 1) * dimLA;
+            transAllelB[next_table[0][i]] = (i - 1) * next_dimLA;
         }
 
-        for (i = 0; i < nrGeno; i += 2)
+        for (i = 0; i < next_nrGeno; i += 2)
         {
-            genotype[i] = transAllelA[genotype[i]];
-            genotype[i + 1] = transAllelB[genotype[i + 1]];
+            next_genotype[i] = transAllelA[next_genotype[i]];
+            next_genotype[i + 1] = transAllelB[next_genotype[i + 1]];
         }
 
-        yFree(transAllelA);
-        yFree(transAllelB);
+
     }
+    if (next_genotype)
+        st_eval_take(workspace, next_genotype);
+    if (next_table)
+    {
+        for (int i = 0; i <= next_dimLA; i++)
+            st_eval_take(workspace, next_table[i]);
+        st_eval_take(workspace, next_table);
+    }
+    genotype = next_genotype;
+    nrGeno = next_nrGeno;
+    table = next_table;
+    dimLA = next_dimLA;
+    dimLB = next_dimLB;
+    st_eval_close(workspace);
+    return;
+allocation_fail:
+    info(-2, "Cannot allocate haplotype workspace\n");
+evaluation_fail:
+    st_eval_close(workspace);
 }
 
 SEXP haplotype_return_table(void)
@@ -6741,14 +7453,14 @@ SEXP haplotype_return_table(void)
          cls = PROTECT(mkString("data.frame"));
     for (int x = 0; x < dimLB; x++)
     {
-        char label[200];snprintf(label,sizeof(label),"locusB.%d ",table[0][x+1]);
+        char label[200];st_text_write(label,sizeof(label),"locusB.%d ",table[0][x+1]);
         SET_STRING_ELT(names,x,mkChar(label));
         SEXP column = allocVector(INTSXP,dimLA);SET_VECTOR_ELT(out,x,column);
         for (int y = 0; y < dimLA; y++) INTEGER(column)[y] = table[y+1][x+1];
     }
     for (int y = 0; y < dimLA; y++)
     {
-        char label[200];snprintf(label,sizeof(label),"locusA.%d ",table[y+1][0]);
+        char label[200];st_text_write(label,sizeof(label),"locusA.%d ",table[y+1][0]);
         SET_STRING_ELT(rows,y,mkChar(label));
     }
     setAttrib(out,R_NamesSymbol,names);setAttrib(out,R_RowNamesSymbol,rows);setAttrib(out,R_ClassSymbol,cls);
@@ -6770,7 +7482,7 @@ SEXP haplotype_return_genotype(void)
     }
     for (int i = 0; i < n; i++)
     {
-        char label[200];snprintf(label,sizeof(label),"Ind%d.%d",i/2+1,i%2+1);
+        char label[200];st_text_write(label,sizeof(label),"Ind%d.%d",i/2+1,i%2+1);
         SET_STRING_ELT(rows,i,mkChar(label));
     }
     setAttrib(out,R_NamesSymbol,names);setAttrib(out,R_RowNamesSymbol,rows);setAttrib(out,R_ClassSymbol,cls);
@@ -6890,7 +7602,7 @@ void concat_population(char **NameP1, char **NameP2)
     TInd tmpInd;
     TInd *tmpP1Ind;
     POPULATION ind = 0, j, oldP1Alloc, newP1Alloc;
-    TPopListEl *PopListEl;
+    TPopListEl *PopListEl, *SourcePopListEl;
     TPop *P1Pop = NULL;
     TPop *P2Pop = NULL;
 
@@ -6903,6 +7615,7 @@ void concat_population(char **NameP1, char **NameP2)
     }
 
     P2Pop = PopListEl->Pop;
+    SourcePopListEl = PopListEl;
 
     if (0 == strcmp(*NameP1, *NameP2))
     {
@@ -6990,7 +7703,7 @@ void concat_population(char **NameP1, char **NameP2)
     }
 
     P2Pop->NoIndsAlloc = 0;
-    remove_population(NameP2);
+    st_remove_population_entry(SourcePopListEl);
 
     info(1, "Population %s concatenated to population %s\n", *NameP2, *NameP1);
 }
@@ -7045,6 +7758,7 @@ void sample_population(char **NameP1, char **NameP2, char **cNoI, int *rep)
         return;
     }
 
+    st_population_normalize_caches(P2Pop);
     copy_genotype = st_population_all_genotyped(P2Pop);
     copy_gvalue = st_population_all_gvalue(P2Pop);
     copy_pvalue = st_population_all_pvalue(P2Pop);
@@ -7210,7 +7924,7 @@ fail_population:
     free(samples);
 
     if (NULL != P1Pop)
-        remove_population(NameP1);
+        st_remove_population_named(*NameP1);
 
     return;
 }
@@ -7266,6 +7980,7 @@ void copy_population(char **NameP1, char **NameP2, char **cstart, char **cn)
     if (P2Pop->NoInds < start + n)
         n = P2Pop->NoInds - start;
 
+    st_population_normalize_caches(P2Pop);
     copy_genotype = st_population_all_genotyped(P2Pop);
     copy_gvalue = st_population_all_gvalue(P2Pop);
     copy_pvalue = st_population_all_pvalue(P2Pop);
@@ -7385,18 +8100,51 @@ void copy_population(char **NameP1, char **NameP2, char **cstart, char **cn)
 fail_population:
 
     if (NULL != P1Pop)
-        remove_population(NameP1);
+        st_remove_population_named(*NameP1);
 
     return;
 }
 
-void append_population(char **NameP1, char **NameP2)
+static int st_sim_reserve_population(TPop *population, POPULATION required)
+{
+    size_t limit = SIZE_MAX / sizeof(TInd), capacity, old_capacity;
+    TInd *replacement;
+
+    if (!population || required < 0 || population->NoInds < 0 ||
+        population->NoIndsAlloc < population->NoInds ||
+        required < population->NoInds ||
+        (uintmax_t)required > (uintmax_t)limit ||
+        (uintmax_t)population->NoIndsAlloc > (uintmax_t)limit ||
+        (population->NoIndsAlloc && !population->Ind))
+        return 0;
+    if (required <= population->NoIndsAlloc)
+        return 1;
+    if ((uintmax_t)LONG_MAX < (uintmax_t)limit)
+        limit = (size_t)LONG_MAX;
+    old_capacity = (size_t)population->NoIndsAlloc;
+    capacity = old_capacity ? old_capacity : 1;
+    while (capacity < (size_t)required)
+    {
+        if (capacity > limit / 2)
+            capacity = limit;
+        else
+            capacity *= 2;
+    }
+    replacement = st_sim_resize_array(population->Ind, capacity,
+                                      sizeof(*replacement));
+    if (!replacement)
+        return 0;
+    memset(replacement + old_capacity, 0,
+           (capacity - old_capacity) * sizeof(*replacement));
+    population->Ind = replacement;
+    population->NoIndsAlloc = (POPULATION)capacity;
+    return 1;
+}
+
+static int st_append_population(char **NameP1, char **NameP2, int reserve)
 {
     int chrom, hom, loc;
-    int copy_genotype = 0, copy_gvalue = 0, copy_pvalue = 0;
-    int genotype_alloc_error = 0, gvalue_alloc_error = 0;
-    int pvalue_alloc_error = 0, info_alloc_error = 0;
-    int source_genotyped, source_gvalue, source_pvalue;
+    int info_alloc_error = 0;
     int destination_existed = 0;
     POPULATION P1Inds = 0, P1Alloc = 0, NoIndsNew, ind;
     TInd *P1Ind, *P2Ind;
@@ -7408,7 +8156,7 @@ void append_population(char **NameP1, char **NameP2)
     if (NULL == PopListEl)
     {
         info(-2, "Population not defined: %s \n", *NameP2);
-        return;
+        return 0;
     }
 
     P2Pop = PopListEl->Pop;
@@ -7416,23 +8164,22 @@ void append_population(char **NameP1, char **NameP2)
     if (0 == P2Pop->NoInds)
     {
         info(-2, "Population >%s< is empty\n", *NameP2);
-        return;
+        return 0;
     }
 
     if (0 == strcmp(*NameP1, *NameP2))
     {
         info(-2, "Source and destination population must be different\n");
-        return;
+        return 0;
     }
 
-    source_genotyped = st_population_all_genotyped(P2Pop);
-    source_gvalue = st_population_all_gvalue(P2Pop);
-    source_pvalue = st_population_all_pvalue(P2Pop);
+    st_population_normalize_caches(P2Pop);
 
     find_list_element(*NameP1, &PopListEl);
 
     if (NULL != PopListEl)
     {
+        st_population_normalize_caches(PopListEl->Pop);
         destination_existed = 1;
         P1Inds = PopListEl->Pop->NoInds;
         P1Alloc = PopListEl->Pop->NoIndsAlloc;
@@ -7441,40 +8188,38 @@ void append_population(char **NameP1, char **NameP2)
     if (P2Pop->NoInds > LONG_MAX - P1Inds)
     {
         info(-2, "Resulting population is too large\n");
-        return;
+        return 0;
     }
 
     NoIndsNew = P1Inds + P2Pop->NoInds;
 
-    P1Pop = exist_population(*NameP1, NoIndsNew, 0);
-    if (NULL == P1Pop)
-        return;
-
-    if (NoIndsNew != P1Pop->NoIndsAlloc)
+    if (reserve)
     {
-        info(-2, "Population %s could not be resized\n", *NameP1);
-        return;
-    }
+        POPULATION empty = 0;
 
-    if (0 == P1Inds)
-    {
-        copy_gvalue = source_gvalue;
-        copy_pvalue = source_pvalue;
-        copy_genotype = source_genotyped;
+        P1Pop = destination_existed ? PopListEl->Pop :
+                  new_population(NameP1, &empty);
+        if (P1Pop && !st_sim_reserve_population(P1Pop, NoIndsNew))
+            goto fail_population;
     }
     else
+        P1Pop = exist_population(*NameP1, NoIndsNew, 0);
+    if (NULL == P1Pop)
+        return 0;
+
+    if ((!reserve && NoIndsNew != P1Pop->NoIndsAlloc) ||
+        (reserve && NoIndsNew > P1Pop->NoIndsAlloc))
     {
-        copy_gvalue = st_population_all_gvalue(P1Pop) && source_gvalue;
-
-        copy_pvalue = st_population_all_pvalue(P1Pop) && source_pvalue;
-
-        copy_genotype = st_population_all_genotyped(P1Pop) && source_genotyped;
+        info(-2, "Population %s could not be resized\n", *NameP1);
+        return 0;
     }
 
     for (ind = 0; ind < P2Pop->NoInds; ind++)
     {
         P1Ind = get_individual(P1Pop, ind + P1Inds);
         P2Ind = get_individual(P2Pop, ind);
+        if (reserve && !P1Ind->Storage && new_individuum(P1Ind))
+            goto fail_population;
         if (st_sim_prepare_individual(P1Ind, P2Ind, NULL, 0) ||
             st_sim_identity_copy(P1Ind, P2Ind))
             goto fail_population;
@@ -7491,37 +8236,9 @@ void append_population(char **NameP1, char **NameP2)
         if (NULL != P1Ind->info)
             st_sim_free(P1Ind->info);
 
-        if (copy_genotype)
-        {
-            int i;
-
-            P1Ind->genotype = (int *)st_sim_alloc(cMPhom, int);
-
-            if (NULL == P1Ind->genotype)
-            {
-                genotype_alloc_error = 1;
-                copy_genotype = 0;
-            }
-            else
-            {
-                for (i = 0; i < cMPhom; i++)
-                    P1Ind->genotype[i] = P2Ind->genotype[i];
-            }
-        }
-
-        if (!st_copy_value_array(&(P1Ind->GValue),
-                                 copy_gvalue ? P2Ind->GValue : NULL))
-        {
-            gvalue_alloc_error = 1;
-            copy_gvalue = 0;
-        }
-
-        if (!st_copy_value_array(&(P1Ind->PValue),
-                                 copy_pvalue ? P2Ind->PValue : NULL))
-        {
-            pvalue_alloc_error = 1;
-            copy_pvalue = 0;
-        }
+        P1Ind->genotype = NULL;
+        P1Ind->GValue = NULL;
+        P1Ind->PValue = NULL;
 
         if (NULL != P2Ind->info)
         {
@@ -7556,33 +8273,34 @@ void append_population(char **NameP1, char **NameP2)
         }
     }
 
+    if (reserve && info_alloc_error)
+        goto fail_population;
+
     P1Pop->NoInds = NoIndsNew;
+    st_clear_population_genotype(P1Pop);
+    st_clear_population_gvalue(P1Pop);
 
-    if (!copy_genotype || genotype_alloc_error)
-        st_clear_population_genotype(P1Pop);
-
-    if (!copy_gvalue || gvalue_alloc_error)
-        st_clear_population_gvalue(P1Pop);
-
-    if (!copy_pvalue || pvalue_alloc_error)
-        st_clear_population_pvalue(P1Pop);
-
-    if (genotype_alloc_error || gvalue_alloc_error || pvalue_alloc_error ||
-        info_alloc_error)
+    if (info_alloc_error)
     {
         info(-2, "Memory allocation failed in append_population\n");
-        return;
+        return 0;
     }
 
     info(1, "Population %s (%ld individuals) appended to population %s.\n",
          *NameP2, P2Pop->NoInds, *NameP1);
-    return;
+    return 1;
 
 fail_population:
 
     for (ind = P1Inds; (ind < NoIndsNew) && (ind < P1Pop->NoIndsAlloc); ind++)
     {
         P1Ind = get_individual(P1Pop, ind);
+
+        if (reserve)
+        {
+            remove_individuum(P1Ind);
+            continue;
+        }
 
         st_sim_pool_free(P1Ind->genotype);
         P1Ind->genotype = NULL;
@@ -7592,10 +8310,7 @@ fail_population:
         P1Ind->PValue = NULL;
         st_sim_pool_free(P1Ind->info);
         P1Ind->info = NULL;
-        st_sim_pool_free(P1Ind->name);
-        P1Ind->name = NULL;
-        st_sim_pool_free(P1Ind->pedigree);
-        P1Ind->pedigree = NULL;
+        st_sim_identity_clear(P1Ind);
 
         for (chrom = 0; chrom < NoChroms; chrom++)
             for (hom = 0; hom < NoHoms; hom++)
@@ -7604,12 +8319,23 @@ fail_population:
 
     P1Pop->NoInds = P1Inds;
 
-    if (!destination_existed)
-        remove_population(NameP1);
-    else if (P1Pop->NoIndsAlloc != P1Alloc)
+    if (reserve && !destination_existed)
+    {
+        find_list_element(*NameP1, &PopListEl);
+        if (PopListEl)
+            st_remove_population_entry(PopListEl);
+    }
+    else if (!destination_existed)
+        st_remove_population_named(*NameP1);
+    else if (!reserve && P1Pop->NoIndsAlloc != P1Alloc)
         int_resize_population(NameP1, P1Alloc);
 
-    return;
+    return 0;
+}
+
+void append_population(char **NameP1, char **NameP2)
+{
+    (void)st_append_population(NameP1, NameP2, 1);
 }
 
 void select_all_n_best(char **NamePop, char **indexbest, int *n,
@@ -7687,7 +8413,7 @@ void select_all_n_best(char **NamePop, char **indexbest, int *n,
 
     *minscore = value0[eff];
 
-    snprintf(*indexbest, strlen(*indexbest), "%ld", ind);
+    st_text_write(*indexbest, strlen(*indexbest) + 1, "%ld", ind);
 
     info(1, "%ld individuals selected, (score %f .. %f)\n", ind, *minscore,
          *maxscore);
@@ -7706,6 +8432,19 @@ void divide_population(char **NameP1, char **NameP2, char **cNoI)
     if (PopListEl != NULL)
     {
         P2Pop = PopListEl->Pop;
+        st_population_normalize_caches(P2Pop);
+        if (!strcmp(*NameP1, *NameP2))
+        {
+            info(-2, "Source and destination population must be different\n");
+            return;
+        }
+        if (NoI == -1 || NoI > P2Pop->NoInds)
+            NoI = P2Pop->NoInds;
+        if (NoI < 0)
+        {
+            info(-2, "Incorrect number of individuals\n");
+            return;
+        }
         P1Pop = exist_population(*NameP1, NoI, 1);
         if (NULL == P1Pop)
             return;
@@ -7878,8 +8617,8 @@ void get_population_size(char **PopNames, char **cNoInds, char **cNoIndsAlloc)
         PopName = strtok(NULL, " ");
     }
 
-    snprintf(*cNoInds, strlen(*cNoInds), "%ld", NoInds);
-    snprintf(*cNoIndsAlloc, strlen(*cNoIndsAlloc), "%ld", NoIndsAlloc);
+    st_text_write(*cNoInds, strlen(*cNoInds) + 1, "%ld", NoInds);
+    st_text_write(*cNoIndsAlloc, strlen(*cNoIndsAlloc) + 1, "%ld", NoIndsAlloc);
 }
 
 void get_genome_par(int *_NoChroms, int *_NoHoms)
@@ -7922,9 +8661,9 @@ void get_map_a(int *_NoMappoints, int *_maxname, char **_classlgth,
         }
     }
 
-    snprintf(*_classlgth, strlen(*_classlgth), "%lu", class_lgth);
+    st_text_write(*_classlgth, strlen(*_classlgth) + 1, "%lu", class_lgth);
 
-    snprintf(*_namelgth, strlen(*_namelgth), "%lu", name_lgth);
+    st_text_write(*_namelgth, strlen(*_namelgth) + 1, "%lu", name_lgth);
 }
 
 void get_map_b(double *_chrom, double *_pos, char **_name, char **_class)
@@ -8105,6 +8844,8 @@ static int st_population_selection_ready(TPop *Pop, int criterion, int eff)
     if ((NULL == Pop) || (0 > eff) || (eff > NrEffects))
         return 0;
 
+    st_population_normalize_caches(Pop);
+
     for (ind = 0; ind < Pop->NoInds; ind++)
     {
         float *value = st_individual_value_array(&(Pop->Ind[ind]), criterion);
@@ -8177,6 +8918,8 @@ void set_population_gvalue(char **PopName, double *gvalue, int *ngvalue,
         info(-2, "Population %s not defined\n", *PopName);
         return;
     }
+
+    st_population_normalize_caches(PopListEl->Pop);
 
     if (0 == PopListEl->Pop->NoInds)
     {
@@ -8265,6 +9008,35 @@ fail_alloc:
     info(-2, "Memory allocation failed in set_population_gvalue\n");
 }
 
+typedef struct
+{
+    POPULATION count;
+    float **value;
+    double *mean, *variance, *sd;
+} st_phenotype_stage;
+
+static void st_phenotype_stage_free(void *pointer)
+{
+    st_phenotype_stage *stage = pointer;
+    if (stage->value)
+        for (POPULATION i = 0; i < stage->count; i++)
+            st_sim_pool_free(stage->value[i]);
+    free(stage->value);
+    free(stage->mean);
+    free(stage->variance);
+    free(stage->sd);
+    free(stage);
+}
+
+static void st_phenotype_stage_close(st_phenotype_stage *stage)
+{
+    if (stage)
+    {
+        st_work_detach(stage);
+        st_phenotype_stage_free(stage);
+    }
+}
+
 void phenotype_population(char **PopName, double *hsq, int *nhsq, int *retval)
 {
     POPULATION ind;
@@ -8274,6 +9046,7 @@ void phenotype_population(char **PopName, double *hsq, int *nhsq, int *retval)
     double *variance = NULL;
     double *sd = NULL;
     int i;
+    st_phenotype_stage *stage = NULL;
 
     *retval = -2;
 
@@ -8285,6 +9058,8 @@ void phenotype_population(char **PopName, double *hsq, int *nhsq, int *retval)
         return;
     }
 
+    st_population_normalize_caches(PopListEl->Pop);
+
     if (2 > PopListEl->Pop->NoInds)
     {
         info(-2,
@@ -8292,7 +9067,7 @@ void phenotype_population(char **PopName, double *hsq, int *nhsq, int *retval)
         return;
     }
 
-    if (0 == NrEffects)
+    if (NrEffects < 1)
     {
         info(-2, "No effects defined\n");
         return;
@@ -8319,17 +9094,28 @@ void phenotype_population(char **PopName, double *hsq, int *nhsq, int *retval)
         }
     }
 
-    mean = (double *)calloc((size_t)NrEffects, sizeof(*mean));
-    variance = (double *)calloc((size_t)NrEffects, sizeof(*variance));
-    sd = (double *)calloc((size_t)NrEffects, sizeof(*sd));
-    new_value =
-        (float **)calloc((size_t)PopListEl->Pop->NoInds, sizeof(*new_value));
+    size_t effect_count = (size_t)NrEffects;
+    if (effect_count > SIZE_MAX / sizeof(*mean) ||
+        effect_count >= SIZE_MAX / sizeof(**new_value) ||
+        (uintmax_t)PopListEl->Pop->NoInds > SIZE_MAX / sizeof(*new_value))
+        goto fail_alloc;
+
+    stage = calloc(1, sizeof(*stage));
+    if (!stage)
+        goto fail_alloc;
+    stage->count = PopListEl->Pop->NoInds;
+    st_work_adopt(stage, st_phenotype_stage_free);
+    mean = stage->mean = calloc((size_t)NrEffects, sizeof(*mean));
+    variance = stage->variance = calloc((size_t)NrEffects, sizeof(*variance));
+    sd = stage->sd = calloc((size_t)NrEffects, sizeof(*sd));
+    new_value = stage->value = calloc((size_t)PopListEl->Pop->NoInds,
+                                      sizeof(*new_value));
 
     if ((NULL == mean) || (NULL == variance) || (NULL == sd) ||
         (NULL == new_value))
         goto fail_alloc;
 
-    for (i = 1; i < NrEffects + 1; i++)
+    for (size_t effect = 0; effect < effect_count; effect++)
     {
         double ss = 0.0;
 
@@ -8337,36 +9123,36 @@ void phenotype_population(char **PopName, double *hsq, int *nhsq, int *retval)
         {
             TInd *Ind = get_individual(PopListEl->Pop, ind);
 
-            if (!isfinite((double)Ind->GValue[i]))
+            if (!isfinite((double)Ind->GValue[effect + 1]))
             {
                 info(-2, "Genotypic values must be finite\n");
                 goto fail;
             }
 
-            mean[i - 1] += (double)Ind->GValue[i];
+            mean[effect] += (double)Ind->GValue[effect + 1];
         }
 
-        mean[i - 1] /= (double)PopListEl->Pop->NoInds;
+        mean[effect] /= (double)PopListEl->Pop->NoInds;
 
         for (ind = 0; ind < PopListEl->Pop->NoInds; ind++)
         {
             TInd *Ind = get_individual(PopListEl->Pop, ind);
-            double d = (double)Ind->GValue[i] - mean[i - 1];
+            double d = (double)Ind->GValue[effect + 1] - mean[effect];
 
             ss += d * d;
         }
 
-        variance[i - 1] = ss / (double)(PopListEl->Pop->NoInds - 1);
+        variance[effect] = ss / (double)(PopListEl->Pop->NoInds - 1);
 
-        if (!isfinite(variance[i - 1]) || (0.0 > variance[i - 1]))
+        if (!isfinite(variance[effect]) || (0.0 > variance[effect]))
         {
             info(-2, "Invalid genotypic variance\n");
             goto fail;
         }
 
-        sd[i - 1] = sqrt(variance[i - 1] / hsq[i - 1] - variance[i - 1]);
+        sd[effect] = sqrt(variance[effect] / hsq[effect] - variance[effect]);
 
-        if (!isfinite(sd[i - 1]))
+        if (!isfinite(sd[effect]))
         {
             info(-2, "Invalid residual standard deviation\n");
             goto fail;
@@ -8392,9 +9178,9 @@ void phenotype_population(char **PopName, double *hsq, int *nhsq, int *retval)
         TInd *Ind = get_individual(PopListEl->Pop, ind);
         double index = 0.0;
 
-        for (i = 1; i < NrEffects + 1; i++)
+        for (size_t effect = 0; effect < effect_count; effect++)
         {
-            double p = (double)Ind->GValue[i] + norm_rand() * sd[i - 1];
+            double p = (double)Ind->GValue[effect + 1] + norm_rand() * sd[effect];
 
             if (!isfinite(p) || (fabs(p) > FLT_MAX))
             {
@@ -8403,8 +9189,8 @@ void phenotype_population(char **PopName, double *hsq, int *nhsq, int *retval)
                 goto fail;
             }
 
-            new_value[ind][i] = (float)p;
-            index += p * (double)Effects[i - 1].weight;
+            new_value[ind][effect + 1] = (float)p;
+            index += p * (double)Effects[effect].weight;
         }
 
         if (!isfinite(index) || (fabs(index) > FLT_MAX))
@@ -8428,10 +9214,7 @@ void phenotype_population(char **PopName, double *hsq, int *nhsq, int *retval)
         new_value[ind] = NULL;
     }
 
-    free(new_value);
-    free(mean);
-    free(variance);
-    free(sd);
+    st_phenotype_stage_close(stage);
 
     *retval = 0;
     return;
@@ -8442,21 +9225,31 @@ fail_alloc:
 
 fail:
 
-    if (NULL != new_value)
-    {
-        for (ind = 0; ind < PopListEl->Pop->NoInds; ind++)
-            st_sim_pool_free(new_value[ind]);
-    }
+    st_phenotype_stage_close(stage);
+}
 
-    free(new_value);
-    free(mean);
-    free(variance);
-    free(sd);
+
+static int st_population_individual_index(const char *text, const TPop *population,
+                                           POPULATION *index)
+{
+    if (!text || !*text)
+        return 0;
+    char *end;
+    int previous_errno = errno;
+    errno = 0;
+    long value = strtol(text, &end, 10);
+    int failed = errno == ERANGE || end == text || *end || value < 1 ||
+                 value > population->NoInds;
+    errno = previous_errno;
+    if (failed)
+        return 0;
+    *index = (POPULATION)value - 1;
+    return 1;
 }
 
 void set_population_info(char **PopName, char **_ind, char **_info)
 {
-    POPULATION ind = atol(*_ind) - 1;
+    POPULATION ind;
     TPopListEl *PopListEl;
     TInd *Ind;
 
@@ -8468,6 +9261,11 @@ void set_population_info(char **PopName, char **_ind, char **_info)
         return;
     }
 
+    if (!st_population_individual_index(*_ind, PopListEl->Pop, &ind))
+    {
+        info(-2, "Individual position is outside the population or not a whole number\n");
+        return;
+    }
     Ind = (TInd *)get_individual(PopListEl->Pop, ind);
 
     if (strlen(*_info) >= MAXNAME)
@@ -8491,7 +9289,7 @@ void set_population_info(char **PopName, char **_ind, char **_info)
 
 void get_population_info(char **PopName, char **_ind, char **_info)
 {
-    POPULATION ind = atol(*_ind) - 1;
+    POPULATION ind;
     TPopListEl *PopListEl;
     TInd *Ind;
 
@@ -8503,6 +9301,11 @@ void get_population_info(char **PopName, char **_ind, char **_info)
         return;
     }
 
+    if (!st_population_individual_index(*_ind, PopListEl->Pop, &ind))
+    {
+        info(-2, "Individual position is outside the population or not a whole number\n");
+        return;
+    }
     Ind = (TInd *)get_individual(PopListEl->Pop, ind);
 
     if (NULL == Ind->info)
@@ -8537,51 +9340,171 @@ void effect_weight_set_all(double *weight)
     st_clear_all_population_gvalue();
 }
 
-void Insert_ALL_Loc(TEff *Eff, TMappoint *MP, int All)
+static void *st_effect_resize(void *old, size_t count, size_t size)
 {
-    int i;
-
-    for (i = 0; i < Eff->NrLoci; i++)
-    {
-        if (MP == Eff->Loc[i].MP)
-        {
-            if (Eff->Loc[i].NrAll++ < NoHoms)
-            {
-                Eff->Loc[i].All[Eff->Loc[i].NrAll - 1] = All;
-            }
-
-            else
-            {
-                Eff->Loc[i].NrAll--;
-                info(-2, "Error in the effect-file - too many alleles\n");
-            }
-
-            return;
-        }
-    }
-
-    if (0 == Eff->NrLoci++)
-        Eff->Loc = (TGen *)yCalloc(1, TGen);
-    else
-        Eff->Loc = (TGen *)yRealloc(Eff->Loc, Eff->NrLoci, TGen);
-
-    Eff->Loc[Eff->NrLoci - 1].MP = MP;
-    Eff->Loc[Eff->NrLoci - 1].NrAll = 1;
-    Eff->Loc[Eff->NrLoci - 1].All = (int *)yCalloc(NoHoms, int);
-    Eff->Loc[Eff->NrLoci - 1].All[0] = All;
-
-    for (i = 1; i < NoHoms; i++)
-        Eff->Loc[Eff->NrLoci - 1].All[i] = -1;
+    if (!count || !size || count > SIZE_MAX / size)
+        return NULL;
+    return realloc(old, count * size);
 }
+
+static void st_effect_clear(TEffects *effect)
+{
+    for (int i = 0; i < effect->NrEff; i++)
+    {
+        for (int j = 0; j < effect->Eff[i].NrLoci; j++)
+            free(effect->Eff[i].Loc[j].All);
+        free(effect->Eff[i].Loc);
+    }
+    free(effect->Eff);
+    free(effect->MPset);
+    effect->Eff = NULL;
+    effect->MPset = NULL;
+    effect->NrEff = effect->MPs = 0;
+}
+
+static int st_effect_add_term(TEffects *effect)
+{
+    if (effect->NrEff == INT_MAX)
+        return 0;
+    TEff *resized = st_effect_resize(effect->Eff,
+                                     (size_t)effect->NrEff + 1, sizeof(*resized));
+    if (!resized)
+        return 0;
+    effect->Eff = resized;
+    memset(effect->Eff + effect->NrEff, 0, sizeof(*effect->Eff));
+    effect->NrEff++;
+    return 1;
+}
+
+static int st_effect_insert(TEff *effect, TMappoint *point, int allele)
+{
+    if (NoHoms < 1)
+        return 0;
+    for (int i = 0; i < effect->NrLoci; i++)
+        if (point == effect->Loc[i].MP)
+        {
+            if (effect->Loc[i].NrAll < NoHoms)
+                effect->Loc[i].All[effect->Loc[i].NrAll++] = allele;
+            else
+                info(-2, "Error in the effect-file - too many alleles\n");
+            return 1;
+        }
+    if (effect->NrLoci == INT_MAX || (size_t)NoHoms > SIZE_MAX / sizeof(int))
+        return 0;
+    int *alleles = malloc((size_t)NoHoms * sizeof(*alleles));
+    if (!alleles)
+        return 0;
+    TGen *resized = st_effect_resize(effect->Loc,
+                                     (size_t)effect->NrLoci + 1, sizeof(*resized));
+    if (!resized)
+    {
+        free(alleles);
+        return 0;
+    }
+    alleles[0] = allele;
+    for (int i = 1; i < NoHoms; i++)
+        alleles[i] = -1;
+    effect->Loc = resized;
+    TGen *locus = effect->Loc + effect->NrLoci;
+    locus->MP = point;
+    locus->NrAll = 1;
+    locus->All = alleles;
+    effect->NrLoci++;
+    return 1;
+}
+
+void Insert_ALL_Loc(TEff *effect, TMappoint *point, int allele)
+{
+    if (!st_effect_insert(effect, point, allele))
+        info(-2, "Unable to allocate effect locus\n");
+}
+
+static int st_effect_mappoints(TEffects *effect)
+{
+    for (int i = 0; i < effect->NrEff; i++)
+        for (int j = 0; j < effect->Eff[i].NrLoci; j++)
+        {
+            TMappoint *point = effect->Eff[i].Loc[j].MP;
+            int k;
+            for (k = 0; k < effect->MPs; k++)
+                if (effect->MPset[k] == point)
+                    break;
+            if (k != effect->MPs)
+                continue;
+            if (effect->MPs == INT_MAX)
+                return 0;
+            TMappoint **resized = st_effect_resize(effect->MPset,
+                                      (size_t)effect->MPs + 1, sizeof(*resized));
+            if (!resized)
+                return 0;
+            effect->MPset = resized;
+            effect->MPset[effect->MPs++] = point;
+        }
+    return 1;
+}
+
+static int st_effect_clone_swap(TEffects *effect, int index, int locus,
+                                int first, int second)
+{
+    if (!st_effect_add_term(effect))
+        return 0;
+    TEff *source = effect->Eff + index;
+    TEff *target = effect->Eff + effect->NrEff - 1;
+    target->Eff = source->Eff;
+    int count = source->NrLoci;
+    if (count < 1 || (size_t)count > SIZE_MAX / sizeof(*target->Loc) ||
+        NoHoms < 1 || (size_t)NoHoms > SIZE_MAX / sizeof(int))
+        return 0;
+    target->Loc = calloc((size_t)count, sizeof(*target->Loc));
+    if (!target->Loc)
+        return 0;
+    target->NrLoci = count;
+    for (int i = 0; i < count; i++)
+    {
+        target->Loc[i].MP = source->Loc[i].MP;
+        target->Loc[i].NrAll = source->Loc[i].NrAll;
+        target->Loc[i].All = malloc((size_t)NoHoms * sizeof(int));
+        if (!target->Loc[i].All)
+            return 0;
+        memcpy(target->Loc[i].All, source->Loc[i].All,
+               (size_t)NoHoms * sizeof(int));
+    }
+    target->Loc[locus].All[first] = source->Loc[locus].All[second];
+    target->Loc[locus].All[second] = source->Loc[locus].All[first];
+    return 1;
+}
+
+static int st_effect_commit(TEffects *effect)
+{
+    if (NrEffects == INT_MAX)
+        return 0;
+    TEffects *resized = st_effect_resize(Effects, (size_t)NrEffects + 1,
+                                        sizeof(*resized));
+    if (!resized)
+        return 0;
+    Effects = resized;
+    effect->Pos = NrEffects + 1;
+    Effects[NrEffects++] = *effect;
+    memset(effect, 0, sizeof(*effect));
+    return 1;
+}
+
 
 void load_effmap_mod(char **effectName, char **effectSpec, double *effectWeight)
 
 {
     char line[10 * MAXLINE], *token;
-    int i, j, k, tmpi, status, maxLoc = 0;
+    int i, tmpi, status, maxLoc = 0;
     float tmpf;
     TMappoint *tmpMP = NULL;
-    TEffects *Effect;
+    TEffects staged = {0};
+    TEffects *Effect = &staged;
+
+    if (strlen(*effectName) >= sizeof(Effect->Name))
+    {
+        info(-2, "Effect name too long\n");
+        return;
+    }
 
     if (NULL != find_Effect(*effectName))
     {
@@ -8595,16 +9518,9 @@ void load_effmap_mod(char **effectName, char **effectSpec, double *effectWeight)
         return;
     }
 
-    if (0 == NrEffects++)
-        Effects = (TEffects *)yCalloc(1, TEffects);
-    else
-        Effects = (TEffects *)yRealloc(Effects, NrEffects, TEffects);
-
-    Effect = &Effects[NrEffects - 1];
     Effect->GValue_avg = 0;
     Effect->weight = 1;
     Effect->NrEff = 0;
-    Effect->Pos = NrEffects;
     Effect->Eff = NULL;
     Effect->MPset = NULL;
     strcpy(Effect->Name, *effectName);
@@ -8630,15 +9546,8 @@ void load_effmap_mod(char **effectName, char **effectSpec, double *effectWeight)
                 {
                     status = 2;
 
-                    if (0 == (Effect->NrEff)++)
-                        Effect->Eff = (TEff *)yCalloc(1, TEff);
-                    else
-                        Effect->Eff =
-                            (TEff *)yRealloc(Effect->Eff, Effect->NrEff, TEff);
-
-                    Effect->Eff[Effect->NrEff - 1].Eff = 0;
-                    Effect->Eff[Effect->NrEff - 1].NrLoci = 0;
-                    Effect->Eff[Effect->NrEff - 1].Loc = NULL;
+                    if (!st_effect_add_term(Effect))
+                        goto memory_failure;
                 }
 
                 break;
@@ -8663,8 +9572,9 @@ void load_effmap_mod(char **effectName, char **effectSpec, double *effectWeight)
                 if (1 == sscanf(token, "%d", &tmpi))
                 {
                     status = 4;
-                    Insert_ALL_Loc(&Effect->Eff[Effect->NrEff - 1], tmpMP,
-                                   tmpi);
+                    if (!st_effect_insert(&Effect->Eff[Effect->NrEff - 1], tmpMP,
+                                          tmpi))
+                        goto memory_failure;
                 }
 
                 else
@@ -8708,69 +9618,36 @@ void load_effmap_mod(char **effectName, char **effectSpec, double *effectWeight)
         goto fail;
     }
 
-    Effect->MPs = 0;
+    if (!st_effect_mappoints(Effect))
+        goto memory_failure;
 
-    for (i = 0; i < Effect->NrEff; i++)
-    {
-        for (j = 0; j < Effect->Eff[i].NrLoci; j++)
-        {
-            for (k = 0; k < Effect->MPs; k++)
-            {
-                if (*(Effect->MPset + k) == (Effect->Eff[i].Loc[j].MP))
-                    break;
-            }
-
-            if (k == Effect->MPs)
-            {
-                Effect->MPs++;
-
-                if (1 == Effect->MPs)
-                    Effect->MPset = (TMappoint **)yCalloc(1, TMappoint *);
-                else
-                    Effect->MPset = (TMappoint **)yRealloc(
-                        Effect->MPset, Effect->MPs, TMappoint *);
-
-                Effect->MPset[Effect->MPs - 1] = Effect->Eff[i].Loc[j].MP;
-            }
-        }
-    }
-
+    if (!st_effect_commit(Effect))
+        goto memory_failure;
     st_clear_all_population_gvalue();
     return;
 
+memory_failure:
+    info(-2, "Unable to allocate effect map\n");
 fail:
-
-    for (i = 0; i < Effect->NrEff; i++)
-    {
-        for (j = 0; j < Effect->Eff[i].NrLoci; j++)
-            yFree(Effect->Eff[i].Loc[j].All);
-
-        yFree(Effect->Eff[i].Loc);
-    }
-
-    yFree(Effect->Eff);
-    yFree(Effect->MPset);
-
-    NrEffects--;
-
-    if (0 == NrEffects)
-        yFree(Effects);
-    else
-    {
-        TEffects *tmp = realloc(Effects, NrEffects * sizeof(*tmp));
-        if (NULL != tmp)
-            Effects = tmp;
-    }
+    st_effect_clear(Effect);
 }
+
 
 void load_effmap(char **file, char **name)
 {
-    FILE *fp;
+    FILE *fp = NULL;
     char line[10 * MAXLINE], *token;
     int i, j, k, tmpi, status, maxLoc = 0;
     float tmpf;
     TMappoint *tmpMP = NULL;
-    TEffects *Effect;
+    TEffects staged = {0};
+    TEffects *Effect = &staged;
+
+    if (strlen(*name) >= sizeof(Effect->Name))
+    {
+        info(-2, "Effect name too long\n");
+        return;
+    }
 
     if (NULL != find_Effect(*name))
     {
@@ -8786,20 +9663,12 @@ void load_effmap(char **file, char **name)
         return;
     }
 
-    if (0 == NrEffects++)
-        Effects = (TEffects *)yCalloc(1, TEffects);
-    else
-        Effects = (TEffects *)yRealloc(Effects, NrEffects, TEffects);
-
-    Effect = &Effects[NrEffects - 1];
-
     Effect->GValue_avg = 0;
 
     Effect->weight = 1;
 
     Effect->NrEff = 0;
 
-    Effect->Pos = NrEffects;
 
     Effect->Eff = NULL;
 
@@ -8851,16 +9720,8 @@ void load_effmap(char **file, char **name)
                     {
                         status = 2;
 
-                        if (0 == (Effect->NrEff)++)
-                            Effect->Eff = (TEff *)yCalloc(1, TEff);
-                        else
-                            Effect->Eff = (TEff *)yRealloc(Effect->Eff,
-                                                           Effect->NrEff, TEff);
-
-                        Effect->Eff[(Effect->NrEff) - 1].Eff = 0;
-
-                        Effect->Eff[(Effect->NrEff) - 1].NrLoci = 0;
-                        Effect->Eff[(Effect->NrEff) - 1].Loc = NULL;
+                        if (!st_effect_add_term(Effect))
+                            goto memory_failure;
                     }
                 }
 
@@ -8886,8 +9747,9 @@ void load_effmap(char **file, char **name)
                 if (1 == sscanf(token, "%d", &tmpi))
                 {
                     status = 4;
-                    Insert_ALL_Loc(&Effect->Eff[Effect->NrEff - 1], tmpMP,
-                                   tmpi);
+                    if (!st_effect_insert(&Effect->Eff[Effect->NrEff - 1], tmpMP,
+                                          tmpi))
+                        goto memory_failure;
                 }
 
                 else
@@ -8940,37 +9802,12 @@ void load_effmap(char **file, char **name)
     }
 
     fileclose(fp);
+    fp = NULL;
 
-    Effect->MPs = 0;
-
-    for (i = 0; i < Effect->NrEff; i++)
-    {
-        for (j = 0; j < Effect->Eff[i].NrLoci; j++)
-        {
-            for (k = 0; k < Effect->MPs; k++)
-            {
-                if (*(Effect->MPset + k) == (Effect->Eff[i].Loc[j].MP))
-                    break;
-            }
-
-            if (k == Effect->MPs)
-            {
-                Effect->MPs++;
-
-                if (1 == Effect->MPs)
-                    Effect->MPset = (TMappoint **)yCalloc(1, TMappoint *);
-                else
-                    Effect->MPset = (TMappoint **)yRealloc(
-                        Effect->MPset, Effect->MPs, TMappoint *);
-
-                Effect->MPset[Effect->MPs - 1] = Effect->Eff[i].Loc[j].MP;
-            }
-        }
-    }
+    if (!st_effect_mappoints(Effect))
+        goto memory_failure;
 
     {
-        int l, m;
-
         for (i = 0; i < maxLoc; i++)
         {
             for (k = 0; k < NoHoms; k++)
@@ -8987,60 +9824,26 @@ void load_effmap(char **file, char **name)
                             (Effect->Eff[j].Loc[i].All[k] !=
                              Effect->Eff[j].Loc[i].All[n]))
                         {
-                            Effect->NrEff++;
-                            Effect->Eff = (TEff *)yRealloc(Effect->Eff,
-                                                           Effect->NrEff, TEff);
-                            Effect->Eff[Effect->NrEff - 1].Eff =
-                                Effect->Eff[j].Eff;
-                            Effect->Eff[Effect->NrEff - 1].NrLoci =
-                                Effect->Eff[j].NrLoci;
-                            Effect->Eff[Effect->NrEff - 1].Loc =
-                                (TGen *)yCalloc(Effect->Eff[j].NrLoci, TGen);
-
-                            for (l = 0; l < Effect->Eff[j].NrLoci; l++)
-                            {
-                                Effect->Eff[Effect->NrEff - 1].Loc[l].MP =
-                                    Effect->Eff[j].Loc[l].MP;
-                                Effect->Eff[Effect->NrEff - 1].Loc[l].NrAll =
-                                    Effect->Eff[j].Loc[l].NrAll;
-                                Effect->Eff[Effect->NrEff - 1].Loc[l].All =
-                                    (int *)yCalloc(NoHoms, int);
-
-                                for (m = 0; m < NoHoms; m++)
-                                {
-                                    if ((l == i) && (m == k))
-                                    {
-                                        Effect->Eff[Effect->NrEff - 1]
-                                            .Loc[l]
-                                            .All[m] =
-                                            Effect->Eff[j].Loc[l].All[n];
-                                    }
-
-                                    else if ((l == i) && (m == n))
-                                    {
-                                        Effect->Eff[Effect->NrEff - 1]
-                                            .Loc[l]
-                                            .All[m] =
-                                            Effect->Eff[j].Loc[l].All[k];
-                                    }
-
-                                    else
-                                    {
-                                        Effect->Eff[Effect->NrEff - 1]
-                                            .Loc[l]
-                                            .All[m] =
-                                            Effect->Eff[j].Loc[l].All[m];
-                                    }
-                                }
-                            }
+                            if (!st_effect_clone_swap(Effect, j, i, k, n))
+                                goto memory_failure;
                         }
                     }
                 }
             }
         }
     }
+    if (!st_effect_commit(Effect))
+        goto memory_failure;
     st_clear_all_population_gvalue();
+    return;
+
+memory_failure:
+    if (fp)
+        fileclose(fp);
+    st_effect_clear(Effect);
+    info(-2, "Unable to allocate effect map\n");
 }
+
 
 void permutate_effmap(void)
 {
@@ -9087,7 +9890,12 @@ void effmap_remove(char **effectName)
             if (0 == NrEffects)
                 yFree(Effects);
             else
-                Effects = (TEffects *)yRealloc(Effects, NrEffects, TEffects);
+            {
+                TEffects *resized = st_effect_resize(Effects, (size_t)NrEffects,
+                                                     sizeof(*resized));
+                if (resized)
+                    Effects = resized;
+            }
 
             st_clear_all_population_gvalue();
             info(1, "Effect %s removed\n", *effectName);
@@ -9096,9 +9904,11 @@ void effmap_remove(char **effectName)
     }
 }
 
+
 void effmap_remove_all(void)
 {
     int i, j, k;
+    int removed = NrEffects;
 
     for (i = 0; i < NrEffects; i++)
     {
@@ -9124,11 +9934,10 @@ void effmap_remove_all(void)
     if (NULL != Effects)
         yFree(Effects);
 
-    if (0 < NrEffects)
-        info(1, "%d effects removed\n", NrEffects);
-
     NrEffects = 0;
     st_clear_all_population_gvalue();
+    if (removed > 0)
+        info(1, "%d effects removed\n", removed);
 }
 
 void remove_genotype_population(char **PopNames)
@@ -9193,6 +10002,8 @@ void genotype_population(char **PopNames)
             info(-1, "Population %s is empty\n", PopName);
         else
         {
+            st_population_normalize_caches(PopListEl->Pop);
+
             if (st_population_all_genotyped(PopListEl->Pop))
             {
                 info(1,
@@ -9304,6 +10115,8 @@ void evaluate_population(char **PopNames, char **EffName)
             info(-1, "Population not defined: %s\n", PopName);
         else
         {
+            st_population_normalize_caches(PopListEl->Pop);
+
             if (0 == PopListEl->Pop->NoInds)
             {
                 info(-2, "Population %s is empty\n", PopName);
@@ -9511,6 +10324,8 @@ void sort_population(char **PopNames, int *decreasing, char **criterion_name,
             return;
         }
 
+        st_population_normalize_caches(PopListEl->Pop);
+
         if (0 == PopListEl->Pop->NoInds)
         {
             info(-2, "Population %s is empty\n", PopName);
@@ -9590,7 +10405,7 @@ static void st_population_mab_export(SEXP names, SEXP args, int background,
             for (int a = 0; a < sets[marker].betrag; a++)
             {
                 char buffer[2 * MAXNAME];
-                snprintf(buffer, sizeof(buffer), "%s.%d ", PopDescr[chrom].Mappoint[m].name, sets[marker].member[a]);
+                st_text_write(buffer, sizeof(buffer), "%s.%d ", PopDescr[chrom].Mappoint[m].name, sets[marker].member[a]);
                 const char *dot = strchr(buffer, '.');
                 if (!dot) dot = strchr(buffer, '_');
                 size_t n = dot ? (size_t)(dot - buffer) : strlen(buffer);
@@ -9658,7 +10473,7 @@ static void st_population_mab_export(SEXP names, SEXP args, int background,
             SET_STRING_ELT(matrix, r + 2 * nr, mkChar(second));
             i += paired ? 2 : 1; r++;
         }
-        char digits[32]; snprintf(digits, sizeof(digits), "%03d", nindividuals ? j + 1 : j ? 0 : 1);
+        char digits[32]; st_text_write(digits, sizeof(digits), "%03d", nindividuals ? j + 1 : j ? 0 : 1);
         SEXP suffix = st_mab_io_keep(mkString(digits), &np),
              empty = st_mab_io_keep(mkString(""), &np),
              call = st_mab_io_keep(lang4(findFun(install("paste"), R_BaseEnv), name, suffix, empty), &np);
@@ -9856,7 +10671,8 @@ static SEXP st_population_export(SEXP _PopNames, SEXP _bg, SEXP mab, int *succes
     for (int j = 0; j < NoInds; j++)
     {
         SEXP column = allocVector(INTSXP,NoAll);SET_VECTOR_ELT(matrix,j,column);
-        memset(INTEGER(column),0,(size_t)NoAll*sizeof(int));
+        if (NoAll)
+            memset(INTEGER(column), 0, (size_t)NoAll * sizeof(int));
     }
     strcpy(PopNames, CHAR(STRING_ELT(_PopNames, 0)));
 
@@ -9876,12 +10692,13 @@ static SEXP st_population_export(SEXP _PopNames, SEXP _bg, SEXP mab, int *succes
         {
             TInd *Ind = get_individual(PopListEl->Pop, ind);
 
-            snprintf(tmp, sizeof(tmp), "%s.%ld ", PopListEl->Pop->Name,
+            st_text_write(tmp, sizeof(tmp), "%s.%ld ", PopListEl->Pop->Name,
                      (long)(ind + 1));
 
             SET_STRING_ELT(xAxis, col, mkChar(tmp));
             int offset = 0;
-            int *column = INTEGER(VECTOR_ELT(matrix,col++));
+            int *column = NoAll ? INTEGER(VECTOR_ELT(matrix, col)) : NULL;
+            col++;
 
             for (marker = 0; marker < cMP; marker++)
             {
@@ -9915,7 +10732,7 @@ static SEXP st_population_export(SEXP _PopNames, SEXP _bg, SEXP mab, int *succes
         {
             for (allele = 0; allele < AllSet[marker].betrag; allele++)
             {
-                snprintf(tmp, sizeof(tmp), "%s.%d ",
+                st_text_write(tmp, sizeof(tmp), "%s.%d ",
                          PopDescr[chrom].Mappoint[cmarker].name,
                          AllSet[marker].member[allele]);
 
@@ -10073,51 +10890,54 @@ void set_mdp(char **cMDP)
     MDP = atol(*cMDP);
 }
 
-void evaluate_mdp(char **progeny, char **parent1, char **parent2,
-                  char **effectfile)
+static int st_evaluate_mdp(char **progeny, char **parent1, char **parent2,
+                           char **effectfile)
 {
     TEffects *Effect = NULL;
     unsigned long int oldMDP = MDP;
+    unsigned long int nextMDP = oldMDP;
     int i;
 
     if (0 == NrEffects)
     {
         info(-2, "No Effectfiles loaded\n");
-        return;
+        return 0;
     }
 
     if (NULL == effectfile)
     {
         info(-2, "No effect specified\n");
-        return;
+        return 0;
     }
 
     if ((NULL != effectfile) && (NULL == (Effect = find_Effect(*effectfile))))
     {
         info(-2, "Can't find the effect %s\n", *effectfile);
-        return;
+        return 0;
     }
 
     {
         TPopListEl *PopListEl;
+        void *mark = st_work_mark();
         POPULATION ind;
         int *counter = NULL;
         int *all = NULL;
         int hom;
         TInd *Ind;
         int error = 0;
+        unsigned long increment = 0;
+
+        if (Effect->MPs < 0 || NoHoms < 1 ||
+            (size_t)Effect->MPs > SIZE_MAX / sizeof(*counter))
+        {
+            info(-2, "Invalid dimensions in evaluate_mdp\n");
+            return 0;
+        }
 
         if (Effect->MPs > 0)
         {
-            counter = (int *)malloc((size_t)Effect->MPs * sizeof(*counter));
-            all = (int *)malloc((size_t)Effect->MPs * sizeof(*all));
-
-            if ((NULL == counter) || (NULL == all))
-            {
-                info(-2, "Memory allocation failed in evaluate_mdp\n");
-                error = 1;
-                goto cleanup;
-            }
+            counter = st_work_alloc((size_t)Effect->MPs, sizeof(*counter));
+            all = st_work_alloc((size_t)Effect->MPs, sizeof(*all));
         }
 
         for (i = 0; i < Effect->MPs; i++)
@@ -10152,13 +10972,12 @@ void evaluate_mdp(char **progeny, char **parent1, char **parent2,
                     for (hom = 0; hom < NoHoms; hom++)
                     {
                         if (all[i] !=
-                            Ind->genotype[NoHoms * Effect->MPset[i]->counter +
-                                          hom])
+                            Ind->genotype[(size_t)NoHoms *
+                                          (size_t)Effect->MPset[i]->counter + hom])
                         {
                             all[i] =
-                                Ind->genotype[NoHoms *
-                                                  Effect->MPset[i]->counter +
-                                              hom];
+                                Ind->genotype[(size_t)NoHoms *
+                                              (size_t)Effect->MPset[i]->counter + hom];
                             counter[i]++;
                         }
                     }
@@ -10201,13 +11020,12 @@ void evaluate_mdp(char **progeny, char **parent1, char **parent2,
                     for (hom = 0; hom < NoHoms; hom++)
                     {
                         if (all[i] !=
-                            Ind->genotype[NoHoms * Effect->MPset[i]->counter +
-                                          hom])
+                            Ind->genotype[(size_t)NoHoms *
+                                          (size_t)Effect->MPset[i]->counter + hom])
                         {
                             all[i] =
-                                Ind->genotype[NoHoms *
-                                                  Effect->MPset[i]->counter +
-                                              hom];
+                                Ind->genotype[(size_t)NoHoms *
+                                              (size_t)Effect->MPset[i]->counter + hom];
                             counter[i]++;
                         }
                     }
@@ -10223,31 +11041,57 @@ void evaluate_mdp(char **progeny, char **parent1, char **parent2,
             error = 1;
             goto cleanup;
         }
+        if (PopListEl->Pop->NoInds < 0)
+        {
+            info(-2, "Invalid progeny count in evaluate_mdp\n");
+            error = 1;
+            goto cleanup;
+        }
 
         for (i = 0; i < Effect->MPs; i++)
         {
             if (counter[i] == 2)
             {
-                MDP += PopListEl->Pop->NoInds;
+                if ((uintmax_t)PopListEl->Pop->NoInds > ULONG_MAX - increment)
+                {
+                    info(-2, "Marker data point count overflow\n");
+                    error = 1;
+                    goto cleanup;
+                }
+                increment += (unsigned long)PopListEl->Pop->NoInds;
             }
         }
+        if (increment > ULONG_MAX - oldMDP)
+        {
+            info(-2, "Marker data point count overflow\n");
+            error = 1;
+            goto cleanup;
+        }
+        nextMDP = oldMDP + increment;
 
     cleanup:
 
-        free(counter);
-        free(all);
+        st_work_reset(mark);
 
         if (error)
-            return;
+            return 0;
     }
 
     info(1, "%lu marker data points required in this step (total %lu)\n",
-         MDP - oldMDP, MDP);
+         nextMDP - oldMDP, nextMDP);
+    MDP = nextMDP;
+    return 1;
+}
+
+void evaluate_mdp(char **progeny, char **parent1, char **parent2,
+                  char **effectfile)
+{
+    (void)st_evaluate_mdp(progeny, parent1, parent2, effectfile);
 }
 
 void get_mdp(char **cmdp)
 {
-    snprintf(*cmdp, strlen(*cmdp), "%lu", MDP);
+    st_text_write(*cmdp, strlen(*cmdp) + 1, "%lu", MDP);
 }
 
 typedef struct
@@ -10256,7 +11100,6 @@ typedef struct
     TMappoint *Mappoint;
 } TGenPop;
 
-TGenPop *PGenPop;
 
 int genpopcmp(const void *i, const void *j)
 {
@@ -10282,6 +11125,31 @@ int genpopcmp(const void *i, const void *j)
     return 0;
 }
 
+typedef struct
+{
+    size_t *coffset, *roff_d, *roff_f;
+    int *ind, *chrom, *hom, *all, *candidates;
+    double *pos, *data;
+    TGenPop *points;
+} st_genpop_workspace;
+
+static void st_genpop_workspace_free(void *pointer)
+{
+    st_genpop_workspace *workspace = pointer;
+    free(workspace->coffset);
+    free(workspace->roff_d);
+    free(workspace->roff_f);
+    free(workspace->ind);
+    free(workspace->chrom);
+    free(workspace->hom);
+    free(workspace->all);
+    free(workspace->candidates);
+    free(workspace->pos);
+    free(workspace->data);
+    free(workspace->points);
+    free(workspace);
+}
+
 void generate_population(int *no_pop, int *no_ind, int *no_mar, int *no_all,
                          int *no_pop_u, int *pop_u, int *no_ind_u, int *ind_u,
                          int *no_mar_u, int *mar_u, double *data, double *freq,
@@ -10289,75 +11157,93 @@ void generate_population(int *no_pop, int *no_ind, int *no_mar, int *no_all,
                          int *bg, int *bc)
 {
     int i, j, k, l;
-    double *ptr_data, *ptr_dataC, *dataC = NULL;
+    double *ptr_data, *ptr_dataC;
     double count;
-    int rowpos_d;
-    size_t colpos, dataC_count;
-    int nrow_d, ncol_d;
-    int *coffset = NULL;
-    int *roff_d = NULL;
-    int *roff_f = NULL;
-    int *_ind = NULL, *_chrom = NULL, *_hom = NULL, *_all = NULL;
-    int *candidates = NULL;
+    size_t rowpos_d, colpos, dataC_count, nrow_d, ncol_d;
     int *tmp_int;
-    double *_pos = NULL, *tmp_double;
+    double *tmp_double;
 
-    (void)*freq;
-
-    PGenPop = NULL;
+    (void)freq;
+    st_genpop_workspace *workspace = calloc(1, sizeof(*workspace));
+    if (!workspace)
+    {
+        info(-2, "Cannot allocate population-generation workspace\n");
+        return;
+    }
+    st_work_adopt(workspace, st_genpop_workspace_free);
 
     if ((*no_pop < 1) || (*no_mar < 1) || (*no_pop_u < 1) || (*no_mar_u < 1) ||
         (NoHoms < 1))
         goto invalid_or_allocation_fail;
 
-    coffset = (int *)malloc((size_t)*no_pop * sizeof(*coffset));
-    roff_d = (int *)malloc((size_t)*no_mar * sizeof(*roff_d));
-    roff_f = (int *)malloc((size_t)*no_mar_u * sizeof(*roff_f));
+    workspace->coffset = yCalloc_impl((size_t)*no_pop,
+                                      sizeof(*workspace->coffset));
+    workspace->roff_d = yCalloc_impl((size_t)*no_mar,
+                                     sizeof(*workspace->roff_d));
+    workspace->roff_f = yCalloc_impl((size_t)*no_mar_u,
+                                     sizeof(*workspace->roff_f));
 
-    if ((NULL == coffset) || (NULL == roff_d) || (NULL == roff_f))
+    if ((NULL == workspace->coffset) || (NULL == workspace->roff_d) || (NULL == workspace->roff_f))
         goto invalid_or_allocation_fail;
 
-    coffset[0] = 0;
-    for (k = 1; k < *no_pop; k++)
+    ncol_d = nrow_d = 0;
+    for (k = 0; k < *no_pop; k++)
     {
-        coffset[k] = coffset[k - 1] + no_ind[k - 1];
+        if (no_ind[k] < 0 || (size_t)no_ind[k] > SIZE_MAX - ncol_d)
+            goto invalid_or_allocation_fail;
+        workspace->coffset[k] = ncol_d;
+        ncol_d += (size_t)no_ind[k];
+    }
+    for (i = 0; i < *no_mar; i++)
+    {
+        if (no_all[i] < 0 || (size_t)no_all[i] > SIZE_MAX - nrow_d)
+            goto invalid_or_allocation_fail;
+        workspace->roff_d[i] = nrow_d;
+        nrow_d += (size_t)no_all[i];
+    }
+    size_t selected_rows = 0, selected_individuals = 0;
+    for (i = 0; i < *no_mar_u; i++)
+    {
+        if (mar_u[i] < 1 || mar_u[i] > *no_mar ||
+            (size_t)no_all[mar_u[i] - 1] > SIZE_MAX - selected_rows)
+            goto invalid_or_allocation_fail;
+        workspace->roff_f[i] = selected_rows;
+        selected_rows += (size_t)no_all[mar_u[i] - 1];
+    }
+    for (k = 0; k < *no_pop_u; k++)
+    {
+        if (pop_u[k] < 1 || pop_u[k] > *no_pop || no_ind_u[k] < 0 ||
+            (size_t)no_ind_u[k] > SIZE_MAX - selected_individuals)
+            goto invalid_or_allocation_fail;
+        for (l = 0; l < no_ind_u[k]; l++)
+        {
+            int index = ind_u[selected_individuals + (size_t)l];
+            if (index < 1 || index > no_ind[pop_u[k] - 1])
+                goto invalid_or_allocation_fail;
+        }
+        selected_individuals += (size_t)no_ind_u[k];
     }
 
-    roff_d[0] = 0;
-    for (i = 1; i < *no_mar; i++)
     {
-        roff_d[i] = roff_d[i - 1] + no_all[i - 1];
-    }
-
-    roff_f[0] = 0;
-    for (i = 1; i < *no_mar_u; i++)
-    {
-        roff_f[i] = roff_f[i - 1] + no_all[mar_u[i - 1] - 1];
-    }
-
-    nrow_d = roff_d[*no_mar - 1] + no_all[*no_mar - 1];
-    ncol_d = coffset[*no_pop - 1] + no_ind[*no_pop - 1];
-
-    {
-        int sum_ind_u = 0;
+        size_t sum_ind_u = 0;
 
         if ((nrow_d < 1) || (ncol_d < 1) ||
             ((size_t)nrow_d > SIZE_MAX / (size_t)ncol_d))
             goto invalid_or_allocation_fail;
 
         dataC_count = (size_t)nrow_d * (size_t)ncol_d;
-        if (dataC_count > SIZE_MAX / sizeof(*dataC))
+        if (dataC_count > SIZE_MAX / sizeof(*workspace->data))
             goto invalid_or_allocation_fail;
 
-        dataC = (double *)malloc(dataC_count * sizeof(*dataC));
-        if (NULL == dataC)
+        workspace->data = (double *)calloc(dataC_count, sizeof(*workspace->data));
+        if (NULL == workspace->data)
             goto invalid_or_allocation_fail;
 
         for (k = 0; k < *no_pop_u; k++)
         {
             for (l = 0; l < no_ind_u[k]; l++)
             {
-                colpos = ((size_t)coffset[pop_u[k] - 1] +
+                colpos = ((size_t)workspace->coffset[pop_u[k] - 1] +
                           (size_t)(ind_u[l + sum_ind_u] - 1)) *
                          (size_t)nrow_d;
                 for (i = 0; i < *no_mar_u; i++)
@@ -10365,7 +11251,7 @@ void generate_population(int *no_pop, int *no_ind, int *no_mar, int *no_all,
                     count = 0;
                     for (j = 0; j < no_all[mar_u[i] - 1]; j++)
                     {
-                        rowpos_d = (roff_d[mar_u[i] - 1] + j);
+                        rowpos_d = (workspace->roff_d[mar_u[i] - 1] + j);
                         ptr_data = &data[colpos + rowpos_d];
                         if (!ISNA(*ptr_data) && (*ptr_data > 0))
                         {
@@ -10375,9 +11261,9 @@ void generate_population(int *no_pop, int *no_ind, int *no_mar, int *no_all,
                     }
                     for (j = 0; j < no_all[mar_u[i] - 1]; j++)
                     {
-                        rowpos_d = (roff_d[mar_u[i] - 1] + j);
+                        rowpos_d = (workspace->roff_d[mar_u[i] - 1] + j);
                         ptr_data = &data[colpos + rowpos_d];
-                        ptr_dataC = &dataC[colpos + rowpos_d];
+                        ptr_dataC = &workspace->data[colpos + rowpos_d];
                         if (count > 0)
                             (*ptr_dataC) = (*ptr_data) / (double)count;
                         else
@@ -10398,14 +11284,16 @@ void generate_population(int *no_pop, int *no_ind, int *no_mar, int *no_all,
                 goto fail;
             }
 
-            PGenPop = (TGenPop *)malloc((size_t)*no_mar * sizeof(*PGenPop));
-            if (NULL == PGenPop)
+            workspace->points = yCalloc_impl((size_t)*no_mar, sizeof(*workspace->points));
+            if (NULL == workspace->points)
                 goto invalid_or_allocation_fail;
             token = strtok(*mar_list, " ");
 
             while (NULL != token)
             {
-                PGenPop[tokencounter].Mappoint = NULL;
+                if (tokencounter >= *no_mar)
+                    goto invalid_or_allocation_fail;
+                workspace->points[tokencounter].Mappoint = NULL;
                 for (chrom = 0; chrom < NoChroms; chrom++)
                 {
                     for (i = 0; i < PopDescr[chrom].NrMappoints; i++)
@@ -10413,14 +11301,14 @@ void generate_population(int *no_pop, int *no_ind, int *no_mar, int *no_all,
                         if (0 ==
                             strcmp(PopDescr[chrom].Mappoint[i].name, token))
                         {
-                            PGenPop[tokencounter].oldPos = tokencounter;
-                            PGenPop[tokencounter].Mappoint =
+                            workspace->points[tokencounter].oldPos = tokencounter;
+                            workspace->points[tokencounter].Mappoint =
                                 &(PopDescr[chrom].Mappoint[i]);
                         }
                     }
                 }
 
-                if (NULL == PGenPop[tokencounter].Mappoint)
+                if (NULL == workspace->points[tokencounter].Mappoint)
                 {
                     info(-2, "Can't find marker %s!", token);
                     goto fail;
@@ -10431,29 +11319,50 @@ void generate_population(int *no_pop, int *no_ind, int *no_mar, int *no_all,
                 token = strtok(NULL, " ");
             }
 
-            qsort(PGenPop, *no_mar, sizeof(TGenPop), genpopcmp);
+            if (tokencounter != *no_mar)
+                goto invalid_or_allocation_fail;
+            qsort(workspace->points, (size_t)*no_mar, sizeof(TGenPop), genpopcmp);
 
             {
                 size_t offset = 0;
+                size_t population_name_length = strlen(*pop_list);
+                if (population_name_length == SIZE_MAX)
+                    goto invalid_or_allocation_fail;
+                char *population_names = st_work_alloc(population_name_length + 1, 1);
+                strcpy(population_names, *pop_list);
+                int population_tokens = 0;
+                for (char *part = strtok(population_names, " "); part;
+                     part = strtok(NULL, " "))
+                {
+                    if (population_tokens == INT_MAX)
+                        goto invalid_or_allocation_fail;
+                    population_tokens++;
+                }
+                if (population_tokens != *no_pop_u)
+                    goto invalid_or_allocation_fail;
                 token = strtok(*pop_list, " ");
 
                 for (k = 0; k < *no_pop_u; k++)
                 {
                     int nrow = 0;
                     int ind;
+                    if (!token)
+                        goto invalid_or_allocation_fail;
 
-                    _ind = (int *)malloc(sizeof(*_ind));
-                    _chrom = (int *)malloc(sizeof(*_chrom));
-                    _hom = (int *)malloc(sizeof(*_hom));
-                    _pos = (double *)malloc(sizeof(*_pos));
-                    _all = (int *)malloc(sizeof(*_all));
+                    workspace->ind = (int *)malloc(sizeof(*workspace->ind));
+                    workspace->chrom = (int *)malloc(sizeof(*workspace->chrom));
+                    workspace->hom = (int *)malloc(sizeof(*workspace->hom));
+                    workspace->pos = (double *)malloc(sizeof(*workspace->pos));
+                    workspace->all = (int *)malloc(sizeof(*workspace->all));
 
-                    if ((NULL == _ind) || (NULL == _chrom) || (NULL == _hom) ||
-                        (NULL == _pos) || (NULL == _all))
+                    if ((NULL == workspace->ind) || (NULL == workspace->chrom) || (NULL == workspace->hom) ||
+                        (NULL == workspace->pos) || (NULL == workspace->all))
                         goto invalid_or_allocation_fail;
 
                     for (ind = 0; ind < no_ind_u[k]; ind++)
                     {
+                        size_t source_column = workspace->coffset[pop_u[k] - 1] +
+                            (size_t)(ind_u[offset + (size_t)ind] - 1);
                         for (chrom = 0; chrom < NoChroms; chrom++)
                         {
                             int tmpcounter = 0;
@@ -10462,98 +11371,99 @@ void generate_population(int *no_pop, int *no_ind, int *no_mar, int *no_all,
                             {
                                 int nr_cand = NoHoms, c, act_cand = 0;
 
-                                candidates = (int *)malloc((size_t)NoHoms *
-                                                           sizeof(*candidates));
-                                if (NULL == candidates)
+                                workspace->candidates = yCalloc_impl((size_t)NoHoms,
+                                                           sizeof(*workspace->candidates));
+                                if (NULL == workspace->candidates)
                                     goto invalid_or_allocation_fail;
 
-                                if (PGenPop[i].Mappoint->chrom - 1 == chrom)
+                                if (workspace->points[i].Mappoint->chrom - 1 == chrom)
                                 {
                                     for (c = 0; c < NoHoms; c++)
                                     {
-                                        candidates[c] = *bg;
+                                        workspace->candidates[c] = *bg;
                                     }
-                                    for (j = 0; j < no_all[PGenPop[i].oldPos];
+                                    for (j = 0; j < no_all[workspace->points[i].oldPos];
                                          j++)
                                     {
-                                        while (
-                                            dataC[offset +
-                                                  (size_t)ind * (size_t)nrow_d +
-                                                  roff_d[PGenPop[i].oldPos] +
-                                                  j] > 0)
+                                        double remaining = workspace->data[source_column * nrow_d +
+                                            workspace->roff_d[workspace->points[i].oldPos] + j];
+                                        while (remaining > 0)
                                         {
                                             if (nr_cand == act_cand)
                                             {
+                                                if (nr_cand == INT_MAX)
+                                                    goto invalid_or_allocation_fail;
                                                 ++nr_cand;
-                                                tmp_int = (int *)realloc(
-                                                    candidates,
-                                                    (size_t)nr_cand *
-                                                        sizeof(*candidates));
+                                                tmp_int = (int *)yRealloc_impl(workspace->candidates,
+                                                    (size_t)nr_cand, sizeof(*workspace->candidates));
                                                 if (NULL == tmp_int)
                                                     goto invalid_or_allocation_fail;
-                                                candidates = tmp_int;
+                                                workspace->candidates = tmp_int;
                                             }
-                                            candidates[act_cand++] =
+                                            workspace->candidates[act_cand++] =
                                                 (int)al_list
-                                                    [roff_d[PGenPop[i].oldPos] +
+                                                    [workspace->roff_d[workspace->points[i].oldPos] +
                                                      j];
-                                            dataC[offset +
-                                                  (size_t)ind * (size_t)nrow_d +
-                                                  roff_d[PGenPop[i].oldPos] +
-                                                  j] -= (float)1 / NoHoms;
+                                            remaining -= (float)1 / NoHoms;
                                         }
                                     }
 
-                                    qsort(candidates, nr_cand, sizeof(int),
+                                    qsort(workspace->candidates, nr_cand, sizeof(int),
                                           intcmp);
 
                                     for (hom = 0; hom < NoHoms; hom++)
                                     {
+                                        if (nrow == INT_MAX)
+                                            goto invalid_or_allocation_fail;
                                         nrow++;
 
-                                        tmp_int = (int *)realloc(
-                                            _ind, (size_t)nrow * sizeof(*_ind));
+                                        tmp_int = (int *)yRealloc_impl(workspace->ind,
+
+                                            (size_t)nrow, sizeof(*workspace->ind));
                                         if (NULL == tmp_int)
                                             goto invalid_or_allocation_fail;
-                                        _ind = tmp_int;
+                                        workspace->ind = tmp_int;
 
-                                        tmp_int = (int *)realloc(
-                                            _chrom,
-                                            (size_t)nrow * sizeof(*_chrom));
+                                        tmp_int = (int *)yRealloc_impl(workspace->chrom,
+
+                                            (size_t)nrow, sizeof(*workspace->chrom));
                                         if (NULL == tmp_int)
                                             goto invalid_or_allocation_fail;
-                                        _chrom = tmp_int;
+                                        workspace->chrom = tmp_int;
 
-                                        tmp_int = (int *)realloc(
-                                            _hom, (size_t)nrow * sizeof(*_hom));
+                                        tmp_int = (int *)yRealloc_impl(workspace->hom,
+
+                                            (size_t)nrow, sizeof(*workspace->hom));
                                         if (NULL == tmp_int)
                                             goto invalid_or_allocation_fail;
-                                        _hom = tmp_int;
+                                        workspace->hom = tmp_int;
 
-                                        tmp_double = (double *)realloc(
-                                            _pos, (size_t)nrow * sizeof(*_pos));
+                                        tmp_double = (double *)yRealloc_impl(workspace->pos,
+
+                                            (size_t)nrow, sizeof(*workspace->pos));
                                         if (NULL == tmp_double)
                                             goto invalid_or_allocation_fail;
-                                        _pos = tmp_double;
+                                        workspace->pos = tmp_double;
 
-                                        tmp_int = (int *)realloc(
-                                            _all, (size_t)nrow * sizeof(*_all));
+                                        tmp_int = (int *)yRealloc_impl(workspace->all,
+
+                                            (size_t)nrow, sizeof(*workspace->all));
                                         if (NULL == tmp_int)
                                             goto invalid_or_allocation_fail;
-                                        _all = tmp_int;
+                                        workspace->all = tmp_int;
 
-                                        *(_ind + nrow - 1) = ind + 1;
-                                        *(_chrom + nrow - 1) = chrom + 1;
-                                        *(_hom + nrow - 1) = hom + 1;
+                                        *(workspace->ind + nrow - 1) = ind + 1;
+                                        *(workspace->chrom + nrow - 1) = chrom + 1;
+                                        *(workspace->hom + nrow - 1) = hom + 1;
 
                                         if (0 == tmpcounter)
                                         {
-                                            *(_pos + nrow - 1) = 0;
+                                            *(workspace->pos + nrow - 1) = 0;
                                         }
                                         else
                                         {
-                                            *(_pos + nrow - 1) =
-                                                (PGenPop[i].Mappoint->Pos +
+                                            *(workspace->pos + nrow - 1) =
+                                                (workspace->points[i].Mappoint->Pos +
                                                  lastpos) /
                                                 2;
                                         }
@@ -10574,28 +11484,29 @@ void generate_population(int *no_pop, int *no_ind, int *no_mar, int *no_all,
                                                             nr_cand);
                                             }
                                             nr_cand--;
-                                            *(_all + nrow - 1) =
-                                                candidates[sel_all];
-                                            candidates[sel_all] =
-                                                candidates[nr_cand];
+                                            *(workspace->all + nrow - 1) =
+                                                workspace->candidates[sel_all];
+                                            workspace->candidates[sel_all] =
+                                                workspace->candidates[nr_cand];
                                         }
                                     }
 
                                     tmpcounter++;
-                                    lastpos = PGenPop[i].Mappoint->Pos;
+                                    lastpos = workspace->points[i].Mappoint->Pos;
 
                                     if (nr_cand > 0)
                                     {
                                         info(-1,
                                              "More than two alleles. Marker %s "
                                              "Pop: %s Ind: %d\n",
-                                             PGenPop[i].Mappoint->name, token,
+                                             workspace->points[i].Mappoint->name, token,
                                              ind + 1);
                                     }
                                 }
 
-                                free(candidates);
-                                candidates = NULL;
+                                free(workspace->candidates);
+
+                                workspace->candidates = NULL;
                             }
 
                             if (0 == tmpcounter)
@@ -10610,55 +11521,62 @@ void generate_population(int *no_pop, int *no_ind, int *no_mar, int *no_all,
 
                                 for (hom = 0; hom < NoHoms; hom++)
                                 {
+                                    if (nrow == INT_MAX)
+                                        goto invalid_or_allocation_fail;
                                     nrow++;
 
-                                    tmp_int = (int *)realloc(
-                                        _ind, (size_t)nrow * sizeof(*_ind));
+                                    tmp_int = (int *)yRealloc_impl(workspace->ind,
+
+                                        (size_t)nrow, sizeof(*workspace->ind));
                                     if (NULL == tmp_int)
                                         goto invalid_or_allocation_fail;
-                                    _ind = tmp_int;
+                                    workspace->ind = tmp_int;
 
-                                    tmp_int = (int *)realloc(
-                                        _chrom, (size_t)nrow * sizeof(*_chrom));
+                                    tmp_int = (int *)yRealloc_impl(workspace->chrom,
+
+                                        (size_t)nrow, sizeof(*workspace->chrom));
                                     if (NULL == tmp_int)
                                         goto invalid_or_allocation_fail;
-                                    _chrom = tmp_int;
+                                    workspace->chrom = tmp_int;
 
-                                    tmp_int = (int *)realloc(
-                                        _hom, (size_t)nrow * sizeof(*_hom));
+                                    tmp_int = (int *)yRealloc_impl(workspace->hom,
+
+                                        (size_t)nrow, sizeof(*workspace->hom));
                                     if (NULL == tmp_int)
                                         goto invalid_or_allocation_fail;
-                                    _hom = tmp_int;
+                                    workspace->hom = tmp_int;
 
-                                    tmp_double = (double *)realloc(
-                                        _pos, (size_t)nrow * sizeof(*_pos));
+                                    tmp_double = (double *)yRealloc_impl(workspace->pos,
+
+                                        (size_t)nrow, sizeof(*workspace->pos));
                                     if (NULL == tmp_double)
                                         goto invalid_or_allocation_fail;
-                                    _pos = tmp_double;
+                                    workspace->pos = tmp_double;
 
-                                    tmp_int = (int *)realloc(
-                                        _all, (size_t)nrow * sizeof(*_all));
+                                    tmp_int = (int *)yRealloc_impl(workspace->all,
+
+                                        (size_t)nrow, sizeof(*workspace->all));
                                     if (NULL == tmp_int)
                                         goto invalid_or_allocation_fail;
-                                    _all = tmp_int;
+                                    workspace->all = tmp_int;
 
-                                    *(_ind + nrow - 1) = ind + 1;
-                                    *(_chrom + nrow - 1) = chrom + 1;
-                                    *(_hom + nrow - 1) = hom + 1;
-                                    *(_pos + nrow - 1) = 0;
-                                    *(_all + nrow - 1) = *bg;
+                                    *(workspace->ind + nrow - 1) = ind + 1;
+                                    *(workspace->chrom + nrow - 1) = chrom + 1;
+                                    *(workspace->hom + nrow - 1) = hom + 1;
+                                    *(workspace->pos + nrow - 1) = 0;
+                                    *(workspace->all + nrow - 1) = *bg;
                                 }
                             }
                         }
                     }
 
-                    offset += (size_t)ind * (size_t)nrow_d;
+                    offset += (size_t)ind;
 
                     {
                         char cnrow[50];
                         char *prow = cnrow;
 
-                        snprintf(cnrow, sizeof(cnrow), "%d", nrow);
+                        st_text_write(cnrow, sizeof(cnrow), "%d", nrow);
 
                         {
                             TPopListEl *generated = NULL;
@@ -10670,9 +11588,9 @@ void generate_population(int *no_pop, int *no_ind, int *no_mar, int *no_all,
                                 goto fail;
                             }
 
-                            init_population(&token, &prow, &(_ind[0]),
-                                            &(_chrom[0]), &(_hom[0]),
-                                            &(_pos[0]), &(_all[0]));
+                            init_population(&token, &prow, &(workspace->ind[0]),
+                                            &(workspace->chrom[0]), &(workspace->hom[0]),
+                                            &(workspace->pos[0]), &(workspace->all[0]));
 
                             find_list_element(token, &generated);
                             if (NULL == generated)
@@ -10682,29 +11600,29 @@ void generate_population(int *no_pop, int *no_ind, int *no_mar, int *no_all,
 
                     token = strtok(NULL, " ");
                     nrow = 0;
-                    free(_ind);
-                    free(_chrom);
-                    free(_hom);
-                    free(_pos);
-                    free(_all);
-                    _ind = NULL;
-                    _chrom = NULL;
-                    _hom = NULL;
-                    _pos = NULL;
-                    _all = NULL;
+                    free(workspace->ind);
+                    workspace->ind = NULL;
+                    free(workspace->chrom);
+                    workspace->chrom = NULL;
+                    free(workspace->hom);
+                    workspace->hom = NULL;
+                    free(workspace->pos);
+                    workspace->pos = NULL;
+                    free(workspace->all);
+                    workspace->all = NULL;
                 }
             }
 
-            free(PGenPop);
-            PGenPop = NULL;
+            free(workspace->points);
+            workspace->points = NULL;
         }
 
-        free(dataC);
+        free(workspace->data);
+        workspace->data = NULL;
     }
 
-    free(coffset);
-    free(roff_d);
-    free(roff_f);
+    st_work_detach(workspace);
+    st_genpop_workspace_free(workspace);
     return;
 
 invalid_or_allocation_fail:
@@ -10714,18 +11632,8 @@ invalid_or_allocation_fail:
 
 fail:
 
-    free(candidates);
-    free(_ind);
-    free(_chrom);
-    free(_hom);
-    free(_pos);
-    free(_all);
-    free(PGenPop);
-    PGenPop = NULL;
-    free(dataC);
-    free(coffset);
-    free(roff_d);
-    free(roff_f);
+    st_work_detach(workspace);
+    st_genpop_workspace_free(workspace);
     return;
 }
 
@@ -10920,6 +11828,24 @@ SEXP splitdot(SEXP in_string)
     return (out_string);
 }
 
+static int st_population_indices_valid(int populations, const int *counts,
+                                        const int *selected, const int *indices,
+                                        const size_t *offsets)
+{
+    for (int population = 0; population < populations; population++)
+    {
+        if (selected[population] < 0 || selected[population] > counts[population])
+            return 0;
+        for (int i = 0; i < selected[population]; i++)
+        {
+            int individual = indices[offsets[population] + (size_t)i];
+            if (individual < 1 || individual > counts[population])
+                return 0;
+        }
+    }
+    return 1;
+}
+
 void allele_freq(int *no_pop, int *no_ind, int *no_mar, int *no_all,
                  int *no_ind_u, int *ind_u, double *data, double *freq)
 {
@@ -10982,6 +11908,9 @@ void allele_freq(int *no_pop, int *no_ind, int *no_mar, int *no_all,
     data_count = nrow * ncol_d;
 
     if (data_count > SIZE_MAX / sizeof(*dataC))
+        goto fail;
+
+    if (!st_population_indices_valid(*no_pop, no_ind, no_ind_u, ind_u, coff))
         goto fail;
 
     if ((nrow != 0) && ((size_t)*no_pop > SIZE_MAX / nrow))
@@ -11160,6 +12089,9 @@ void correct_missing(int *no_pop, int *no_ind, int *no_mar, int *no_all,
     if (data_count > SIZE_MAX / sizeof(*dataC))
         goto fail;
 
+    if (!st_population_indices_valid(*no_pop, no_ind, no_ind_u, ind_u, coff))
+        goto fail;
+
     if (data_count > 0)
     {
         dataC = (double *)malloc(data_count * sizeof(*dataC));
@@ -11248,39 +12180,59 @@ fail:
     return;
 }
 
+static size_t *st_distance_offsets(int populations, int markers,
+                                    const int *alleles, int selected,
+                                    const int *selection, size_t *rows)
+{
+    if (populations < 1 || markers < 1 || selected < 0 ||
+        (size_t)markers > SIZE_MAX / sizeof(size_t))
+        goto invalid;
+    size_t total = 0;
+    for (int i = 0; i < markers; i++)
+    {
+        if (alleles[i] < 0 || (size_t)alleles[i] > SIZE_MAX - total)
+            goto invalid;
+        total += (size_t)alleles[i];
+    }
+    if (total > (size_t)PTRDIFF_MAX / sizeof(double) / (size_t)populations)
+        goto invalid;
+    for (int i = 0; i < selected; i++)
+        if (selection[i] < 1 || selection[i] > markers)
+            goto invalid;
+    size_t *offsets = malloc((size_t)markers * sizeof(*offsets));
+    if (!offsets)
+    {
+        info(-2, "Cannot allocate genetic-distance row offsets\n");
+        return NULL;
+    }
+    st_work_adopt(offsets, free);
+    size_t offset = 0;
+    for (int i = 0; i < markers; i++)
+    {
+        offsets[i] = offset;
+        offset += (size_t)alleles[i];
+    }
+    *rows = total;
+    return offsets;
+invalid:
+    info(-2, "Invalid genetic-distance dimensions or marker indices\n");
+    return NULL;
+}
+
 void rd(int *no_pop, int *no_mar, int *no_all, int *no_mar_u, int *mar_u,
         double *freq, double *dist)
 {
 
-    long i, j, k1, k2, m, observed, nrow, rowpos;
+    long i, j, k1, k2, m, observed;
+    size_t nrow, rowpos;
     double t1, t2;
     double *ptr_dist, *ptr_freq1, *ptr_freq2;
-    int *roff;
+    size_t *roff;
 
-    if (*no_mar < 1)
-    {
-        info(-2, "Invalid number of markers in rd\n");
+    roff = st_distance_offsets(*no_pop, *no_mar, no_all, *no_mar_u,
+                               mar_u, &nrow);
+    if (!roff)
         return;
-    }
-
-    if ((size_t)*no_mar > SIZE_MAX / sizeof(*roff))
-    {
-        info(-2, "Memory allocation failed in rd\n");
-        return;
-    }
-
-    roff = (int *)malloc((size_t)*no_mar * sizeof(*roff));
-
-    if (NULL == roff)
-    {
-        info(-2, "Memory allocation failed in rd\n");
-        return;
-    }
-
-    roff[0] = 0;
-    for (i = 1; i < *no_mar; i++)
-        roff[i] = roff[i - 1] + no_all[i - 1];
-    nrow = roff[*no_mar - 1] + no_all[*no_mar - 1];
 
     ptr_dist = dist;
 
@@ -11313,41 +12265,23 @@ void rd(int *no_pop, int *no_mar, int *no_all, int *no_mar_u, int *mar_u,
             ptr_dist++;
         }
 
+    st_work_detach(roff);
     free(roff);
 }
 
 void mrd(int *no_pop, int *no_mar, int *no_all, int *no_mar_u, int *mar_u,
          double *freq, double *dist)
 {
-    long i, j, k1, k2, m, observed, nrow, rowpos;
+    long i, j, k1, k2, m, observed;
+    size_t nrow, rowpos;
     double t1;
     double *ptr_dist, *ptr_freq1, *ptr_freq2;
-    int *roff;
+    size_t *roff;
 
-    if (*no_mar < 1)
-    {
-        info(-2, "Invalid number of markers in mrd\n");
+    roff = st_distance_offsets(*no_pop, *no_mar, no_all, *no_mar_u,
+                               mar_u, &nrow);
+    if (!roff)
         return;
-    }
-
-    if ((size_t)*no_mar > SIZE_MAX / sizeof(*roff))
-    {
-        info(-2, "Memory allocation failed in mrd\n");
-        return;
-    }
-
-    roff = (int *)malloc((size_t)*no_mar * sizeof(*roff));
-
-    if (NULL == roff)
-    {
-        info(-2, "Memory allocation failed in mrd\n");
-        return;
-    }
-
-    roff[0] = 0;
-    for (i = 1; i < *no_mar; i++)
-        roff[i] = roff[i - 1] + no_all[i - 1];
-    nrow = roff[*no_mar - 1] + no_all[*no_mar - 1];
 
     ptr_dist = dist;
 
@@ -11376,43 +12310,23 @@ void mrd(int *no_pop, int *no_mar, int *no_all, int *no_mar_u, int *mar_u,
             ptr_dist++;
         }
 
+    st_work_detach(roff);
     free(roff);
 }
 
 void euc(int *no_pop, int *no_mar, int *no_all, int *no_mar_u, int *mar_u,
          double *freq, double *dist)
 {
-    long i, j, k1, k2, m, observed, nrow, rowpos;
+    long i, j, k1, k2, m, observed;
+    size_t nrow, rowpos;
     double t1;
     double *ptr_dist, *ptr_freq1, *ptr_freq2;
-    int *roff;
+    size_t *roff;
 
-    if (*no_mar < 1)
-    {
-        info(-2, "Invalid number of markers in euc\n");
+    roff = st_distance_offsets(*no_pop, *no_mar, no_all, *no_mar_u,
+                               mar_u, &nrow);
+    if (!roff)
         return;
-    }
-
-    if ((size_t)*no_mar > SIZE_MAX / sizeof(*roff))
-    {
-        info(-2, "Memory allocation failed in euc\n");
-        return;
-    }
-
-    roff = (int *)malloc((size_t)*no_mar * sizeof(*roff));
-
-    if (NULL == roff)
-    {
-        info(-2, "Memory allocation failed in euc\n");
-        return;
-    }
-
-    (void)m;
-
-    roff[0] = 0;
-    for (i = 1; i < *no_mar; i++)
-        roff[i] = roff[i - 1] + no_all[i - 1];
-    nrow = roff[*no_mar - 1] + no_all[*no_mar - 1];
 
     ptr_dist = dist;
 
@@ -11441,41 +12355,23 @@ void euc(int *no_pop, int *no_mar, int *no_all, int *no_mar_u, int *mar_u,
             ptr_dist++;
         }
 
+    st_work_detach(roff);
     free(roff);
 }
 
 void jac(int *no_pop, int *no_mar, int *no_all, int *no_mar_u, int *mar_u,
          double *freq, double *dist)
 {
-    long i, j, k1, k2, nrow, rowpos;
+    long i, j, k1, k2;
+    size_t nrow, rowpos;
     double zaehler, nenner, fa, fb;
     double *ptr_dist, *ptr_freq1, *ptr_freq2;
-    int *roff;
+    size_t *roff;
 
-    if (*no_mar < 1)
-    {
-        info(-2, "Invalid number of markers in jac\n");
+    roff = st_distance_offsets(*no_pop, *no_mar, no_all, *no_mar_u,
+                               mar_u, &nrow);
+    if (!roff)
         return;
-    }
-
-    if ((size_t)*no_mar > SIZE_MAX / sizeof(*roff))
-    {
-        info(-2, "Memory allocation failed in jac\n");
-        return;
-    }
-
-    roff = (int *)malloc((size_t)*no_mar * sizeof(*roff));
-
-    if (NULL == roff)
-    {
-        info(-2, "Memory allocation failed in jac\n");
-        return;
-    }
-
-    roff[0] = 0;
-    for (i = 1; i < *no_mar; i++)
-        roff[i] = roff[i - 1] + no_all[i - 1];
-    nrow = roff[*no_mar - 1] + no_all[*no_mar - 1];
 
     ptr_dist = dist;
 
@@ -11506,41 +12402,23 @@ void jac(int *no_pop, int *no_mar, int *no_all, int *no_mar_u, int *mar_u,
             ptr_dist++;
         }
 
+    st_work_detach(roff);
     free(roff);
 }
 
 void dic(int *no_pop, int *no_mar, int *no_all, int *no_mar_u, int *mar_u,
          double *freq, double *dist)
 {
-    long i, j, k1, k2, nrow, rowpos;
+    long i, j, k1, k2;
+    size_t nrow, rowpos;
     double zaehler, nenner, fa, fb;
     double *ptr_dist, *ptr_freq1, *ptr_freq2;
-    int *roff;
+    size_t *roff;
 
-    if (*no_mar < 1)
-    {
-        info(-2, "Invalid number of markers in dic\n");
+    roff = st_distance_offsets(*no_pop, *no_mar, no_all, *no_mar_u,
+                               mar_u, &nrow);
+    if (!roff)
         return;
-    }
-
-    if ((size_t)*no_mar > SIZE_MAX / sizeof(*roff))
-    {
-        info(-2, "Memory allocation failed in dic\n");
-        return;
-    }
-
-    roff = (int *)malloc((size_t)*no_mar * sizeof(*roff));
-
-    if (NULL == roff)
-    {
-        info(-2, "Memory allocation failed in dic\n");
-        return;
-    }
-
-    roff[0] = 0;
-    for (i = 1; i < *no_mar; i++)
-        roff[i] = roff[i - 1] + no_all[i - 1];
-    nrow = roff[*no_mar - 1] + no_all[*no_mar - 1];
 
     ptr_dist = dist;
 
@@ -11571,41 +12449,23 @@ void dic(int *no_pop, int *no_mar, int *no_all, int *no_mar_u, int *mar_u,
             ptr_dist++;
         }
 
+    st_work_detach(roff);
     free(roff);
 }
 
 void sma(int *no_pop, int *no_mar, int *no_all, int *no_mar_u, int *mar_u,
          double *freq, double *dist)
 {
-    long i, j, k1, k2, nrow, rowpos;
+    long i, j, k1, k2;
+    size_t nrow, rowpos;
     double zaehler, nenner, fa, fb;
     double *ptr_dist, *ptr_freq1, *ptr_freq2;
-    int *roff;
+    size_t *roff;
 
-    if (*no_mar < 1)
-    {
-        info(-2, "Invalid number of markers in sma\n");
+    roff = st_distance_offsets(*no_pop, *no_mar, no_all, *no_mar_u,
+                               mar_u, &nrow);
+    if (!roff)
         return;
-    }
-
-    if ((size_t)*no_mar > SIZE_MAX / sizeof(*roff))
-    {
-        info(-2, "Memory allocation failed in sma\n");
-        return;
-    }
-
-    roff = (int *)malloc((size_t)*no_mar * sizeof(*roff));
-
-    if (NULL == roff)
-    {
-        info(-2, "Memory allocation failed in sma\n");
-        return;
-    }
-
-    roff[0] = 0;
-    for (i = 1; i < *no_mar; i++)
-        roff[i] = roff[i - 1] + no_all[i - 1];
-    nrow = roff[*no_mar - 1] + no_all[*no_mar - 1];
 
     ptr_dist = dist;
 
@@ -11636,6 +12496,7 @@ void sma(int *no_pop, int *no_mar, int *no_all, int *no_mar_u, int *mar_u,
             ptr_dist++;
         }
 
+    st_work_detach(roff);
     free(roff);
 }
 
@@ -11656,6 +12517,13 @@ void gen_dist(int *measure, int *no_pop, int *no_ind, int *no_mar, int *no_all,
 
     if ((*no_pop < 1) || (*no_mar < 1))
         goto fail;
+    size_t distance_rows;
+    size_t *distance_offsets = st_distance_offsets(*no_pop, *no_mar, no_all,
+        *no_mar_u, mar_u, &distance_rows);
+    if (!distance_offsets)
+        goto fail;
+    st_work_detach(distance_offsets);
+    free(distance_offsets);
 
     switch (*measure)
     {
@@ -12017,15 +12885,22 @@ void ps_get_simpop(char **pop_name, gs_UNSIGNED *NoInd, gs_UNSIGNED *NoMar,
     {
         info(-2, identity_status == -2 ? "Duplicate individual IDs cannot be "
                                          "exported to a marker dataset\n"
+                  : identity_status == -3 ? "Complete simulation identity exceeds supported string size\n"
                                        : "Cannot export population identity\n");
         goto fail;
     }
 
     *NoMar = cMP;
-    *MarName = (char(*)[gs_MAXNME])yRealloc_impl(*MarName, *NoMar,
-                                                 sizeof(char[gs_MAXNME]));
-    if (NULL == *MarName)
+    if (!*NoMar)
+    {
+        yFree(*MarName);
         goto fail;
+    }
+    void *marker_names = yRealloc_impl(*MarName, *NoMar,
+                                      sizeof(char[gs_MAXNME]));
+    if (!marker_names)
+        goto fail;
+    *MarName = marker_names;
 
     if (NULL == PopDescr)
     {
@@ -12055,12 +12930,8 @@ void ps_get_simpop(char **pop_name, gs_UNSIGNED *NoInd, gs_UNSIGNED *NoMar,
 
     data_count = (size_t)*NoMar * (size_t)*NoInd;
 
-    *All1 = (GS_ALLELE_TYPE *)yRealloc(*All1, data_count, GS_ALLELE_TYPE);
-    if (NULL == *All1)
-        goto fail;
-    *All2 = (GS_ALLELE_TYPE *)yRealloc(*All2, data_count, GS_ALLELE_TYPE);
-    if (NULL == *All2)
-        goto fail;
+    yResize(*All1, data_count, GS_ALLELE_TYPE, goto fail);
+    yResize(*All2, data_count, GS_ALLELE_TYPE, goto fail);
 
 #ifdef MT
 #pragma omp parallel
@@ -12167,19 +13038,11 @@ void ps_get_simpop(char **pop_name, gs_UNSIGNED *NoInd, gs_UNSIGNED *NoMar,
         }
     }
 
-    *map_S = (gs_mappoint_type *)yRealloc(*map_S, *NLoc, gs_mappoint_type);
-    if (NULL == *map_S)
-        goto fail;
-    *map_str_S = (char *)yRealloc(*map_str_S, map_pool_size, char);
-    if (NULL == *map_str_S)
-        goto fail;
+    yResize(*map_S, *NLoc, gs_mappoint_type, goto fail);
+    yResize(*map_str_S, map_pool_size, char, goto fail);
     *map_str_N = map_pool_size;
-    *map = (gs_mappoint_type **)yRealloc(*map, *NLoc, gs_mappoint_type *);
-    if (NULL == *map)
-        goto fail;
-    *mdl = (gs_UNSIGNED *)yRealloc(*mdl, *NLoc, gs_UNSIGNED);
-    if (NULL == *mdl)
-        goto fail;
+    yResize(*map, *NLoc, gs_mappoint_type *, goto fail);
+    yResize(*mdl, *NLoc, gs_UNSIGNED, goto fail);
 
     for (c = 0, m = 0; c < NoChroms; c++)
     {
@@ -12308,15 +13171,22 @@ void ps_get_simpop2(char **pop_name, gs_UNSIGNED *NoInd, gs_UNSIGNED *NoMar,
     {
         info(-2, identity_status == -2 ? "Duplicate individual IDs cannot be "
                                          "exported to a marker dataset\n"
+                  : identity_status == -3 ? "Complete simulation identity exceeds supported string size\n"
                                        : "Cannot export population identity\n");
         goto fail;
     }
 
     *NoMar = cMP;
-    *MarName = (char(*)[gs_MAXNME])yRealloc_impl(*MarName, *NoMar,
-                                                 sizeof(char[gs_MAXNME]));
-    if (NULL == *MarName)
+    if (!*NoMar)
+    {
+        yFree(*MarName);
         goto fail;
+    }
+    void *marker_names = yRealloc_impl(*MarName, *NoMar,
+                                      sizeof(char[gs_MAXNME]));
+    if (!marker_names)
+        goto fail;
+    *MarName = marker_names;
 
     if (NULL == PopDescr)
     {
@@ -12346,12 +13216,8 @@ void ps_get_simpop2(char **pop_name, gs_UNSIGNED *NoInd, gs_UNSIGNED *NoMar,
 
     data_count = (size_t)*NoMar * (size_t)*NoInd;
 
-    *All1 = (GS_ALLELE_TYPE *)yRealloc(*All1, data_count, GS_ALLELE_TYPE);
-    if (NULL == *All1)
-        goto fail;
-    *All2 = (GS_ALLELE_TYPE *)yRealloc(*All2, data_count, GS_ALLELE_TYPE);
-    if (NULL == *All2)
-        goto fail;
+    yResize(*All1, data_count, GS_ALLELE_TYPE, goto fail);
+    yResize(*All2, data_count, GS_ALLELE_TYPE, goto fail);
 
 #ifdef MT
 #pragma omp parallel
@@ -12366,7 +13232,7 @@ void ps_get_simpop2(char **pop_name, gs_UNSIGNED *NoInd, gs_UNSIGNED *NoMar,
         TChrom *Chrom;
         int i, m;
 
-        gs_UNSIGNED idx;
+        size_t idx;
 
 #ifdef MT
 #pragma omp for
@@ -12383,7 +13249,7 @@ void ps_get_simpop2(char **pop_name, gs_UNSIGNED *NoInd, gs_UNSIGNED *NoMar,
                 for (i = 0; i < PopDescr[chrom].NrMappoints; i++, m++)
                 {
 
-                    idx = m * *NoInd + ind;
+                    idx = (size_t)m * (size_t)*NoInd + (size_t)ind;
 
                     {
                         unsigned short a1 = get_allele(
@@ -12560,8 +13426,19 @@ void st_set_sim_mp(int *retval, char **set_name)
     if (0 != Sretval)
         return;
 
-    if (!st_copy_sim_mappoints(NLoc, map, &points, &nMP))
+    st_map_extension *stage = st_map_extension_new();
+    if (!stage)
+    {
+        info(-2, "Memory allocation failed in st_set_sim_mp\n");
         return;
+    }
+    if (!st_copy_sim_mappoints(NLoc, map, &stage->points, &stage->n))
+    {
+        st_map_extension_close(stage);
+        return;
+    }
+    points = stage->points;
+    nMP = stage->n;
 
     if (!prepare_mappoints(points, nMP, 1, MAP_DISPERSE_FACTOR_DEFAULT,
                            &modified))
@@ -12573,7 +13450,7 @@ void st_set_sim_mp(int *retval, char **set_name)
         goto fail;
     }
 
-    free_mappoints(points, nMP);
+    st_map_extension_close(stage);
 
     if (0 < modified)
         info(0, "%d loci positions modified\n", modified);
@@ -12585,7 +13462,7 @@ void st_set_sim_mp(int *retval, char **set_name)
 
 fail:
 
-    free_mappoints(points, nMP);
+    st_map_extension_close(stage);
 }
 
 void st_set_sim_ef_provide_data(gs_UNSIGNED *NoEff, char (**EffNme)[gs_MAXNME],
@@ -12873,15 +13750,17 @@ void st_set_sim_ef(int *retval, char **effect_name, char **set_name)
         Effect.Eff[e + 1].NrLoci = 0;
         Effect.Eff[e + 1].Loc = NULL;
 
-        Insert_ALL_Loc(&(Effect.Eff[e]), tmpMP, EffAll[i]);
+        Effect.NrEff += 2;
+        if (!st_effect_insert(&(Effect.Eff[e]), tmpMP, EffAll[i]) ||
+            !st_effect_insert(&(Effect.Eff[e + 1]), tmpMP, CmpAll[i]))
+        {
+            info(-2, "Memory allocation failed in st_set_sim_ef\n");
+            goto fail;
+        }
         Effect.Eff[e].Eff = (float)(u[i] / 2.0);
-
-        Insert_ALL_Loc(&(Effect.Eff[e + 1]), tmpMP, CmpAll[i]);
         Effect.Eff[e + 1].Eff = (float)(-u[i] / 2.0);
 
         gvalue_avg += u[i];
-
-        Effect.NrEff += 2;
     }
 
     if (0 == Effect.NrEff)
@@ -13208,7 +14087,7 @@ void st_set_sim_pp(int *retval, char **pop_name, char **set_name)
         }
     }
 
-    snprintf(d, sizeof(d), "%ld", (long)Cnt);
+    st_text_write(d, sizeof(d), "%ld", (long)Cnt);
 
     init_population(pop_name, cCount, _Ind, _Chrom, _Hom, _Pos, _All);
 
@@ -13284,7 +14163,7 @@ fail_alloc:
 fail_import:
 
     if (population_created)
-        remove_population(pop_name);
+        st_remove_population_named(*pop_name);
 
 fail:
 
@@ -13316,6 +14195,24 @@ SEXP st_simulation_identity(SEXP population, SEXP metadata, SEXP serial)
         }
     if (!pop)
         Rf_error("Simulation population does not exist");
+    int serial_supplied = !isNull(serial);
+    uint64_t serial_value = 0;
+    if (serial_supplied)
+    {
+        if (TYPEOF(serial) != STRSXP || XLENGTH(serial) != 1 ||
+            STRING_ELT(serial, 0) == NA_STRING)
+            Rf_error("Invalid identity serial state");
+        const char *text = CHAR(STRING_ELT(serial, 0));
+        if (!*text)
+            Rf_error("Invalid identity serial state");
+        for (const char *p = text; *p; p++)
+        {
+            if (*p < '0' || *p > '9' ||
+                serial_value > (UINT64_MAX - (uint64_t)(*p - '0')) / 10)
+                Rf_error("Invalid identity serial state");
+            serial_value = serial_value * 10 + (uint64_t)(*p - '0');
+        }
+    }
     if (!isNull(metadata))
     {
         if (TYPEOF(metadata) != VECSXP || LENGTH(metadata) != 2 ||
@@ -13332,67 +14229,54 @@ SEXP st_simulation_identity(SEXP population, SEXP metadata, SEXP serial)
                 !st_identifier_valid(CHAR(n)) || !*CHAR(p))
                 Rf_error("Invalid simulation identifier or pedigree");
         }
-        char **names = calloc((size_t)pop->NoInds ? (size_t)pop->NoInds : 1,
-                              sizeof(*names));
-        char **ped =
-            calloc((size_t)pop->NoInds ? (size_t)pop->NoInds : 1, sizeof(*ped));
-        if (!names || !ped)
-        {
-            free(names);
-            free(ped);
-            Rf_error("Cannot stage identity metadata");
-        }
+        st_sim_identity_stage *stage =
+            st_sim_identity_stage_new((size_t)pop->NoInds);
         for (POPULATION i = 0; i < pop->NoInds; i++)
         {
-            names[i] =
-                st_sim_text_dup(CHAR(STRING_ELT(VECTOR_ELT(metadata, 0), i)));
-            ped[i] = st_sim_text_dup(CHAR(STRING_ELT(VECTOR_ELT(metadata, 1), i)));
-            if (!names[i] || !ped[i])
-            {
-                for (POPULATION j = 0; j < pop->NoInds; j++)
-                {
-                    st_sim_pool_free(names[j]);
-                    st_sim_pool_free(ped[j]);
-                }
-                free(names);
-                free(ped);
+            stage->items[i] = st_sim_ancestry_leaf(
+                CHAR(STRING_ELT(VECTOR_ELT(metadata, 0), i)),
+                CHAR(STRING_ELT(VECTOR_ELT(metadata, 1), i)));
+            if (!stage->items[i])
                 Rf_error("Cannot stage identity metadata");
-            }
         }
         for (POPULATION i = 0; i < pop->NoInds; i++)
         {
-            st_sim_pool_free(pop->Ind[i].name);
-            st_sim_pool_free(pop->Ind[i].pedigree);
-            pop->Ind[i].name = names[i];
-            pop->Ind[i].pedigree = ped[i];
-            ps_identity_observe(names[i]);
+            st_sim_identity_clear(&pop->Ind[i]);
+            pop->Ind[i].identity = stage->items[i];
+            stage->items[i] = NULL;
+            ps_identity_observe(pop->Ind[i].identity->text);
         }
-        free(names);
-        free(ped);
+        st_sim_identity_stage_close(stage);
     }
-    if (!isNull(serial))
-    {
-        if (TYPEOF(serial) != STRSXP || XLENGTH(serial) != 1 ||
-            STRING_ELT(serial, 0) == NA_STRING)
-            Rf_error("Invalid identity serial state");
-        const char *text = CHAR(STRING_ELT(serial, 0));
-        uint64_t value = 0;
-        if (!*text)
-            Rf_error("Invalid identity serial state");
-        for (const char *p = text; *p; p++)
-        {
-            if (*p < '0' || *p > '9' ||
-                value > (UINT64_MAX - (uint64_t)(*p - '0')) / 10)
-                Rf_error("Invalid identity serial state");
-            value = value * 10 + (uint64_t)(*p - '0');
-        }
-        if (value > st_identity_serial)
-            st_identity_serial = value;
-    }
+    if (serial_supplied && serial_value > st_identity_serial)
+        st_identity_serial = serial_value;
     char buffer[32];
-    snprintf(buffer, sizeof(buffer), "%llu",
+    st_text_write(buffer, sizeof(buffer), "%llu",
              (unsigned long long)st_identity_serial);
     return mkString(buffer);
+}
+
+typedef struct
+{
+    char *offspring, *left, *right, *count;
+} st_population_cross_call;
+
+static SEXP st_population_cross_body(void *payload)
+{
+    st_population_cross_call *call = payload;
+    double self = 0, significant = -1;
+    int mode = 1, scheme = 0;
+    cross(&call->offspring, &call->left, &call->right, &self, &call->count,
+          &significant, &mode, &scheme);
+    return R_NilValue;
+}
+
+static void st_population_cross_cleanup(void *payload)
+{
+    (void)payload;
+    st_cross_left = st_cross_right = NULL;
+    st_cross_first = 0;
+    st_cross_count = 0;
 }
 
 SEXP st_population_cross(SEXP offspring, SEXP left, SEXP right, SEXP number)
@@ -13412,23 +14296,19 @@ SEXP st_population_cross(SEXP offspring, SEXP left, SEXP right, SEXP number)
         value != floor(value))
         Rf_error("Number of hybrids must be a positive supported integer");
     int n = (int)value;
-    const char **first = (const char **)st_work_alloc(n, sizeof(*first)),
-               **second = (const char **)st_work_alloc(n, sizeof(*second));
-    memset(first, 0, (size_t)n * sizeof(*first));
-    memset(second, 0, (size_t)n * sizeof(*second));
+    st_sim_identity_stage *capture = st_sim_identity_stage_new((size_t)n * 2);
+    st_sim_ancestry **first = capture->items, **second = first + n;
     st_cross_left = first;
     st_cross_right = second;
     st_cross_first = st_identity_serial + 1;
     st_cross_count = (size_t)n;
     char count[32];
-    snprintf(count, sizeof(count), "%d", n);
+    st_text_write(count, sizeof(count), "%d", n);
     char *pg = (char *)CHAR(STRING_ELT(offspring, 0)), *p1 = (char *)a,
          *p2 = (char *)b, *np = count;
-    double self = 0, significant = -1;
-    int mode = 1, scheme = 0;
-    cross(&pg, &p1, &p2, &self, &np, &significant, &mode, &scheme);
-    st_cross_left = st_cross_right = NULL;
-    st_cross_count = 0;
+    st_population_cross_call call = {pg, p1, p2, np};
+    R_ExecWithCleanup(st_population_cross_body, &call,
+                      st_population_cross_cleanup, NULL);
     TPop *pop = NULL;
     for (TPopListEl *el = PopListStart; el; el = el->Next)
         if (!strcmp(el->Pop->Name, pg))
@@ -13449,9 +14329,9 @@ SEXP st_population_cross(SEXP offspring, SEXP left, SEXP right, SEXP number)
          rn = PROTECT(allocVector(INTSXP, 2));
     for (int i = 0; i < n; i++)
     {
-        SET_STRING_ELT(ids, i, mkCharCE(pop->Ind[i].name, CE_UTF8));
-        SET_STRING_ELT(l, i, mkCharCE(first[i], CE_UTF8));
-        SET_STRING_ELT(r, i, mkCharCE(second[i], CE_UTF8));
+        SET_STRING_ELT(ids, i, st_sim_ancestry_char(pop->Ind[i].identity, 0));
+        SET_STRING_ELT(l, i, st_sim_ancestry_char(first[i], 0));
+        SET_STRING_ELT(r, i, st_sim_ancestry_char(second[i], 0));
     }
     SET_VECTOR_ELT(out, 0, ids);
     SET_VECTOR_ELT(out, 1, l);
@@ -13464,6 +14344,7 @@ SEXP st_population_cross(SEXP offspring, SEXP left, SEXP right, SEXP number)
     INTEGER(rn)[1] = -n;
     setAttrib(out, R_RowNamesSymbol, rn);
     setAttrib(out, R_ClassSymbol, mkString("data.frame"));
+    st_sim_identity_stage_close(capture);
     UNPROTECT(6);
     return out;
 }
@@ -13529,19 +14410,24 @@ SEXP st_population_marker_map(SEXP number)
         total += PopDescr[c].ChromLen;
     if (!R_FINITE(total) || total <= 0)
         error("Invalid genome length");
-    TMappoint *points = calloc((size_t)n, sizeof(*points));
-    if (!points)
+    st_map_extension *stage = calloc(1, sizeof(*stage));
+    if (!stage)
+        error("Cannot stage marker map");
+    st_work_adopt(stage, st_map_extension_free);
+    stage->n = n;
+    stage->points = calloc((size_t)n, sizeof(*stage->points));
+    if (!stage->points)
         error("Cannot allocate marker map");
+    TMappoint *points = stage->points;
 
     for (int i = 0; i < n; i++)
     {
         char label[32];
-        snprintf(label, sizeof(label), "M%d", i + 1);
+        st_text_write(label, sizeof(label), "M%d", i + 1);
         points[i].name = st_text_dup(label);
         points[i].class = st_text_dup("m");
         if (!points[i].name || !points[i].class)
         {
-            free_mappoints(points, n);
             error("Cannot allocate marker labels");
         }
     }
@@ -13563,30 +14449,17 @@ SEXP st_population_marker_map(SEXP number)
     qsort(points, n, sizeof(*points), mccmp);
     if (!install_mappoints(points, n))
     {
-        free_mappoints(points, n);
         error("Cannot install marker map");
     }
-    free_mappoints(points, n);
+    free_mappoints(stage->points, stage->n);
+    stage->points = NULL;
+    stage->n = 0;
     int np = 0;
     SEXP out = st_sim_map_snapshot(&np);
     UNPROTECT(np);
     return out;
 }
 
-typedef struct
-{
-    TMappoint *points;
-    int n;
-} st_map_extension;
-static void st_map_extension_free(void *pointer)
-{
-    st_map_extension *stage = pointer;
-    if (stage)
-    {
-        free_mappoints(stage->points, stage->n);
-        free(stage);
-    }
-}
 static SEXP st_sim_points_snapshot(const TMappoint *points, int n, int *np)
 {
     const char *keys[] = {"chrom", "pos", "name", "class"};
@@ -13674,7 +14547,7 @@ SEXP st_extend_marker_map(SEXP number)
         TMappoint key = {0};
         do
         {
-            snprintf(label, sizeof(label), "M%llu",
+            st_text_write(label, sizeof(label), "M%llu",
                      (unsigned long long)++serial);
             key.name = label;
         } while (bsearch(&key, names, old, sizeof(*names), mnamecmp));
@@ -14107,7 +14980,7 @@ static const char **st_legacy_primer_labels(SEXP data)
             labels[i] = STRING_ELT(names, i) == NA_STRING ? NULL : translateCharUTF8(STRING_ELT(names, i));
         else
         {
-            char number[32]; snprintf(number, sizeof(number), "%d", i + 1);
+            char number[32]; st_text_write(number, sizeof(number), "%d", i + 1);
             labels[i] = st_legacy_text(number);
         }
     }
@@ -14132,7 +15005,7 @@ static const char **st_legacy_primer_labels(SEXP data)
                        *right = st_legacy_primer_substring(labels[i], first, 1000000);
             size_t length = strlen(left) + strlen(right) + (stage ? 2 : 1);
             char *joined = st_work_alloc(length, 1);
-            snprintf(joined, length, stage ? "%s.%s" : "%s%s", left, right);
+            st_text_write(joined, length, stage ? "%s.%s" : "%s%s", left, right);
             next[i] = joined;
         }
         if (!n && stage) next[0] = ".", n = 1;
@@ -14212,7 +15085,7 @@ static st_legacy_data st_legacy_data_read_labels(SEXP data, int missing, const c
     for (int i = 0; i < nr; i++)
     {
         char number[32];
-        snprintf(number, sizeof(number), "%d", i + 1);
+        st_text_write(number, sizeof(number), "%d", i + 1);
         const char *name =
             row_labels ? row_labels[i] : TYPEOF(rownames) == STRSXP ? CHAR(STRING_ELT(rownames, i)) : number;
         const char *prefix = st_legacy_prefix(name);
@@ -14501,7 +15374,7 @@ static const char *st_legacy_data_rowname(const st_legacy_data *d, int i)
     if (TYPEOF(d->rownames) == STRSXP)
         return CHAR(STRING_ELT(d->rownames, i));
     char number[32];
-    snprintf(number, sizeof(number), "%d", i + 1);
+    st_text_write(number, sizeof(number), "%d", i + 1);
     return st_legacy_text(number);
 }
 
@@ -14548,7 +15421,8 @@ static SEXP st_legacy_data_parameters(const st_legacy_data *d)
         REAL(individuals)[i] = d->no_ind[i];
         SET_STRING_ELT(populations, i, mkChar(d->population[i]));
     }
-    memcpy(INTEGER(index), d->individuals, d->nc * sizeof(int));
+    if (d->nc)
+        memcpy(INTEGER(index), d->individuals, (size_t)d->nc * sizeof(int));
     SET_VECTOR_ELT(out, 3, alleles);
     SET_VECTOR_ELT(out, 5, individuals);
     SET_VECTOR_ELT(out, 6, index);
@@ -14656,16 +15530,20 @@ static SEXP st_legacy_generate(st_legacy_data *d, SEXP args)
     {
         SEXP col = PROTECT(allocVector(INTSXP, lengths[j]));
         np++;
-        memcpy(INTEGER(col), arrays[j], lengths[j] * sizeof(int));
+        if (lengths[j])
+            memcpy(INTEGER(col), arrays[j], (size_t)lengths[j] * sizeof(int));
         SET_VECTOR_ELT(out, j, col);
     }
     SEXP values = PROTECT(allocVector(REALSXP, (R_xlen_t)d->nr * d->nc));
     SEXP frequencies = PROTECT(allocVector(REALSXP, nf));
     SEXP allele_out = PROTECT(allocVector(INTSXP, d->nr));
     np += 3;
-    memcpy(REAL(values), d->values, (size_t)d->nr * d->nc * sizeof(double));
-    memcpy(REAL(frequencies), freq, nf * sizeof(double));
-    memcpy(INTEGER(allele_out), alleles, d->nr * sizeof(int));
+    if (d->nr && d->nc)
+        memcpy(REAL(values), d->values, (size_t)d->nr * d->nc * sizeof(double));
+    if (nf)
+        memcpy(REAL(frequencies), freq, nf * sizeof(double));
+    if (d->nr)
+        memcpy(INTEGER(allele_out), alleles, (size_t)d->nr * sizeof(int));
     SET_VECTOR_ELT(out, 10, values);
     SET_VECTOR_ELT(out, 11, frequencies);
     SET_VECTOR_ELT(out, 12, mkString(pop_list));
@@ -15151,6 +16029,7 @@ static SEXP st_legacy_mdp(SEXP args);
 
 static SEXP st_legacy_target_export(SEXP args);
 static SEXP st_legacy_select_genotype(SEXP args);
+static SEXP st_legacy_select_genotypes(SEXP args);
 static SEXP st_legacy_locus_effect(SEXP args);
 
 extern void gs_set_performance_data_01_GV(int *, double *, int *, char **);
@@ -15224,9 +16103,17 @@ static const char *st_mab_report_real(double value)
     if (value == 0)
         value = 0;
     char scientific[80], output[768];
-    snprintf(scientific, sizeof(scientific), "%.*e", DBL_DIG - 1, value);
+    int written = snprintf(scientific, sizeof(scientific), "%.*e",
+                           DBL_DIG - 1, value);
+    if (written < 0 || (size_t)written >= sizeof(scientific))
+        error("Cannot format simulation report number");
     char *exponent = strchr(scientific, 'e'), *point = strchr(scientific, '.');
-    int power = (int)strtol(exponent + 1, NULL, 10);
+    if (!exponent) error("Cannot format simulation report exponent");
+    long parsed_power = strtol(exponent + 1, NULL, 10);
+    if (parsed_power < -(DBL_MAX_10_EXP + DBL_DIG + 1) ||
+        parsed_power > DBL_MAX_10_EXP)
+        error("Simulation report exponent is out of range");
+    int power = (int)parsed_power;
     char *last = exponent - 1;
     while (point && last > point && *last == '0')
         last--;
@@ -15246,9 +16133,13 @@ static const char *st_mab_report_real(double value)
     int penalty = isNull(option) ? 0 : asInteger(option);
     if (penalty == NA_INTEGER)
         penalty = 0;
-    if (fixed_width <= (int)strlen(scientific) + penalty)
+    if ((int64_t)fixed_width <= (int64_t)strlen(scientific) + penalty)
     {
-        snprintf(output, sizeof(output), "%*.*f", fixed_width, decimals, value);
+        if (decimals > DBL_MAX_10_EXP + 2 * DBL_DIG)
+            error("Simulation report precision is out of range");
+        written = snprintf(output, sizeof(output), "%.*f", decimals, value);
+        if (written < 0 || (size_t)written >= sizeof(output))
+            error("Cannot format simulation report number");
         char *dot = strchr(output, '.');
         if (dot)
         {
@@ -15271,6 +16162,9 @@ static const char *st_mab_report_real(double value)
     {
         size_t left = (size_t)(dot - output), mark = strlen(decimal),
                right = strlen(dot + 1);
+        if (left > SIZE_MAX - 1 || mark > SIZE_MAX - left - 1 ||
+            right > SIZE_MAX - left - mark - 1)
+            error("Simulation report decimal text is too long");
         char *result = st_work_alloc(left + mark + right + 1, 1);
         memcpy(result, output, left);
         memcpy(result + left, decimal, mark);
@@ -15303,7 +16197,7 @@ static const char *st_mab_report_text(SEXP value, R_xlen_t index, int factor)
         if (INTEGER(value)[index] == NA_INTEGER)
             return NULL;
         char buffer[32];
-        snprintf(buffer, sizeof(buffer), "%d", INTEGER(value)[index]);
+        st_text_write(buffer, sizeof(buffer), "%d", INTEGER(value)[index]);
         return st_legacy_text(buffer);
     }
     if (TYPEOF(value) == REALSXP)
@@ -15315,15 +16209,22 @@ static const char *st_mab_report_text(SEXP value, R_xlen_t index, int factor)
             return NULL;
         const char *real = st_mab_report_real(z.r),
                    *imaginary = st_mab_report_real(fabs(z.i));
-        size_t size = strlen(real) + strlen(imaginary) + 3;
+        size_t left = strlen(real), right = strlen(imaginary);
+        if (left > SIZE_MAX - 3 || right > SIZE_MAX - left - 3)
+            error("Simulation report text is too long");
+        size_t size = left + right + 3;
         char *text = st_work_alloc(size, 1);
-        snprintf(text, size, "%s%c%si", real, z.i < 0 ? '-' : '+', imaginary);
+        memcpy(text, real, left);
+        text[left] = z.i < 0 ? '-' : '+';
+        memcpy(text + left + 1, imaginary, right);
+        text[left + right + 1] = 'i';
+        text[left + right + 2] = '\0';
         return text;
     }
     if (TYPEOF(value) == RAWSXP)
     {
         char buffer[3];
-        snprintf(buffer, sizeof(buffer), "%02x", RAW(value)[index]);
+        st_text_write(buffer, sizeof(buffer), "%02x", RAW(value)[index]);
         return st_legacy_text(buffer);
     }
     error("Unsupported simulation report metadata");
@@ -15368,9 +16269,12 @@ static SEXP st_mab_report_field(SEXP value, int collapse)
 static const char *st_mab_report_name(const char *prefix, int index,
                                       const char *suffix)
 {
-    size_t size = strlen(prefix) + strlen(suffix) + 32;
+    size_t left = strlen(prefix), right = strlen(suffix);
+    if (left > SIZE_MAX - 32 || right > SIZE_MAX - left - 32)
+        error("Simulation report name is too long");
+    size_t size = left + right + 32;
     char *text = st_work_alloc(size, 1);
-    snprintf(text, size, "%s%d%s", prefix, index, suffix);
+    st_text_write(text, size, "%s%d%s", prefix, index, suffix);
     return text;
 }
 
@@ -15546,7 +16450,7 @@ static SEXP st_mab_report_numeric(SEXP data, SEXP columns, int rows,
         for (int i = 1; i < rows; i++)
         {
             char label[32];
-            snprintf(label, sizeof(label), "G%d", i - 1);
+            st_text_write(label, sizeof(label), "G%d", i - 1);
             SET_STRING_ELT(rownames, i, mkChar(label));
         }
         st_mab_report_dimnames(out, rownames, columns);
@@ -15663,9 +16567,15 @@ static SEXP st_legacy_mab_tabulate(SEXP args)
             left = "NA";
         if (!right)
             right = "NA";
-        size_t length = strlen(left) + strlen(right) + 2;
+        size_t left_length = strlen(left), right_length = strlen(right);
+        if (left_length > SIZE_MAX - 2 ||
+            right_length > SIZE_MAX - left_length - 2)
+            error("Simulation scenario label is too long");
+        size_t length = left_length + right_length + 2;
         char *label = st_work_alloc(length, 1);
-        snprintf(label, length, "%s-%s", left, right);
+        memcpy(label, left, left_length);
+        label[left_length] = '-';
+        memcpy(label + left_length + 1, right, right_length + 1);
         SET_STRING_ELT(columns, i, mkCharCE(label, CE_UTF8));
     }
     for (int i = 0; i < count; i++)
@@ -15895,8 +16805,10 @@ static SEXP st_legacy_output_frame(int rows, int columns, const char **keys,
     {
         SEXP column = PROTECT(allocVector(types[j],rows)); (*np)++;
         SET_VECTOR_ELT(out,j,column);
-        if (types[j] == REALSXP) memset(REAL(column),0,(size_t)rows*sizeof(double));
-        else if (types[j] == INTSXP) memset(INTEGER(column),0,(size_t)rows*sizeof(int));
+        if (rows && types[j] == REALSXP)
+            memset(REAL(column), 0, (size_t)rows * sizeof(double));
+        else if (rows && types[j] == INTSXP)
+            memset(INTEGER(column), 0, (size_t)rows * sizeof(int));
     }
     st_sim_frame(out,rows,np);
     return out;
@@ -15948,7 +16860,10 @@ static SEXP st_legacy_locus_output(SEXP args)
     SEXP rows = PROTECT(allocVector(STRSXP,n));np++;
     for (int i = 0; i < n; i++) SET_STRING_ELT(rows,i,mkChar(labels[i]));
     setAttrib(out,R_RowNamesSymbol,rows);
-    for (int j = 0; j < 3; j++) memcpy(INTEGER(VECTOR_ELT(out,j)),counts+(size_t)n*j,(size_t)n*sizeof(int));
+    if (n)
+        for (int j = 0; j < 3; j++)
+            memcpy(INTEGER(VECTOR_ELT(out, j)), counts + (size_t)n * j,
+                   (size_t)n * sizeof(int));
     UNPROTECT(np);return out;
 }
 static SEXP st_legacy_select_best(SEXP args)
@@ -16151,9 +17066,12 @@ static SEXP st_legacy_info_cat(SEXP args)
             return R_NilValue;
         }
     }
-    SEXP format = PROTECT(mkString("M: %s\r"));
+    SEXP prefix = PROTECT(mkString("M: "));
     np++;
-    SEXP text = PROTECT(lang3(install("sprintf"), format, install("msg")));
+    SEXP suffix = PROTECT(mkString("\r"));
+    np++;
+    SEXP text = PROTECT(lang4(findFun(install("paste0"), R_BaseEnv), prefix,
+                              install("msg"), suffix));
     np++;
     SEXP newline = PROTECT(ScalarLogical(FALSE));
     np++;
@@ -16224,32 +17142,302 @@ static SEXP st_legacy_population_info(SEXP args)
 
 static SEXP st_legacy_remove_all(void)
 {
-    if (PopListStart)
-    {
-        size_t length = 1;
-        for (TPopListEl *p = PopListStart; p; p = p->Next)
-        {
-            size_t n = strlen(p->Pop->Name);
-            if (n >= SIZE_MAX - length)
-                error("Population name list is too large");
-            length += n + 1;
-        }
-        char *names = st_work_alloc(length, sizeof(char));
-        size_t at = 0;
-        for (TPopListEl *p = PopListStart; p; p = p->Next)
-        {
-            if (at) names[at++] = ' ';
-            size_t n = strlen(p->Pop->Name);
-            memcpy(names + at, p->Pop->Name, n);
-            at += n;
-        }
-        names[at] = '\0';
-        remove_population(&names);
-    }
-    int level = 1;
-    char *message = "All populations removed";
-    r_info(&level, &message);
+    while (PopListStart)
+        st_remove_population_entry(PopListStart);
     return R_NilValue;
+}
+
+static SEXP st_legacy_population_init(SEXP args)
+{
+    SEXP population = st_legacy_argument(args, "population"),
+         data = st_legacy_argument(args, "data"),
+         delete = st_legacy_argument(args, "delete");
+    if (TYPEOF(population) != STRSXP || XLENGTH(population) != 1 ||
+        STRING_ELT(population, 0) == NA_STRING || TYPEOF(data) != VECSXP ||
+        XLENGTH(data) != 5 || XLENGTH(delete) != 1)
+        error("Population initialization requires one name and five named data columns");
+    const char *text = CHAR(STRING_ELT(population, 0));
+    size_t name_length = strlen(text);
+    if (name_length < 2 || name_length >= MAXNAME)
+        error("Invalid population name length");
+    int replace = asLogical(delete);
+    if (replace == NA_LOGICAL)
+        error("delete must be one nonmissing logical value");
+    if (!PopDescr || NoChroms < 1 || NoHoms < 1)
+        error("A valid genome is required for population initialization");
+    const char *keys[] = {"ind", "chrom", "hom", "pos", "all"};
+    SEXP column[5];
+    R_xlen_t rows = 0;
+    for (int j = 0; j < 5; j++)
+    {
+        column[j] = st_legacy_argument(data, keys[j]);
+        if ((TYPEOF(column[j]) != INTSXP && TYPEOF(column[j]) != REALSXP) ||
+            (j && XLENGTH(column[j]) != rows))
+            error("Population columns must be numeric with equal lengths");
+        if (!j)
+            rows = XLENGTH(column[j]);
+    }
+    if (!rows || (uintmax_t)rows > LONG_MAX)
+        error("Population data require a supported positive row count");
+    int *individual = st_work_alloc((size_t)rows, sizeof(*individual)),
+        *chromosome = st_work_alloc((size_t)rows, sizeof(*chromosome)),
+        *homologue = st_work_alloc((size_t)rows, sizeof(*homologue)),
+        *allele = st_work_alloc((size_t)rows, sizeof(*allele));
+    double *position = st_work_alloc((size_t)rows, sizeof(*position));
+    for (R_xlen_t i = 0; i < rows; i++)
+    {
+        double ind = st_legacy_number(column[0], i),
+               chrom = st_legacy_number(column[1], i),
+               hom = st_legacy_number(column[2], i),
+               pos = st_legacy_number(column[3], i),
+               all = st_legacy_number(column[4], i);
+        if (!R_FINITE(ind) || ind < 1 || ind > INT_MAX || ind != floor(ind) ||
+            !R_FINITE(chrom) || chrom < 1 || chrom > NoChroms || chrom != floor(chrom) ||
+            !R_FINITE(hom) || hom < 1 || hom > NoHoms || hom != floor(hom) ||
+            !R_FINITE(pos) || pos < 0 || pos > PopDescr[(int)chrom - 1].ChromLen ||
+            !R_FINITE(all) || all < 0 || all > USHRT_MAX || all != floor(all))
+            error("Invalid population individual, chromosome, homologue, position or allele");
+        individual[i] = (int)ind;
+        chromosome[i] = (int)chrom;
+        homologue[i] = (int)hom;
+        position[i] = pos;
+        allele[i] = (int)all;
+    }
+    char *name = st_legacy_text(text);
+    if (replace)
+    {
+        TPopListEl *entry = NULL;
+        find_list_element(name, &entry);
+        if (entry)
+            st_remove_population_entry(entry);
+    }
+    char buffer[64], *count = buffer;
+    st_text_write(buffer, sizeof(buffer), "%lld", (long long)rows);
+    init_population(&name, &count, individual, chromosome, homologue, position, allele);
+    return R_NilValue;
+}
+
+static SEXP st_legacy_individual_remove(SEXP args)
+{
+    SEXP population = st_legacy_argument(args, "population"),
+         position = st_legacy_argument(args, "position");
+    if (TYPEOF(population) != STRSXP || XLENGTH(population) != 1 ||
+        STRING_ELT(population, 0) == NA_STRING ||
+        (TYPEOF(position) != INTSXP && TYPEOF(position) != REALSXP) ||
+        XLENGTH(position) != 1)
+        error("Individual removal requires one population and one numeric position");
+    double value = asReal(position);
+    if (!R_FINITE(value) || value != floor(value))
+        error("Individual position must be a finite whole number");
+    char *name = (char *)CHAR(STRING_ELT(population, 0));
+    TPopListEl *entry = NULL;
+    find_list_element(name, &entry);
+    if (!entry)
+    {
+        info(-2, "Population not defined: %s\n", name);
+        return R_NilValue;
+    }
+    TPop *population_owner = entry->Pop;
+    if (value < 1 || value > population_owner->NoInds)
+        return R_NilValue;
+    if (population_owner->NoInds == 1)
+    {
+        st_remove_population_entry(entry);
+        return R_NilValue;
+    }
+    POPULATION index = (POPULATION)value - 1,
+               remaining = population_owner->NoInds - index - 1;
+    if ((size_t)remaining > SIZE_MAX / sizeof(TInd))
+        error("Individual removal exceeds the supported population size");
+    TInd removed = population_owner->Ind[index];
+    if (remaining)
+        memmove(population_owner->Ind + index, population_owner->Ind + index + 1,
+                (size_t)remaining * sizeof(TInd));
+    POPULATION new_size = population_owner->NoInds - 1;
+    population_owner->Ind[new_size] = removed;
+    int_resize_population(&name, new_size);
+    return R_NilValue;
+}
+
+typedef struct
+{
+    SEXP target_input, source_input, effect_input, count_input;
+    SEXP formatted_input, decreasing_input, criterion_input;
+    char *target, *source;
+    int mixed_caches;
+} st_population_selection_call;
+
+static void st_population_selection_cleanup(void *payload)
+{
+    st_population_selection_call *call = payload;
+    if (call->mixed_caches)
+    {
+        char *names[] = {call->target, call->source};
+        for (size_t i = 0; i < 2; i++)
+        {
+            TPopListEl *entry = NULL;
+            find_list_element(names[i], &entry);
+            if (entry)
+            {
+                st_clear_population_genotype(entry->Pop);
+                st_clear_population_gvalue(entry->Pop);
+            }
+        }
+    }
+}
+
+static SEXP st_population_selection_strings(SEXP input, const char *first)
+{
+    SEXP out = PROTECT(duplicate(input));
+    for (R_xlen_t i = 0; i < XLENGTH(input); i++)
+        SET_STRING_ELT(out, i, mkChar(!i && first ? first :
+            translateChar(STRING_ELT(input, i))));
+    UNPROTECT(1);
+    return out;
+}
+
+static SEXP st_population_selection_sort_result(st_population_selection_call *call,
+                                                const char *source, int status)
+{
+    SEXP out = PROTECT(allocVector(VECSXP, 5));
+    SEXP names = PROTECT(allocVector(STRSXP, 5));
+    for (int i = 0; i < 5; i++)
+        SET_STRING_ELT(names, i, mkChar(i == 4 ? "retval" : ""));
+    setAttrib(out, R_NamesSymbol, names);
+    SET_VECTOR_ELT(out, 0, st_population_selection_strings(call->source_input,
+                                                          source));
+    SET_VECTOR_ELT(out, 1, duplicate(call->decreasing_input));
+    SET_VECTOR_ELT(out, 2, duplicate(call->criterion_input));
+    SET_VECTOR_ELT(out, 3,
+        !strcmp(CHAR(STRING_ELT(call->criterion_input, 0)), "G") ||
+            !XLENGTH(call->effect_input) ? mkString("") :
+            st_population_selection_strings(call->effect_input, NULL));
+    SET_VECTOR_ELT(out, 4, ScalarInteger(status));
+    UNPROTECT(2);
+    return out;
+}
+
+static SEXP st_population_selection_body(void *payload)
+{
+    st_population_selection_call *call = payload;
+    TPopListEl *entry = NULL;
+    find_list_element(call->source, &entry);
+    if (entry)
+        call->mixed_caches = st_population_normalize_caches(entry->Pop);
+    call->target = st_legacy_text(translateChar(STRING_ELT(call->target_input, 0)));
+    call->source = st_legacy_text(translateChar(STRING_ELT(call->source_input, 0)));
+    POPULATION available = 0;
+    for (R_xlen_t i = 0; i < XLENGTH(call->source_input); i++)
+    {
+        char *text = st_legacy_text(translateChar(STRING_ELT(call->source_input, i)));
+        for (char *name = strtok(text, " "); name; name = strtok(NULL, " "))
+        {
+            entry = NULL;
+            find_list_element(name, &entry);
+            if (!entry)
+            {
+                info(-2, "Population not defined: %s\n", name);
+                info(-2, "Population %s is of size 0\n", call->source);
+                return R_NilValue;
+            }
+            if (entry->Pop->NoInds > LONG_MAX - available)
+                error("Population size exceeds the supported range");
+            available += entry->Pop->NoInds;
+        }
+    }
+    if (available > INT_MAX)
+        error("missing value where TRUE/FALSE needed");
+    if (!available)
+    {
+        info(-2, "Population %s is of size 0\n", call->source);
+        return R_NilValue;
+    }
+    R_xlen_t count_length = XLENGTH(call->count_input);
+    if (!count_length)
+        error("argument is of length zero");
+    if (count_length != 1)
+        error("the condition has length > 1");
+    int oversized;
+    if (TYPEOF(call->count_input) == STRSXP)
+    {
+        if (STRING_ELT(call->count_input, 0) == NA_STRING)
+            error("missing value where TRUE/FALSE needed");
+        char size[32];
+        st_text_write(size, sizeof(size), "%ld", (long)available);
+        oversized = strcmp(translateChar(STRING_ELT(call->count_input, 0)), size) > 0;
+    }
+    else
+    {
+        if (TYPEOF(call->count_input) == CPLXSXP)
+            error("invalid comparison with complex values");
+        double count = asReal(call->count_input);
+        if (ISNAN(count))
+            error("missing value where TRUE/FALSE needed");
+        oversized = count > (double)available;
+    }
+    if (oversized)
+    {
+        char *display = st_legacy_text(translateChar(asChar(call->count_input)));
+        info(1, "Population size: %ld. Selection of %s individuals not possible.\n",
+              (long)available, display);
+    }
+    const char *criterion_text = CHAR(STRING_ELT(call->criterion_input, 0));
+    char *name;
+    if (!strcmp(criterion_text, "G"))
+    {
+        name = st_legacy_text(call->source);
+        genotype_population(&name);
+        name = st_legacy_text(call->source);
+        char *effect = XLENGTH(call->effect_input) ?
+            st_legacy_text(translateChar(STRING_ELT(call->effect_input, 0))) : NULL;
+        evaluate_population(&name, effect ? &effect : NULL);
+    }
+    if (!XLENGTH(call->decreasing_input))
+        error("decreasing must contain a value");
+    for (R_xlen_t i = 0; i < XLENGTH(call->decreasing_input); i++)
+        if (INTEGER(call->decreasing_input)[i] == NA_INTEGER)
+            error("NAs in foreign function call (arg 2)");
+    int decreasing = INTEGER(call->decreasing_input)[0], status = -2;
+    char *criterion = st_legacy_text(criterion_text);
+    char *effect = !strcmp(criterion_text, "G") || !XLENGTH(call->effect_input) ?
+        st_legacy_text("") :
+        st_legacy_text(translateChar(STRING_ELT(call->effect_input, 0)));
+    name = st_legacy_text(call->source);
+    sort_population(&name, &decreasing, &criterion, &effect, &status);
+    if (status)
+        return st_population_selection_sort_result(call, name, status);
+    if (!XLENGTH(call->formatted_input))
+        error("Selection count must contain a formatted value");
+    char *target = st_legacy_text(call->target),
+         *source = st_legacy_text(call->source),
+         *number = st_legacy_text(translateChar(STRING_ELT(call->formatted_input, 0)));
+    divide_population(&target, &source, &number);
+    SEXP out = PROTECT(allocVector(VECSXP, 3));
+    SET_VECTOR_ELT(out, 0, st_population_selection_strings(call->target_input, NULL));
+    SET_VECTOR_ELT(out, 1, st_population_selection_strings(call->source_input, NULL));
+    SET_VECTOR_ELT(out, 2, st_population_selection_strings(call->formatted_input, NULL));
+    UNPROTECT(1);
+    return out;
+}
+
+SEXP st_population_select_n_best(SEXP target, SEXP source, SEXP effect,
+                                 SEXP count, SEXP formatted, SEXP decreasing,
+                                 SEXP criterion)
+{
+    if (TYPEOF(source) != STRSXP || !XLENGTH(source))
+        error("Population name is required");
+    if (TYPEOF(target) != STRSXP || !XLENGTH(target) ||
+        TYPEOF(effect) != STRSXP || TYPEOF(formatted) != STRSXP ||
+        TYPEOF(decreasing) != INTSXP || TYPEOF(criterion) != STRSXP ||
+        XLENGTH(criterion) != 1 || STRING_ELT(criterion, 0) == NA_STRING ||
+        (strcmp(CHAR(STRING_ELT(criterion, 0)), "G") &&
+         strcmp(CHAR(STRING_ELT(criterion, 0)), "P")))
+        error("Invalid population selection arguments");
+    st_population_selection_call call = {target, source, effect, count, formatted,
+        decreasing, criterion, (char *)CHAR(STRING_ELT(target, 0)),
+        (char *)CHAR(STRING_ELT(source, 0)), 0};
+    return R_ExecWithCleanup(st_population_selection_body, &call,
+                              st_population_selection_cleanup, &call);
 }
 
 SEXP st_legacy_sim(SEXP args)
@@ -16261,6 +17449,10 @@ SEXP st_legacy_sim(SEXP args)
         return st_legacy_info_cat(args);
     if (!strcmp(action, "remove.all"))
         return st_legacy_remove_all();
+    if (!strcmp(action, "population.individual.remove"))
+        return st_legacy_individual_remove(args);
+    if (!strcmp(action, "population.init"))
+        return st_legacy_population_init(args);
     if (!strcmp(action, "hap.next"))
         return st_legacy_haplotype_next(args);
     if (!strcmp(action, "hap.d"))
@@ -16287,6 +17479,8 @@ SEXP st_legacy_sim(SEXP args)
         return st_legacy_target_export(args);
     if (!strcmp(action, "select.genotype"))
         return st_legacy_select_genotype(args);
+    if (!strcmp(action, "select.genotypes"))
+        return st_legacy_select_genotypes(args);
     if (!strcmp(action, "effect.locus"))
         return st_legacy_locus_effect(args);
     if (!strcmp(action, "genome.evaluate"))
@@ -16514,7 +17708,7 @@ static SEXP st_legacy_evaluate(SEXP args, int genotype)
         for (int j = 0; j < nloci; j++)
             for (int h = 0; h < NoHoms; h++)
             {
-                snprintf(text, sizeof(text), "%s-%d ", points[j]->name, h + 1);
+                st_text_write(text, sizeof(text), "%s-%d ", points[j]->name, h + 1);
                 SET_STRING_ELT(names, j * NoHoms + h, mkChar(text));
             }
         SET_STRING_ELT(names, width, mkChar("count"));
@@ -16557,7 +17751,7 @@ static SEXP st_legacy_evaluate(SEXP args, int genotype)
                 nprotect++;
                 for (size_t i = 0; i < nr; i++)
                 {
-                    snprintf(text, sizeof(text), "%zu ", i + 1);
+                    st_text_write(text, sizeof(text), "%zu ", i + 1);
                     SET_STRING_ELT(rn, i, mkChar(text));
                 }
                 setAttrib(out, R_RowNamesSymbol, rn);
@@ -16648,7 +17842,7 @@ static SEXP st_legacy_evaluate(SEXP args, int genotype)
     for (size_t i = 0; i < nr; i++)
     {
         char text[32];
-        snprintf(text, sizeof(text), "%zu ", i + 1);
+        st_text_write(text, sizeof(text), "%zu ", i + 1);
         SET_STRING_ELT(rn, i, mkChar(text));
     }
     setAttrib(out, R_NamesSymbol, names);
@@ -16725,29 +17919,41 @@ static int st_mab_contains(SEXP strings, const char *name)
     return 0;
 }
 
+static void st_mab_uniform_effect_destroy(void *pointer)
+{
+    TEffects *effect = pointer;
+    st_sim_ef_free(effect);
+    free(effect);
+}
+
 static void st_mab_uniform_effect(const char *name, int allele)
 {
     if (find_Effect((char *)name))
         error("MAB effect already exists: %s", name);
+    if (strlen(name) >= sizeof(((TEffects *)0)->Name) || NoHoms < 1 ||
+        (size_t)NoHoms > SIZE_MAX / sizeof(int))
+        error("Invalid MAB effect name or ploidy");
     size_t count = 0;
     for (int c = 0; c < NoChroms; c++)
         for (int i = 0; i < PopDescr[c].NrMappoints; i++)
             if (strstr(PopDescr[c].Mappoint[i].class, name))
+            {
+                if (count == INT_MAX)
+                    error("Too many MAB effect loci");
                 count++;
-    if (count > INT_MAX)
-        error("Too many MAB effect loci");
-    TEffects *resized = realloc(Effects, (NrEffects + 1) * sizeof(*Effects));
-    if (!resized)
+            }
+    size_t capacity = count ? count : 1;
+    if (capacity > SIZE_MAX / sizeof(TEff) ||
+        capacity > SIZE_MAX / sizeof(TMappoint *))
+        error("MAB effect allocation size overflow");
+    TEffects *effect = calloc(1, sizeof(*effect));
+    if (!effect)
         error("Cannot allocate MAB effects");
-    Effects = resized;
-    TEffects *effect = &Effects[NrEffects];
-    memset(effect, 0, sizeof(*effect));
+    st_work_adopt(effect, st_mab_uniform_effect_destroy);
     effect->weight = 1;
-    effect->Pos = NrEffects + 1;
-    snprintf(effect->Name, sizeof(effect->Name), "%s", name);
-    effect->Eff = calloc(count ? count : 1, sizeof(TEff));
-    effect->MPset = calloc(count ? count : 1, sizeof(TMappoint *));
-    NrEffects++;
+    st_text_write(effect->Name, sizeof(effect->Name), "%s", name);
+    effect->Eff = calloc(capacity, sizeof(*effect->Eff));
+    effect->MPset = calloc(capacity, sizeof(*effect->MPset));
     if (!effect->Eff || !effect->MPset)
         error("Cannot allocate MAB locus effects");
     for (int c = 0; c < NoChroms; c++)
@@ -16758,13 +17964,13 @@ static void st_mab_uniform_effect(const char *name, int allele)
                 continue;
             TEff *entry = &effect->Eff[effect->NrEff++];
             entry->Eff = 1;
-            entry->Loc = calloc(1, sizeof(TGen));
+            entry->Loc = calloc(1, sizeof(*entry->Loc));
             if (!entry->Loc)
                 error("Cannot allocate MAB genotype effect");
             entry->NrLoci = 1;
             entry->Loc[0].MP = point;
             entry->Loc[0].NrAll = 1;
-            entry->Loc[0].All = malloc(NoHoms * sizeof(int));
+            entry->Loc[0].All = malloc((size_t)NoHoms * sizeof(int));
             if (!entry->Loc[0].All)
                 error("Cannot allocate MAB effect alleles");
             entry->Loc[0].All[0] = allele;
@@ -16776,11 +17982,82 @@ static void st_mab_uniform_effect(const char *name, int allele)
         error("Cannot expand MAB allele effects");
     GetRNGstate();
     PutRNGstate();
+    if (!st_effect_commit(effect))
+        error("Cannot install MAB effects");
+    st_work_detach(effect);
+    st_mab_uniform_effect_destroy(effect);
     st_clear_all_population_gvalue();
+}
+
+static TPop *st_mab_population_checked(const char *name)
+{
+    if (NoChroms < 1 || NoHoms < 1 || !PopDescr)
+        error("MAB genome is unavailable");
+    TPopListEl *element = NULL;
+    find_list_element((char *)name, &element);
+    if (!element || !element->Pop || element->Pop->NoInds < 1 ||
+        element->Pop->NoInds > element->Pop->NoIndsAlloc ||
+        !element->Pop->Ind)
+        error("MAB population is unavailable or incomplete: %s", name);
+    TPop *population = element->Pop;
+    for (POPULATION i = 0; i < population->NoInds; i++)
+    {
+        TInd *individual = get_individual(population, i);
+        if (!individual || !individual->Chrom)
+            error("MAB population has an incomplete individual: %s", name);
+        for (int c = 0; c < NoChroms; c++)
+        {
+            if (!individual->Chrom[c].Hom)
+                error("MAB population has an incomplete chromosome: %s", name);
+            for (int h = 0; h < NoHoms; h++)
+            {
+                THom *homologue = &individual->Chrom[c].Hom[h];
+                if (homologue->NoLociUsed < 1 ||
+                    homologue->NoLociUsed > homologue->NoLociAlloc ||
+                    !homologue->Loc)
+                    error("MAB population has an incomplete homologue: %s", name);
+            }
+        }
+    }
+    return population;
+}
+
+static TPop *st_mab_evaluate_checked(const char *population,
+                                    const char *effect_name)
+{
+    TPop *source = st_mab_population_checked(population);
+    if (cMP < 1 || NrEffects < 1 ||
+        (effect_name && !find_Effect((char *)effect_name)))
+        error("MAB linkage map or effect is unavailable");
+    char *name = st_legacy_text(population);
+    genotype_population(&name);
+    if (!st_population_all_genotyped(source))
+        error("Cannot genotype MAB population: %s", population);
+    name = st_legacy_text(population);
+    char *effect = (char *)effect_name;
+    evaluate_population(&name, effect_name ? &effect : NULL);
+    if (!st_population_selection_ready(source, 0, 0))
+        error("Cannot evaluate MAB population: %s", population);
+    return source;
+}
+
+static void st_mab_discard_private(const char *name)
+{
+    TPopListEl *element = NULL;
+    find_list_element((char *)name, &element);
+    if (element)
+    {
+        if (PopListEl == element)
+            PopListEl = NULL;
+        st_remove_population_entry(element);
+    }
 }
 
 static void st_mab_init_homo(char *name, int allele)
 {
+    if (NoChroms < 1 || NoHoms < 1 ||
+        (size_t)NoChroms > SIZE_MAX / (size_t)NoHoms)
+        error("Invalid MAB genome dimensions");
     size_t n = (size_t)NoChroms * NoHoms;
     void *mark = st_work_mark();
     int *ind = st_work_alloc(n, sizeof(int)),
@@ -16788,7 +18065,8 @@ static void st_mab_init_homo(char *name, int allele)
     int *hom = st_work_alloc(n, sizeof(int)),
         *all = st_work_alloc(n, sizeof(int));
     double *pos = st_work_alloc(n, sizeof(double));
-    for (int c = 0, at = 0; c < NoChroms; c++)
+    size_t at = 0;
+    for (int c = 0; c < NoChroms; c++)
         for (int h = 0; h < NoHoms; h++, at++)
         {
             ind[at] = 1;
@@ -16798,8 +18076,11 @@ static void st_mab_init_homo(char *name, int allele)
             all[at] = allele;
         }
     char text[32], *number = text;
-    snprintf(text, sizeof(text), "%zu", n);
+    st_text_write(text, sizeof(text), "%zu", n);
+    st_mab_discard_private(name);
     init_population(&name, &number, ind, chrom, hom, pos, all);
+    if (st_mab_population_checked(name)->NoInds != 1)
+        error("Cannot initialize MAB parent: %s", name);
     st_work_reset(mark);
 }
 
@@ -16814,9 +18095,24 @@ static POPULATION st_mab_population_size(const char *name)
 
 static void st_mab_sample(char *target, char *source, int n, int replace)
 {
+    TPop *population = st_mab_population_checked(source);
+    if (!strcmp(target, source) || n < 1 ||
+        (replace != 0 && replace != 1) ||
+        (!replace && (POPULATION)n > population->NoInds))
+        error("Invalid MAB sample size or destination");
+    int genotyped = st_population_all_genotyped(population);
+    int evaluated = st_population_all_gvalue(population);
+    int phenotyped = st_population_all_pvalue(population);
     char text[32], *number = text;
-    snprintf(text, sizeof(text), "%d", n);
+    st_text_write(text, sizeof(text), "%d", n);
+    st_mab_discard_private(target);
     sample_population(&target, &source, &number, &replace);
+    TPop *sample = st_mab_population_checked(target);
+    if (sample->NoInds != n ||
+        (genotyped && !st_population_all_genotyped(sample)) ||
+        (evaluated && !st_population_all_gvalue(sample)) ||
+        (phenotyped && !st_population_all_pvalue(sample)))
+        error("Cannot construct MAB sample: %s", target);
 }
 
 static void st_mab_select_parameters(char *target, char *source,
@@ -16824,17 +18120,13 @@ static void st_mab_select_parameters(char *target, char *source,
                                      int all_best, int segments, int allele,
                                      int decreasing)
 {
-    if (st_mab_population_size(source) == 0)
-    {
-        info(-2, "Population %s is of size 0\n", source);
-        return;
-    }
-    if (segments && (POPULATION)n > st_mab_population_size(source))
-    {
-        info(-2, "Population %s has too few individuals for selection\n",
-             source);
-        return;
-    }
+    TPop *population = st_mab_population_checked(source);
+    int mixed_caches = st_population_normalize_caches(population);
+    POPULATION available = population->NoInds;
+    if (!strcmp(target, source) || n < 1)
+        error("Invalid MAB selection size or destination");
+    if (segments && ((POPULATION)n > available || available > INT_MAX))
+        error("MAB segment-selection size is out of range: %s", source);
     char *effect = (char *)effect_name, *criterion = "G", *none = "";
     char *name = st_legacy_text(source);
     if (segments)
@@ -16853,20 +18145,22 @@ static void st_mab_select_parameters(char *target, char *source,
         evaluate_genome(&name, &allele, ratio, length, total, blocks);
         for (size_t i = 0; i < count; i++)
             value[i] = blocks[i];
-        genotype_population(&name);
-        name = st_legacy_text(source);
-        evaluate_population(&name, NULL);
+        if (NrEffects > 0)
+            st_mab_evaluate_checked(source, NULL);
+        else if (cMP > 0)
+        {
+            name = st_legacy_text(source);
+            genotype_population(&name);
+            if (!st_population_all_genotyped(population))
+                error("Cannot genotype MAB segment-selection population");
+        }
         name = st_legacy_text(source);
         set_population_gvalue(&name, value, &nvalue, &status);
         if (status)
             error("Cannot set MAB segment-selection values");
     }
     else
-    {
-        genotype_population(&name);
-        name = st_legacy_text(source);
-        evaluate_population(&name, &effect);
-    }
+        st_mab_evaluate_checked(source, effect);
     int status = -2;
     name = st_legacy_text(source);
     sort_population(&name, &decreasing, &criterion, &none, &status);
@@ -16885,8 +18179,28 @@ static void st_mab_select_parameters(char *target, char *source,
             error("MAB best-class selection failed");
     }
     else
-        snprintf(text, sizeof(text), "%d", n);
+        st_text_write(text, sizeof(text), "%d", n);
+    char *end;
+    errno = 0;
+    long requested = strtol(number, &end, 10);
+    if (errno || !*number || *end || requested < 1)
+        error("Invalid MAB selected-class size");
+    POPULATION expected = requested > available ? available : requested;
     divide_population(&target, &source, &number);
+    TPop *selected = st_mab_population_checked(target);
+    if (selected->NoInds != expected ||
+        st_mab_population_size(source) != available - expected ||
+        (cMP > 0 && !st_population_all_genotyped(selected)) ||
+        !st_population_selection_ready(selected, 0, 0))
+        error("Cannot construct MAB selection: %s", target);
+    if (mixed_caches)
+    {
+        st_clear_population_genotype(selected);
+        st_clear_population_gvalue(selected);
+        st_clear_population_genotype(population);
+        st_clear_population_gvalue(population);
+    }
+
 }
 
 static void st_mab_select(char *target, char *source, const char *effect_name,
@@ -16898,12 +18212,27 @@ static void st_mab_select(char *target, char *source, const char *effect_name,
 
 static void st_mab_fill(char *target, char *source, int required)
 {
-    int selected = (int)st_mab_population_size(target);
+    if (!strcmp(target, source) || required < 0)
+        error("Invalid MAB preselection size or destination");
+    POPULATION selected = st_mab_population_checked(target)->NoInds;
     if (selected < required)
     {
+        POPULATION available = st_mab_population_size(source);
+        if (available < 0)
+            error("Invalid MAB preselection source size");
+        if (!available)
+            return;
+        POPULATION needed = required - selected;
+        POPULATION added = needed > available ? available : needed;
         char *temporary = "tmp-fillup";
-        st_mab_select(temporary, source, "fm", required - selected, 0, 0);
+        st_mab_select(temporary, source, "fm", (int)needed, 0, 0);
         concat_population(&target, &temporary);
+        if (st_mab_population_checked(target)->NoInds != selected + added)
+            error("Cannot extend MAB preselection: %s", target);
+        TPopListEl *remaining = NULL;
+        find_list_element(temporary, &remaining);
+        if (remaining)
+            error("MAB preselection concatenation did not complete");
     }
 }
 
@@ -16912,27 +18241,40 @@ static void st_mab_statistics(const char *population, const char *kind,
                               double end, double position,
                               const char *effect_name, double summary[7])
 {
-    size_t n = st_mab_population_size(population);
+    if (NoChroms < 1 || NoHoms < 1 || !PopDescr || chromosome < -1 ||
+        chromosome >= NoChroms)
+        error("Invalid MAB summary genome or chromosome");
+    size_t n = (size_t)st_mab_population_checked(population)->NoInds;
     void *mark = st_work_mark();
     char *name = st_legacy_text(population);
     double *value = st_work_alloc(n ? n : 1, sizeof(double));
     memset(value, 0, n * sizeof(double));
     if (!strcmp(kind, "gvalue"))
     {
-        genotype_population(&name);
+        st_mab_evaluate_checked(population, NULL);
         name = st_legacy_text(population);
-        evaluate_population(&name, NULL);
         char *effect = (char *)effect_name, *criterion = "G";
         int status = -2;
         get_population_value(&name, value, &effect, &criterion, &status);
+        if (status)
+            error("Cannot extract MAB population values: %s", population);
     }
     else if (!strcmp(kind, "drag"))
     {
+        if (chromosome < 0 || !R_FINITE(position) || position < 0 ||
+            position >= PopDescr[chromosome].ChromLen)
+            error("Invalid MAB linkage-drag position");
         int chrom = chromosome + 1;
         evaluate_ld(&name, &allele, &chrom, &position, value);
     }
     else
     {
+        if (strcmp(kind, "ratio") && strcmp(kind, "segments"))
+            error("Unknown MAB summary statistic");
+        if (chromosome >= 0 &&
+            (!R_FINITE(begin) || !R_FINITE(end) || begin < 0 ||
+             end <= begin || end > PopDescr[chromosome].ChromLen))
+            error("Invalid MAB summary region");
         double *length = st_work_alloc(n ? n : 1, sizeof(double));
         double *total = st_work_alloc(n ? n : 1, sizeof(double));
         int *blocks = st_work_alloc(n ? n : 1, sizeof(int));
@@ -16948,6 +18290,9 @@ static void st_mab_statistics(const char *population, const char *kind,
             for (size_t i = 0; i < n; i++)
                 value[i] = blocks[i];
     }
+    for (size_t i = 0; i < n; i++)
+        if (!R_FINITE(value[i]))
+            error("MAB population summary contains a nonfinite value");
     st_legacy_summary_values(value, n, summary);
     st_work_reset(mark);
 }
@@ -16957,6 +18302,9 @@ static SEXP st_mab_summary(st_mab_generation *generations, int n,
                            double begin, double end, double position,
                            const char *effect, int generation_labels)
 {
+    if (n < 0 || n == INT_MAX ||
+        (size_t)(n + 1) > SIZE_MAX / (7 * sizeof(double)))
+        error("MAB summary dimensions are out of range");
     SEXP out = PROTECT(allocMatrix(REALSXP, n + 1, 7));
     SEXP rows = PROTECT(allocVector(STRSXP, n + 1));
     SEXP cols = PROTECT(allocVector(STRSXP, 7));
@@ -16975,7 +18323,7 @@ static SEXP st_mab_summary(st_mab_generation *generations, int n,
         if (generation_labels && i)
         {
             char label[128];
-            snprintf(label, sizeof(label), "G%d-%s", i - 1,
+            st_text_write(label, sizeof(label), "G%d-%s", i - 1,
                      generations[i - 1].generation);
             SET_STRING_ELT(rows, i, mkChar(label));
         }
@@ -17004,7 +18352,7 @@ static SEXP st_mab_marker_means(const double *totals,
         REAL(out)[i + 1] = totals[i] / repetitions;
         total += REAL(out)[i + 1];
         char name[128];
-        snprintf(name, sizeof(name), "G%d-%s", i, generation[i].generation);
+        st_text_write(name, sizeof(name), "G%d-%s", i, generation[i].generation);
         SET_STRING_ELT(rows, i + 1, mkChar(name));
     }
     REAL(out)[0] = (double)total;
@@ -17022,6 +18370,113 @@ static void st_mab_output_add(SEXP output, SEXP names, int *index,
     SET_STRING_ELT(names, (*index)++, mkChar(key));
 }
 
+typedef struct
+{
+    TPopListEl *populations;
+    TPopListEl *cursor;
+    TChromDescr *chromosomes;
+    TEffects *effects;
+    int chromosome_count;
+    int homologues;
+    int map_count;
+    int map_homologues;
+    int effect_count;
+    unsigned long marker_data_points;
+    uint64_t identity_serial;
+    st_sim_ancestry **cross_left;
+    st_sim_ancestry **cross_right;
+    uint64_t cross_first;
+    size_t cross_count;
+    int sort_criterion;
+    int sort_effect;
+    int sort_decreasing;
+    int active;
+} st_mab_state;
+
+static void st_mab_state_free(void *pointer)
+{
+    st_mab_state *state = pointer;
+    if (state->active)
+    {
+        while (PopListStart)
+            st_remove_population_entry(PopListStart);
+        for (int i = 0; i < NrEffects; i++)
+            st_sim_ef_free(&Effects[i]);
+        free(Effects);
+        for (int i = 0; i < NoChroms; i++)
+            free_mappoints(PopDescr[i].Mappoint, PopDescr[i].NrMappoints);
+        free(PopDescr);
+        PopListStart = state->populations;
+        PopListEl = state->cursor;
+        PopDescr = state->chromosomes;
+        Effects = state->effects;
+        NoChroms = state->chromosome_count;
+        NoHoms = state->homologues;
+        cMP = state->map_count;
+        cMPhom = state->map_homologues;
+        NrEffects = state->effect_count;
+        MDP = state->marker_data_points;
+        st_identity_serial = state->identity_serial;
+        st_cross_left = state->cross_left;
+        st_cross_right = state->cross_right;
+        st_cross_first = state->cross_first;
+        st_cross_count = state->cross_count;
+        st_sort_criterion = state->sort_criterion;
+        st_sort_eff = state->sort_effect;
+        st_sort_decreasing = state->sort_decreasing;
+    }
+    free(state);
+}
+
+static st_mab_state *st_mab_state_new(void)
+{
+    st_mab_state *state = calloc(1, sizeof(*state));
+    if (!state)
+        error("Cannot allocate MAB simulation state");
+    st_work_adopt(state, st_mab_state_free);
+    state->populations = PopListStart;
+    state->cursor = PopListEl;
+    state->chromosomes = PopDescr;
+    state->effects = Effects;
+    state->chromosome_count = NoChroms;
+    state->homologues = NoHoms;
+    state->map_count = cMP;
+    state->map_homologues = cMPhom;
+    state->effect_count = NrEffects;
+    state->marker_data_points = MDP;
+    state->identity_serial = st_identity_serial;
+    state->cross_left = st_cross_left;
+    state->cross_right = st_cross_right;
+    state->cross_first = st_cross_first;
+    state->cross_count = st_cross_count;
+    state->sort_criterion = st_sort_criterion;
+    state->sort_effect = st_sort_eff;
+    state->sort_decreasing = st_sort_decreasing;
+    state->active = 1;
+    PopListStart = NULL;
+    PopListEl = NULL;
+    PopDescr = NULL;
+    Effects = NULL;
+    NoChroms = 0;
+    NoHoms = 0;
+    cMP = 0;
+    cMPhom = 0;
+    NrEffects = 0;
+    MDP = 0;
+    st_identity_serial = 0;
+    st_cross_left = NULL;
+    st_cross_right = NULL;
+    st_cross_first = 0;
+    st_cross_count = 0;
+    return state;
+}
+
+static void st_mab_state_close(st_mab_state *state)
+{
+    st_work_detach(state);
+    st_mab_state_free(state);
+}
+
 static SEXP st_legacy_mab(SEXP args)
 {
     SEXP generation_arg = st_legacy_argument(args, "gen.type");
@@ -17032,15 +18487,20 @@ static SEXP st_legacy_mab(SEXP args)
     SEXP region_chr = st_legacy_argument(args, "reg.chr");
     SEXP region_begin = st_legacy_argument(args, "reg.begin");
     SEXP region_end = st_legacy_argument(args, "reg.end");
-    int ng = LENGTH(generation_arg), nr = LENGTH(region_chr);
-    if (LENGTH(sizes_arg) != ng || LENGTH(strategies_arg) != ng ||
+    int ng = isNull(generation_arg) ? 0 : LENGTH(generation_arg);
+    int nr = isNull(region_chr) ? 0 : LENGTH(region_chr);
+    if (ng == INT_MAX)
+        error("Too many MAB simulation generations");
+    if ((isNull(sizes_arg) ? 0 : LENGTH(sizes_arg)) != ng ||
+        (isNull(strategies_arg) ? 0 : LENGTH(strategies_arg)) != ng ||
         (!isNull(selected_arg) && LENGTH(selected_arg) != ng) ||
         (!isNull(preselected_arg) && LENGTH(preselected_arg) != ng))
     {
         info(-2, "Definition of generations incorrect\n");
         return R_NilValue;
     }
-    if (LENGTH(region_begin) != nr || LENGTH(region_end) != nr)
+    if ((isNull(region_begin) ? 0 : LENGTH(region_begin)) != nr ||
+        (isNull(region_end) ? 0 : LENGTH(region_end)) != nr)
     {
         info(-2, "Definition of target regions incorrect\n");
         return R_NilValue;
@@ -17065,6 +18525,12 @@ static SEXP st_legacy_mab(SEXP args)
                 "Generation types and selection strategies must be character strings");
         g->generation = CHAR(STRING_ELT(generation_arg, i));
         g->strategy = CHAR(STRING_ELT(strategies_arg, i));
+        if (strcmp(g->generation, "f1") && strcmp(g->generation, "bc") &&
+            strcmp(g->generation, "s") && strcmp(g->generation, "dh"))
+        {
+            info(-2, "MAB generation type is not supported\n");
+            return R_NilValue;
+        }
         if (!strcmp(g->strategy, "0"))
             g->strategy = "n";
         else if (!strcmp(g->strategy, "1"))
@@ -17087,12 +18553,12 @@ static SEXP st_legacy_mab(SEXP args)
         g->size = (int)size;
         g->selected_n = (int)take;
         g->preselected_n = (int)pre;
-        snprintf(g->population, sizeof(g->population), "GEN%d", i + 1);
-        snprintf(g->first, sizeof(g->first), "GEN%ds1", i + 1);
-        snprintf(g->second, sizeof(g->second), "GEN%ds2", i + 1);
-        snprintf(g->third, sizeof(g->third), "GEN%ds3", i + 1);
-        snprintf(g->selected, sizeof(g->selected), "GEN%dse", i + 1);
-        snprintf(g->total, sizeof(g->total), "GEN%dst", i + 1);
+        st_text_write(g->population, sizeof(g->population), "GEN%d", i + 1);
+        st_text_write(g->first, sizeof(g->first), "GEN%ds1", i + 1);
+        st_text_write(g->second, sizeof(g->second), "GEN%ds2", i + 1);
+        st_text_write(g->third, sizeof(g->third), "GEN%ds3", i + 1);
+        st_text_write(g->selected, sizeof(g->selected), "GEN%dse", i + 1);
+        st_text_write(g->total, sizeof(g->total), "GEN%dst", i + 1);
     }
     const char *donor_name =
         CHAR(asChar(st_legacy_argument(args, "donor.parent")));
@@ -17175,16 +18641,31 @@ static SEXP st_legacy_mab(SEXP args)
     const char *classes[] = {"t", "fm", "r"};
     for (int group = 0; group < 3; group++)
     {
-        int found = 0;
+        SEXP requested = locus_lists[group];
+        if (isNull(requested))
+            continue;
+        if (TYPEOF(requested) != STRSXP)
+            error("Locus lists must contain character names");
+        for (R_xlen_t j = 0; j < XLENGTH(requested); j++)
+        {
+            int found = 0;
+            if (STRING_ELT(requested, j) != NA_STRING)
+                for (int i = 0; i < nmap; i++)
+                    if (!strcmp(CHAR(STRING_ELT(requested, j)), points[i].name))
+                    {
+                        found = 1;
+                        break;
+                    }
+            if (!found)
+            {
+                info(-2,
+                     "Map position or marker data for requested locus missing\n");
+                return R_NilValue;
+            }
+        }
         for (int i = 0; i < nmap; i++)
             if (st_mab_contains(locus_lists[group], points[i].name))
-                strcpy(points[i].class, classes[group]), found = 1;
-        if (LENGTH(locus_lists[group]) && !found)
-        {
-            info(-2,
-                 "Map position or marker data for requested locus missing\n");
-            return R_NilValue;
-        }
+                strcpy(points[i].class, classes[group]);
     }
     double *lengths = st_work_alloc(nchrom, sizeof(double));
     int *chrom_present = st_work_alloc(nchrom, sizeof(int));
@@ -17203,9 +18684,32 @@ static SEXP st_legacy_mab(SEXP args)
                 "MAB map chromosomes must be numbered consecutively from one");
         lengths[c] += 0.001;
     }
+    double *begins = st_work_alloc(nr ? nr : 1, sizeof(double));
+    double *ends = st_work_alloc(nr ? nr : 1, sizeof(double));
+    int *chromosomes = st_work_alloc(nr ? nr : 1, sizeof(int));
+    for (int i = 0; i < nr; i++)
+    {
+        double chromosome = st_legacy_number(region_chr, i);
+        double begin = st_legacy_number(region_begin, i);
+        double end = st_legacy_number(region_end, i);
+        if (!R_FINITE(chromosome) || chromosome < 1 ||
+            chromosome > nchrom || chromosome != floor(chromosome))
+            error("MAB region chromosome is out of range");
+        if (!R_FINITE(begin) || !R_FINITE(end) || begin < 0 || end < 0)
+            error("MAB region boundaries must be finite and nonnegative");
+        chromosomes[i] = (int)chromosome - 1;
+        begins[i] = begin / 100;
+        ends[i] = end == 0 ? lengths[chromosomes[i]] : end / 100;
+        if (begins[i] >= ends[i] || ends[i] > lengths[chromosomes[i]])
+            error("MAB region boundaries are outside the chromosome or unordered");
+    }
+    st_mab_state *state = st_mab_state_new();
     int homs = 2;
     if (!set_genome_par_impl(&nchrom, &homs, lengths))
+    {
+        st_mab_state_close(state);
         return R_NilValue;
+    }
     int modified = 0;
     if (!prepare_mappoints(points, nmap, 1, 100, &modified) ||
         !install_mappoints(points, nmap))
@@ -17219,8 +18723,8 @@ static SEXP st_legacy_mab(SEXP args)
     st_mab_init_homo(p2, 8);
     if (actual_parents)
     {
-        char *both = "P1 P2";
-        remove_population(&both);
+        st_mab_discard_private(p1);
+        st_mab_discard_private(p2);
         size_t count = (size_t)nmap * 2;
         int *ind = st_work_alloc(count, sizeof(int));
         int *chrom = st_work_alloc(count, sizeof(int));
@@ -17249,6 +18753,7 @@ static SEXP st_legacy_mab(SEXP args)
                     {
                         info(-2, "Monomorphic target locus '%s'\n",
                              point->name);
+                        st_mab_state_close(state);
                         return R_NilValue;
                     }
                     if (shared == 0 && strcmp(a->first, a->second))
@@ -17275,9 +18780,12 @@ static SEXP st_legacy_mab(SEXP args)
                 }
             }
         char text[32], *number = text;
-        snprintf(text, sizeof(text), "%zu", count);
+        st_text_write(text, sizeof(text), "%zu", count);
         init_population(&p1, &number, ind, chrom, hom, position, donor);
         init_population(&p2, &number, ind, chrom, hom, position, recipient);
+        if (st_mab_population_checked(p1)->NoInds != 1 ||
+            st_mab_population_checked(p2)->NoInds != 1)
+            error("Cannot initialize MAB observed parents");
         SEXP recode_path = st_legacy_argument(args, "recode.path");
         if (!isNull(recode_path))
         {
@@ -17321,12 +18829,17 @@ static SEXP st_legacy_mab(SEXP args)
             char *first_parent =
                 !i || !strcmp(g->generation, "f1") ? p1 : previous;
             char *second_parent =
-                !strcmp(g->generation, "s") && i ? previous : p2;
+                !strcmp(g->generation, "s") ||
+                !strcmp(g->generation, "dh") ? previous : p2;
             char count[32], *number = count;
             double significant = -1;
-            if (!strcmp(g->generation, "dh") && i)
+            TPopListEl *old_population = NULL;
+            find_list_element(population, &old_population);
+            if (old_population)
+                st_remove_population_entry(old_population);
+            if (!strcmp(g->generation, "dh"))
             {
-                snprintf(count, sizeof(count), "%d", generations[i - 1].size);
+                st_text_write(count, sizeof(count), "%d", g->size);
                 dh(&population, &previous, &number, &significant);
             }
             else
@@ -17334,12 +18847,14 @@ static SEXP st_legacy_mab(SEXP args)
                 if (i && strcmp(g->generation, "f1") &&
                     strcmp(g->generation, "bc") && strcmp(g->generation, "s"))
                     error("Unsupported MAB generation type: %s", g->generation);
-                snprintf(count, sizeof(count), "%d", g->size);
-                double self = i && !strcmp(g->generation, "s") ? 1 : 0;
+                st_text_write(count, sizeof(count), "%d", g->size);
+                double self = !strcmp(g->generation, "s") ? 1 : 0;
                 int mode = 1, scheme = 0;
                 cross(&population, &first_parent, &second_parent, &self,
                       &number, &significant, &mode, &scheme);
             }
+            if (st_mab_population_checked(population)->NoInds != g->size)
+                error("MAB generation did not produce its requested population size");
             const char *strategy = g->strategy;
             if (!strcmp(strategy, "n"))
                 st_mab_sample(g->selected, population, g->selected_n, 0);
@@ -17361,9 +18876,15 @@ static SEXP st_legacy_mab(SEXP args)
                 {
                     reset_mdp();
                     char *candidate = g->first, *flanking = "fm";
-                    genotype_population(&previous);
-                    genotype_population(&p2);
-                    evaluate_mdp(&candidate, &previous, &p2, &flanking);
+                    genotype_population(&first_parent);
+                    genotype_population(&second_parent);
+                    if (!st_population_all_genotyped(
+                            st_mab_population_checked(first_parent)) ||
+                        !st_population_all_genotyped(
+                            st_mab_population_checked(second_parent)) ||
+                        !st_evaluate_mdp(&candidate, &first_parent,
+                                         &second_parent, &flanking))
+                        error("Cannot compute MAB marker data requirements");
                     sm[i] += MDP;
                     reset_mdp();
                     if (!strcmp(strategy, "tf"))
@@ -17411,11 +18932,24 @@ static SEXP st_legacy_mab(SEXP args)
                 PutRNGstate();
                 int survivors = draw < 1 ? 1 : (int)draw;
                 char *temporary = "temp", *chosen = g->selected;
+                POPULATION original = st_mab_population_size(chosen);
                 st_mab_sample(temporary, chosen, survivors, 0);
                 swap_population_name(&temporary, &chosen);
+                if (st_mab_population_size(chosen) != survivors ||
+                    st_mab_population_size(temporary) != original)
+                    error("MAB survival sampling did not replace the selected population");
             }
             char *total = g->total, *chosen = g->selected;
-            append_population(&total, &chosen);
+            TPopListEl *old_total = NULL;
+            find_list_element(total, &old_total);
+            POPULATION accumulated = old_total ? old_total->Pop->NoInds : 0;
+            POPULATION selected = st_mab_population_size(chosen);
+            if (selected > LONG_MAX - accumulated)
+                error("MAB accumulated population size is too large");
+            if (!st_append_population(&total, &chosen, 1))
+                error("MAB selected population could not be accumulated");
+            if (st_mab_population_size(total) != accumulated + selected)
+                error("MAB selected population was not accumulated");
             st_work_reset(mark);
         }
         R_CheckUserInterrupt();
@@ -17431,9 +18965,17 @@ static SEXP st_legacy_mab(SEXP args)
     for (int i = 0; i < 18; i++)
         if (i == 12 || !isNull(st_legacy_argument(args, metadata[i])))
             metadata_count++;
-    int nt = LENGTH(target_loci), target_summary = !isNull(target_loci);
-    int outputs =
-        metadata_count + target_summary + 2 + 2 * nr + nt + (ng ? 2 : 0);
+    int nt = isNull(target_loci) ? 0 : LENGTH(target_loci);
+    int target_summary = !isNull(target_loci);
+    size_t output_count = (size_t)metadata_count + target_summary + 2 +
+                          (ng ? 2 : 0);
+    if ((size_t)nr > ((size_t)INT_MAX - output_count) / 2)
+        error("Too many MAB simulation result regions");
+    output_count += (size_t)nr * 2;
+    if ((size_t)nt > (size_t)INT_MAX - output_count)
+        error("Too many MAB simulation result loci");
+    output_count += (size_t)nt;
+    int outputs = (int)output_count;
     SEXP out = PROTECT(allocVector(VECSXP, outputs));
     SEXP names = PROTECT(allocVector(STRSXP, outputs));
     int index = 0;
@@ -17466,25 +19008,10 @@ static SEXP st_legacy_mab(SEXP args)
     st_mab_output_add(
         out, names, &index, "RPG.gw",
         st_mab_summary(generations, ng, "ratio", 8, -1, 0, 0, 0, "", 1));
-    double *begins = st_work_alloc(nr ? nr : 1, sizeof(double));
-    double *ends = st_work_alloc(nr ? nr : 1, sizeof(double));
-    int *chromosomes = st_work_alloc(nr ? nr : 1, sizeof(int));
     for (int i = 0; i < nr; i++)
     {
-        chromosomes[i] = (int)st_legacy_number(region_chr, i) - 1;
-        if (chromosomes[i] < 0 || chromosomes[i] >= NoChroms)
-            error("MAB region chromosome is out of range");
-        begins[i] = st_legacy_number(region_begin, i);
-        ends[i] = st_legacy_number(region_end, i);
-        if (ends[i] == 0)
-            ends[i] = PopDescr[chromosomes[i]].ChromLen;
-    }
-    for (int i = 0; i < nr; i++)
-    {
-        for (int j = 0; j < nr; j++)
-            begins[j] *= 100;
         char key[64];
-        snprintf(key, sizeof(key), "RPG.reg%d", i + 1);
+        st_text_write(key, sizeof(key), "RPG.reg%d", i + 1);
         st_mab_output_add(out, names, &index, key,
                           st_mab_summary(generations, ng, "ratio", 8,
                                          chromosomes[i], begins[i], ends[i], 0,
@@ -17495,10 +19022,8 @@ static SEXP st_legacy_mab(SEXP args)
         st_mab_summary(generations, ng, "segments", 1, -1, 0, 0, 0, "", 1));
     for (int i = 0; i < nr; i++)
     {
-        for (int j = 0; j < nr; j++)
-            begins[j] *= 100;
         char key[64];
-        snprintf(key, sizeof(key), "DonorSegments.reg%d", i + 1);
+        st_text_write(key, sizeof(key), "DonorSegments.reg%d", i + 1);
         st_mab_output_add(out, names, &index, key,
                           st_mab_summary(generations, ng, "segments", 1,
                                          chromosomes[i], begins[i], ends[i], 0,
@@ -17511,7 +19036,7 @@ static SEXP st_legacy_mab(SEXP args)
         if (!point)
             error("MAB target locus not found");
         char key[64];
-        snprintf(key, sizeof(key), "LinkageDrag%d", i + 1);
+        st_text_write(key, sizeof(key), "LinkageDrag%d", i + 1);
         st_mab_output_add(out, names, &index, key,
                           st_mab_summary(generations, ng, "drag", 1,
                                          point->chrom - 1, 0, 0, point->Pos, "",
@@ -17529,6 +19054,7 @@ static SEXP st_legacy_mab(SEXP args)
     if (index != outputs)
         error("MAB result assembly mismatch");
     setAttrib(out, R_NamesSymbol, names);
+    st_mab_state_close(state);
     UNPROTECT(2);
     return out;
 }
@@ -17551,17 +19077,20 @@ static SEXP st_legacy_genome_evaluate(SEXP args)
         SEXP col = PROTECT(allocVector(j == 3 ? INTSXP : REALSXP, n));
         np++;
         SET_VECTOR_ELT(out, j, col);
-        if (j == 3)
-            memset(INTEGER(col), 0, n * sizeof(int));
-        else
-            memset(REAL(col), 0, n * sizeof(double));
+        if (n)
+        {
+            if (j == 3)
+                memset(INTEGER(col), 0, n * sizeof(int));
+            else
+                memset(REAL(col), 0, n * sizeof(double));
+        }
     }
-    double *ratio = REAL(VECTOR_ELT(out, 0));
-    double *length = verbose ? REAL(VECTOR_ELT(out, 1))
+    double *ratio = n ? REAL(VECTOR_ELT(out, 0)) : NULL;
+    double *length = verbose ? (n ? REAL(VECTOR_ELT(out, 1)) : NULL)
                              : st_work_alloc(n ? n : 1, sizeof(double));
-    double *total = verbose ? REAL(VECTOR_ELT(out, 2))
+    double *total = verbose ? (n ? REAL(VECTOR_ELT(out, 2)) : NULL)
                             : st_work_alloc(n ? n : 1, sizeof(double));
-    int *blocks = verbose ? INTEGER(VECTOR_ELT(out, 3))
+    int *blocks = verbose ? (n ? INTEGER(VECTOR_ELT(out, 3)) : NULL)
                           : st_work_alloc(n ? n : 1, sizeof(int));
     if (!verbose)
     {
@@ -17614,7 +19143,9 @@ static SEXP st_legacy_select_segments(SEXP args)
                              decreasing);
     SEXP out = PROTECT(allocVector(VECSXP, 3));
     char number[64];
-    snprintf(number, sizeof(number), "%.0f", count);
+    int written = snprintf(number, sizeof(number), "%d", (int)count);
+    if (written < 0 || (size_t)written >= sizeof(number))
+        error("Cannot format selected population size");
     SET_VECTOR_ELT(out, 0, mkString(target));
     SET_VECTOR_ELT(out, 1, mkString(source));
     SET_VECTOR_ELT(out, 2, mkString(number));
@@ -17747,24 +19278,24 @@ static SEXP st_cross_plan_execution_body(void *payload)
             INTEGER(VECTOR_ELT(design, 0))[row] = context->family[i];
             SET_STRING_ELT(VECTOR_ELT(design, 1), row, mkChar(offspring->Name));
             SET_STRING_ELT(VECTOR_ELT(design, 2), row,
-                mkCharCE(individual->name, CE_UTF8));
-            SET_STRING_ELT(VECTOR_ELT(design, 3), row, mkCharCE(left->name,
-                CE_UTF8));
-            SET_STRING_ELT(VECTOR_ELT(design, 4), row, mkCharCE(right->name,
-                CE_UTF8));
+                st_sim_ancestry_char(individual->identity, 0));
+            SET_STRING_ELT(VECTOR_ELT(design, 3), row,
+                           st_sim_ancestry_char(left->identity, 0));
+            SET_STRING_ELT(VECTOR_ELT(design, 4), row,
+                           st_sim_ancestry_char(right->identity, 0));
             SET_STRING_ELT(VECTOR_ELT(design, 5), row,
-                           context->dh ? mkCharCE(context->f1.name, CE_UTF8)
+                           context->dh ? st_sim_ancestry_char(context->f1.identity, 0)
                                : NA_STRING);
             SET_STRING_ELT(VECTOR_ELT(design, 6), row,
-                mkCharCE(individual->pedigree, CE_UTF8));
+                st_sim_ancestry_char(individual->identity, 1));
             SET_STRING_ELT(VECTOR_ELT(design, 7), row, scheme);
         }
         INTEGER(VECTOR_ELT(summary, 0))[i] = context->family[i];
         SET_STRING_ELT(VECTOR_ELT(summary, 1), i, mkChar(offspring->Name));
-        SET_STRING_ELT(VECTOR_ELT(summary, 2), i, mkCharCE(left->name,
-            CE_UTF8));
-        SET_STRING_ELT(VECTOR_ELT(summary, 3), i, mkCharCE(right->name,
-            CE_UTF8));
+        SET_STRING_ELT(VECTOR_ELT(summary, 2), i,
+                       st_sim_ancestry_char(left->identity, 0));
+        SET_STRING_ELT(VECTOR_ELT(summary, 3), i,
+                       st_sim_ancestry_char(right->identity, 0));
         INTEGER(VECTOR_ELT(summary, 4))[i] = context->progeny;
         SET_STRING_ELT(VECTOR_ELT(summary, 5), i, scheme);
         remove_individuum(&context->f1);
@@ -17787,7 +19318,7 @@ static void st_cross_plan_founder_check(TInd *individual)
 {
     if (!individual->Storage || individual->Storage->NoChroms !=
         (size_t)NoChroms ||
-        individual->Storage->NoHoms != 2 || !individual->name)
+        individual->Storage->NoHoms != 2 || !individual->identity)
         error("Selected founders must have the current diploid simulation"
             " genome");
     for (int chrom = 0; chrom < NoChroms; chrom++)
@@ -17862,7 +19393,9 @@ static SEXP st_legacy_cross_plan_execute(SEXP args)
     char suffix[32];
     int suffix_length = snprintf(suffix, sizeof(suffix), "%03d",
         context.families);
-    if (prefix_length + (size_t)suffix_length + 2 >= MAXNAME)
+    if (suffix_length < 0 || (size_t)suffix_length >= sizeof(suffix) ||
+        prefix_length >= MAXNAME - 2 ||
+        (size_t)suffix_length >= MAXNAME - prefix_length - 2)
         error("name is too long for the planned family populations");
     TPopListEl *entry = NULL;
     find_list_element((char *)population, &entry);
@@ -17937,14 +19470,18 @@ static SEXP st_legacy_cross_plan_execute(SEXP args)
         context.left[i] = context.right[i] = -1;
         for (POPULATION j = 0; j < context.founders->NoInds; j++)
         {
-            const char *id = context.founders->Ind[j].name;
-            if (id && !strcmp(id, a))
+            st_sim_ancestry *id = context.founders->Ind[j].identity;
+            int matches_left = st_sim_ancestry_matches(id, a),
+                matches_right = st_sim_ancestry_matches(id, b);
+            if (matches_left < 0 || matches_right < 0)
+                error("Cannot compare selected founder identities");
+            if (matches_left)
             {
                 if (context.left[i] >= 0) error("A selected founder ID is"
                     " ambiguous");
                 context.left[i] = j;
             }
-            if (id && !strcmp(id, b))
+            if (matches_right)
             {
                 if (context.right[i] >= 0) error("A selected founder ID is"
                     " ambiguous");
@@ -17966,7 +19503,7 @@ static SEXP st_legacy_cross_plan_execute(SEXP args)
                     " distinct");
         st_cross_plan_founder_check(&context.founders->Ind[context.left[i]]);
         st_cross_plan_founder_check(&context.founders->Ind[context.right[i]]);
-        snprintf(context.targets[i], MAXNAME, "%s%03d", prefix, i + 1);
+        st_text_write(context.targets[i], MAXNAME, "%s%03d", prefix, i + 1);
         if (ps_population_exists(context.targets[i]))
             error("Planned target population '%s' already exists",
                 context.targets[i]);
@@ -17984,6 +19521,67 @@ static SEXP st_legacy_cross_plan_execute(SEXP args)
 }
 
 
+typedef struct
+{
+    char (*names)[MAXNAME];
+    size_t count, capacity;
+} st_population_scope;
+
+static uint64_t st_population_scope_serial;
+
+static void st_population_scope_free(void *pointer)
+{
+    st_population_scope *scope = pointer;
+    for (size_t i = scope->count; i > 0; i--)
+    {
+        TPopListEl *entry = NULL;
+        find_list_element(scope->names[i - 1], &entry);
+        if (entry)
+            st_remove_population_entry(entry);
+    }
+    free(scope->names);
+    free(scope);
+}
+
+static st_population_scope *st_population_scope_new(size_t capacity)
+{
+    if (!capacity || capacity > SIZE_MAX / sizeof(char[MAXNAME]))
+        error("Temporary population count is too large");
+    st_population_scope *scope = calloc(1, sizeof(*scope));
+    if (!scope)
+        error("Cannot allocate temporary population owner");
+    st_work_adopt(scope, st_population_scope_free);
+    scope->capacity = capacity;
+    scope->names = calloc(capacity, sizeof(*scope->names));
+    if (!scope->names)
+        error("Cannot allocate temporary population names");
+    return scope;
+}
+
+static char *st_population_scope_name(st_population_scope *scope)
+{
+    if (scope->count == scope->capacity)
+        error("Temporary population owner capacity is exhausted");
+    char *name = scope->names[scope->count];
+    TPopListEl *entry;
+    do
+    {
+        if (st_population_scope_serial == UINT64_MAX)
+            error("Temporary population identities are exhausted");
+        st_text_write(name, MAXNAME, "stScope%llu",
+                      (unsigned long long)++st_population_scope_serial);
+        find_list_element(name, &entry);
+    } while (entry);
+    scope->count++;
+    return name;
+}
+
+static void st_population_scope_close(st_population_scope *scope)
+{
+    st_work_detach(scope);
+    st_population_scope_free(scope);
+}
+
 static SEXP st_legacy_single_cross(SEXP args)
 {
     char *target =
@@ -18000,24 +19598,26 @@ static SEXP st_legacy_single_cross(SEXP args)
     if (groups < 2)
         error("At least two classes are required for single.cross");
     remove_population(&target);
-    char *left = "single-cross-a", *right = "single-cross-b",
-         *temporary = "single-cross-tmp";
+    st_population_scope *scope = st_population_scope_new(3);
+    char *left = st_population_scope_name(scope),
+         *right = st_population_scope_name(scope),
+         *temporary = st_population_scope_name(scope);
     for (POPULATION i = 1; i < groups; i++)
     {
         char start_text[64], count_text[64], *start = start_text,
                                              *count = count_text;
-        snprintf(start_text, sizeof(start_text), "%llu",
+        st_text_write(start_text, sizeof(start_text), "%llu",
                  (unsigned long long)(i * class_size + 1));
-        snprintf(count_text, sizeof(count_text), "-1");
+        st_text_write(count_text, sizeof(count_text), "-1");
         copy_population(&right, &source, &start, &count);
         POPULATION right_size = st_mab_population_size(right);
         for (POPULATION j = 1; j <= class_size; j++)
         {
-            snprintf(start_text, sizeof(start_text), "%llu",
+            st_text_write(start_text, sizeof(start_text), "%llu",
                      (unsigned long long)((i - 1) * class_size + j));
-            snprintf(count_text, sizeof(count_text), "1");
+            st_text_write(count_text, sizeof(count_text), "1");
             copy_population(&left, &source, &start, &count);
-            snprintf(count_text, sizeof(count_text), "%llu",
+            st_text_write(count_text, sizeof(count_text), "%llu",
                      (unsigned long long)right_size);
             double self = 0, significant = -1;
             int mode = 1, scheme = 3;
@@ -18030,7 +19630,8 @@ static SEXP st_legacy_single_cross(SEXP args)
     }
     remove_population(&left);
     SEXP out = PROTECT(allocVector(VECSXP, 1));
-    SET_VECTOR_ELT(out, 0, mkString(left));
+    SET_VECTOR_ELT(out, 0, mkString("single-cross-a"));
+    st_population_scope_close(scope);
     UNPROTECT(1);
     return out;
 }
@@ -18055,12 +19656,14 @@ static SEXP st_legacy_mdp(SEXP args)
                 parent2 = st_legacy_text(p2);
                 genotype_population(&parent1);
                 genotype_population(&parent2);
-                evaluate_mdp(&progeny, &parent1, &parent2, &effect);
+                if (!st_evaluate_mdp(&progeny, &parent1, &parent2, &effect))
+                    error("Cannot compute marker data requirements");
             }
         return R_NilValue;
     }
     char *effect = st_legacy_text(CHAR(asChar(effect_arg)));
-    evaluate_mdp(&progeny, &parent1, &parent2, &effect);
+    if (!st_evaluate_mdp(&progeny, &parent1, &parent2, &effect))
+        error("Cannot compute marker data requirements");
     SEXP out = PROTECT(allocVector(VECSXP, 4));
     SET_VECTOR_ELT(out, 0, mkString(progeny));
     SET_VECTOR_ELT(out, 1, mkString(parent1));
@@ -18076,57 +19679,61 @@ typedef struct
     const char *label[2];
 } st_legacy_target;
 
-static st_legacy_target st_legacy_target_classify(SEXP criteria)
+static st_legacy_target st_legacy_target_rows(SEXP criteria,
+                                               const R_xlen_t *rows, int n)
 {
     st_legacy_target target = {0, 0, {NULL, NULL}};
-    if (TYPEOF(criteria) != VECSXP || LENGTH(criteria) < 3)
-        error(
-            "criteria must be a data frame with locus and two allele columns");
-    SEXP a = VECTOR_ELT(criteria, 1), b = VECTOR_ELT(criteria, 2);
-    int n = LENGTH(VECTOR_ELT(criteria, 0));
-    if (LENGTH(a) != n || LENGTH(b) != n)
+    if (TYPEOF(criteria) != VECSXP || XLENGTH(criteria) < 3)
+        error("criteria must contain locus and two allele columns");
+    SEXP first = VECTOR_ELT(criteria, 1), second = VECTOR_ELT(criteria, 2);
+    R_xlen_t length = XLENGTH(VECTOR_ELT(criteria, 0));
+    if (XLENGTH(first) != length || XLENGTH(second) != length)
         error("Selection criterion columns must have equal lengths");
-    if (n == 3)
-    {
-        target.mask = 7;
-        target.count = 1;
-        target.label[0] = "All";
-        return target;
-    }
     if (n < 1 || n > 3)
     {
-        info(-2, "More than three possible selection criteria\n");
+        info(-2, "One to three genotype criteria are required at one locus\n");
         return target;
     }
-    double first = st_legacy_number(a, 0) + st_legacy_number(b, 0);
-    double second =
-        n == 2 ? st_legacy_number(a, 1) + st_legacy_number(b, 1) : first;
-    if (first == second)
+    for (int i = 0; i < n; i++)
     {
-        if (first == 2)
-            target.mask = 1, target.label[0] = "H1";
-        else if (first == 3)
-            target.mask = 2, target.label[0] = "MIX";
-        else if (first == 4)
-            target.mask = 4, target.label[0] = "H2";
-        if (target.mask)
-            target.count = 1;
+        R_xlen_t row = rows ? rows[i] : i;
+        if (row < 0 || row >= length)
+            error("Genotype-selection criterion row is out of range");
+        double a = st_legacy_number(first, row),
+               b = st_legacy_number(second, row);
+        if ((a != 1 && a != 2) || (b != 1 && b != 2))
+        {
+            info(-2, "Genotype-selection alleles must be one or two\n");
+            target.mask = 0;
+            return target;
+        }
+        target.mask |= a == 1 && b == 1 ? 1 : a == 2 && b == 2 ? 4 : 2;
+    }
+    if (target.mask == 7)
+    {
+        target.count = 1;
+        target.label[0] = "All";
+    }
+    else if (target.mask == 1 || target.mask == 2 || target.mask == 4)
+    {
+        target.count = 1;
+        target.label[0] = target.mask == 1 ? "H1" : target.mask == 2 ? "MIX" : "H2";
     }
     else
     {
-        double total = first + second;
-        if (total == 5)
-            target.mask = 3, target.label[0] = "H1", target.label[1] = "MIX";
-        else if (total == 6)
-            target.mask = 5, target.label[0] = "H2", target.label[1] = "H1";
-        else if (total == 7)
-            target.mask = 3, target.label[0] = "MIX", target.label[1] = "H1";
-        if (target.mask)
-            target.count = 2;
+        target.count = 2;
+        target.label[0] = target.mask == 3 ? "H1" : target.mask == 5 ? "H2" : "MIX";
+        target.label[1] = target.mask == 3 ? "MIX" : target.mask == 5 ? "H1" : "H2";
     }
-    if (!target.mask)
-        info(-2, "Faulty selection criterion\n");
     return target;
+}
+
+static st_legacy_target st_legacy_target_classify(SEXP criteria)
+{
+    if (TYPEOF(criteria) != VECSXP || XLENGTH(criteria) < 3 ||
+        XLENGTH(VECTOR_ELT(criteria, 0)) > INT_MAX)
+        error("criteria must contain a supported locus and two allele columns");
+    return st_legacy_target_rows(criteria, NULL, (int)XLENGTH(VECTOR_ELT(criteria, 0)));
 }
 
 static SEXP st_legacy_target_export(SEXP args)
@@ -18174,6 +19781,40 @@ static void st_legacy_best_divide(char *target, char *source, int decreasing,
     divide_population(&target, &source, &count);
 }
 
+static void st_legacy_select_genotype_core(st_legacy_target criterion,
+                                            char *source, char *target,
+                                            char *effect, st_population_scope *scope)
+{
+    genotype_population(&source);
+    evaluate_population(&source, &effect);
+    if (criterion.mask == 7)
+        st_legacy_best_divide(target, source, 1, 3);
+    else if (criterion.mask == 3)
+        st_legacy_best_divide(target, source, 1, 2);
+    else if (criterion.mask == 5)
+    {
+        char *temporary = st_population_scope_name(scope);
+        st_legacy_best_divide(target, source, 1, 1);
+        st_legacy_best_divide(temporary, source, 0, 1);
+        concat_population(&target, &temporary);
+    }
+    else if (criterion.mask == 1)
+        st_legacy_best_divide(target, source, 1, 1);
+    else if (criterion.mask == 4)
+        st_legacy_best_divide(target, source, 0, 1);
+    else if (criterion.mask == 6)
+        st_legacy_best_divide(target, source, 0, 2);
+    else
+    {
+        char *temporary = st_population_scope_name(scope), number[64], *count = number;
+        st_legacy_best_divide(temporary, source, 1, 2);
+        st_legacy_sort(temporary, 0);
+        st_legacy_best_number(source, 1, number);
+        divide_population(&target, &temporary, &count);
+        concat_population(&source, &temporary);
+    }
+}
+
 static SEXP st_legacy_select_genotype(SEXP args)
 {
     st_legacy_target criterion =
@@ -18188,34 +19829,271 @@ static SEXP st_legacy_select_genotype(SEXP args)
         st_legacy_text(CHAR(asChar(st_legacy_argument(args, "destination"))));
     char *effect =
         st_legacy_text(CHAR(asChar(st_legacy_argument(args, "effect"))));
-    genotype_population(&source);
-    evaluate_population(&source, &effect);
-    if (criterion.mask == 7)
-        st_legacy_best_divide(target, source, 1, 3);
-    else if (criterion.mask == 3)
-        st_legacy_best_divide(target, source, 1, 2);
-    else if (criterion.mask == 5)
-    {
-        char *temporary = "tmp";
-        st_legacy_best_divide(target, source, 1, 1);
-        st_legacy_best_divide(temporary, source, 0, 1);
-        concat_population(&target, &temporary);
-    }
-    else if (criterion.mask == 1)
-        st_legacy_best_divide(target, source, 1, 1);
-    else if (criterion.mask == 4)
-        st_legacy_best_divide(target, source, 0, 1);
-    else
-    {
-        char *temporary = "tempPop", number[64], *count = number;
-        st_legacy_best_divide(temporary, source, 1, 2);
-        st_legacy_sort(temporary, 0);
-        st_legacy_best_number(source, 1, number);
-        divide_population(&target, &temporary, &count);
-        concat_population(&source, &temporary);
-    }
+    st_population_scope *scope = st_population_scope_new(1);
+    st_legacy_select_genotype_core(criterion, source, target, effect, scope);
     char *start = "1", *count = "-1";
     copy_population(&destination, &target, &start, &count);
+    st_population_scope_close(scope);
+    return R_NilValue;
+}
+
+typedef struct
+{
+    st_sim_ancestry *identity;
+    POPULATION index;
+} st_selection_identity;
+
+static int st_selection_identity_compare(const st_selection_identity *left,
+                                          const st_selection_identity *right)
+{
+    int comparison;
+    if (st_sim_ancestry_compare(left->identity, right->identity, &comparison))
+        error("Cannot compare genotype-selection identities");
+    return comparison;
+}
+
+static void st_selection_identity_sort(st_selection_identity *identities,
+                                       size_t count)
+{
+    st_selection_identity *temporary =
+        st_work_alloc(count ? count : 1, sizeof(*temporary));
+    for (size_t width = 1; width < count;)
+    {
+        size_t start = 0;
+        while (start < count)
+        {
+            size_t middle = start + (width < count - start ? width : count - start);
+            size_t end = middle + (width < count - middle ? width : count - middle);
+            size_t left = start, right = middle;
+            for (size_t i = start; i < end; i++)
+            {
+                if (right == end || (left < middle &&
+                    st_selection_identity_compare(identities + left,
+                                                   identities + right) <= 0))
+                    temporary[i] = identities[left++];
+                else
+                    temporary[i] = identities[right++];
+            }
+            start = end;
+        }
+        memcpy(identities, temporary, count * sizeof(*identities));
+        if (width > count / 2)
+            break;
+        width *= 2;
+    }
+}
+
+static st_selection_identity *st_selection_identity_find(
+    st_selection_identity *identities, size_t count,
+    const st_selection_identity *key)
+{
+    size_t first = 0, last = count;
+    while (first < last)
+    {
+        size_t middle = first + (last - first) / 2;
+        int comparison = st_selection_identity_compare(key, identities + middle);
+        if (!comparison)
+            return identities + middle;
+        if (comparison < 0)
+            last = middle;
+        else
+            first = middle + 1;
+    }
+    return NULL;
+}
+
+static SEXP st_legacy_select_genotypes(SEXP args)
+{
+    SEXP criteria = st_legacy_argument(args, "criteria");
+    if (TYPEOF(criteria) != VECSXP || XLENGTH(criteria) < 3)
+        error("criteria must contain locus and two allele columns");
+    SEXP loci = VECTOR_ELT(criteria, 0);
+    R_xlen_t rows = XLENGTH(loci);
+    if (TYPEOF(loci) != STRSXP || rows > INT_MAX ||
+        XLENGTH(VECTOR_ELT(criteria, 1)) != rows ||
+        XLENGTH(VECTOR_ELT(criteria, 2)) != rows)
+        error("Invalid genotype-selection criterion columns");
+    if (!rows)
+        return R_NilValue;
+    if (NoHoms != 2)
+        error("Genotype selection requires a diploid population");
+    char *source = st_legacy_text(CHAR(asChar(st_legacy_argument(args, "source")))),
+         *destination = st_legacy_text(CHAR(asChar(st_legacy_argument(args, "destination"))));
+    const char **unique = st_work_alloc((size_t)rows, sizeof(*unique));
+    int count = 0;
+    for (R_xlen_t i = 0; i < rows; i++)
+    {
+        if (STRING_ELT(loci, i) == NA_STRING)
+            error("Genotype-selection loci must not be missing");
+        const char *name = CHAR(STRING_ELT(loci, i));
+        int j = 0;
+        while (j < count && strcmp(unique[j], name))
+            j++;
+        if (j == count)
+            unique[count++] = name;
+    }
+    if (!strcmp(source, destination))
+        error("Genotype-selection source and destination must be different");
+    TPopListEl *original_entry = NULL;
+    find_list_element(source, &original_entry);
+    if (!original_entry || !original_entry->Pop->NoInds)
+    {
+        info(-2, "Genotype-selection source population is empty or undefined\n");
+        return R_NilValue;
+    }
+    TPop *original = original_entry->Pop;
+    int mixed_caches = st_population_normalize_caches(original);
+    char *original_name = source;
+    st_selection_identity *identities = st_work_alloc((size_t)original->NoInds,
+                                                      sizeof(*identities));
+    unsigned char *removed = st_work_alloc((size_t)original->NoInds, 1);
+    memset(removed, 0, (size_t)original->NoInds);
+    for (POPULATION i = 0; i < original->NoInds; i++)
+    {
+        if (!original->Ind[i].identity)
+            error("Genotype-selection source has a missing individual identity");
+        identities[i].identity = original->Ind[i].identity;
+        identities[i].index = i;
+    }
+    st_selection_identity_sort(identities, (size_t)original->NoInds);
+    for (POPULATION i = 1; i < original->NoInds; i++)
+        if (!st_selection_identity_compare(identities + i - 1, identities + i))
+            error("Genotype-selection source identities must be unique");
+    st_population_scope *scope = st_population_scope_new(1);
+    char *working = st_population_scope_name(scope), *start = "1", *number = "-1";
+    copy_population(&working, &source, &start, &number);
+    TPopListEl *working_entry = NULL;
+    find_list_element(working, &working_entry);
+    if (!working_entry || working_entry->Pop->NoInds != original->NoInds)
+        error("Cannot copy genotype-selection source");
+    source = working;
+    for (int locus = 0; locus < count; locus++)
+    {
+        R_xlen_t selected[3];
+        int n = 0;
+        for (R_xlen_t i = 0; i < rows; i++)
+            if (!strcmp(unique[locus], CHAR(STRING_ELT(loci, i))))
+            {
+                if (n == 3)
+                    error("More than three genotype criteria at one locus");
+                double first = st_legacy_number(VECTOR_ELT(criteria, 1), i),
+                       second = st_legacy_number(VECTOR_ELT(criteria, 2), i);
+                if ((first != 1 && first != 2) || (second != 1 && second != 2))
+                    error("Genotype-selection alleles must be one or two");
+                selected[n++] = i;
+            }
+        st_legacy_target criterion = st_legacy_target_rows(criteria, selected, n);
+        if (!criterion.mask)
+            error("No valid genotype selection criterion");
+        TMappoint *point = find_mappoint((char *)unique[locus]);
+        if (!point || point->chrom < 1 || point->chrom > NoChroms)
+            error("Genotype-selection locus is not in the installed map");
+        size_t effect_length = strlen(unique[locus]);
+        if (effect_length > SIZE_MAX - 5)
+            error("Genotype-selection effect name is too long");
+        char *effect = st_work_alloc(effect_length + 5, 1);
+        st_text_write(effect, effect_length + 5, "EFF%s1", unique[locus]);
+        if (!find_Effect(effect))
+        {
+            const char *marker = unique[locus];
+            int allele = 1;
+            double value = 1;
+            if (st_define_effects_native(effect, &marker, &allele, &value, 1))
+                error("Cannot define the genotype-selection locus effect");
+        }
+        TPop *working_population = working_entry->Pop;
+        POPULATION retained = 0;
+        for (POPULATION i = 0; i < working_population->NoInds; i++)
+        {
+            TInd *individual = working_population->Ind + i;
+            if (!individual->Chrom)
+                error("Genotype-selection individual has no chromosome storage");
+            THom *homologues = individual->Chrom[point->chrom - 1].Hom;
+            int first = get_allele(homologues, point->Pos),
+                second = get_allele(homologues + 1, point->Pos);
+            int genotype = first == 1 && second == 1 ? 1 :
+                first == 2 && second == 2 ? 4 :
+                ((first == 1 && second == 2) || (first == 2 && second == 1)) ? 2 : 0;
+            if (criterion.mask & genotype)
+            {
+                if (retained != i)
+                {
+                    working_population->Ind[retained] = *individual;
+                    memset(individual, 0, sizeof(*individual));
+                }
+                retained++;
+            }
+            else
+                remove_individuum(individual);
+        }
+        working_population->NoInds = retained;
+        int_resize_population(&source, retained);
+    }
+    TPopListEl *selected_entry = NULL;
+    find_list_element(source, &selected_entry);
+    if (!selected_entry)
+        error("Genotype selection did not produce a population");
+    TPop *selected_population = selected_entry->Pop;
+    if (selected_population->NoInds)
+    {
+        genotype_population(&source);
+        size_t last_length = strlen(unique[count - 1]);
+        if (last_length > SIZE_MAX - 5)
+            error("Genotype-selection effect name is too long");
+        char *last_effect = st_work_alloc(last_length + 5, 1);
+        st_text_write(last_effect, last_length + 5, "EFF%s1", unique[count - 1]);
+        if (find_Effect(last_effect))
+            evaluate_population(&source, &last_effect);
+    }
+    for (POPULATION i = 0; i < selected_population->NoInds; i++)
+    {
+        st_selection_identity key = {selected_population->Ind[i].identity, 0};
+        if (!key.identity)
+            error("Selected individual has no identity");
+        st_selection_identity *match = st_selection_identity_find(identities,
+            (size_t)original->NoInds, &key);
+        if (!match || removed[match->index])
+            error("Selected identities do not match the source population");
+        removed[match->index] = 1;
+    }
+    if (selected_population->NoInds)
+        copy_population(&destination, &source, &start, &number);
+    else
+    {
+        TPop *empty = exist_population(destination, 0, 1);
+        if (!empty)
+            error("Cannot create the empty selected population");
+        empty->NoInds = 0;
+    }
+    TPopListEl *destination_entry = NULL;
+    find_list_element(destination, &destination_entry);
+    if (!destination_entry || destination_entry->Pop->NoInds != selected_population->NoInds)
+        error("Cannot copy the selected population");
+    POPULATION kept = 0;
+    for (POPULATION i = 0; i < original->NoInds; i++)
+    {
+        if (removed[i])
+            remove_individuum(&original->Ind[i]);
+        else
+        {
+            if (kept != i)
+            {
+                original->Ind[kept] = original->Ind[i];
+                memset(&original->Ind[i], 0, sizeof(TInd));
+            }
+            kept++;
+        }
+    }
+    original->NoInds = kept;
+    int_resize_population(&original_name, kept);
+    if (mixed_caches)
+    {
+        st_clear_population_genotype(destination_entry->Pop);
+        st_clear_population_gvalue(destination_entry->Pop);
+        st_clear_population_genotype(original);
+        st_clear_population_gvalue(original);
+    }
+    st_population_scope_close(scope);
     return R_NilValue;
 }
 
@@ -18227,4 +20105,1907 @@ static SEXP st_legacy_locus_effect(SEXP args)
     double value = 1;
     st_define_effects_native(name, &locus, &allele, &value, 1);
     return R_NilValue;
+}
+
+typedef struct
+{
+    int version, parents, markers, chromosomes;
+    size_t founder_stride;
+    const unsigned char *founder_bits;
+    const char *const *parent_ids;
+    const char *const *marker_ids;
+    const char *core_key;
+    const double *effect, *weight, *p0, *switch_probability;
+    const int *chromosome_start;
+    double intercept, trait_anchor, reference_denominator;
+} st_cross_dh_view;
+
+typedef void *(*st_cross_dh_alloc)(void *, size_t, size_t);
+typedef int (*st_cross_dh_charge)(void *, int, uint64_t);
+
+typedef struct
+{
+    int requested, completed, status;
+    const char *reason;
+    int families, parents;
+    double *population, *population_SE;
+    int *population_state, *population_SE_state;
+    double *family, *family_SE;
+    int *family_state, *family_SE_state;
+    double *origin, *origin_SE;
+    int *origin_state, *origin_SE_state;
+    uint64_t seed;
+    const char *bank_protocol;
+} st_cross_dh_result;
+
+extern uint64_t st_cross_private_random(uint64_t *state);
+
+typedef struct
+{
+    st_cross_dh_view view;
+    void *budget;
+    st_cross_dh_alloc allocate;
+    st_cross_dh_charge charge;
+    uint64_t *chromosome_draws;
+    int failure;
+    const char *reason;
+} st_dh_engine;
+
+typedef struct
+{
+    int64_t count;
+    long double mean, variance;
+} st_dh_stat;
+
+typedef struct
+{
+    int64_t candidate;
+    double score;
+    uint64_t prefix, priority[2];
+} st_dh_entry;
+
+static const char st_dh_protocol[] = "dh.haldane.markov.xorshift64star.v1";
+
+static int st_dh_charge(st_dh_engine *engine, int category, uint64_t units)
+{
+    if (engine->failure) return 0;
+    if (units && !engine->charge(engine->budget, category, units))
+    {
+        engine->failure = 1;
+        engine->reason = "work.limit";
+        return 0;
+    }
+    return 1;
+}
+
+static int st_dh_hash_bytes(st_dh_engine *engine, uint64_t *hash,
+                            const unsigned char *bytes, size_t length)
+{
+    if (!st_dh_charge(engine, 4, (uint64_t)length)) return 0;
+    for (size_t i = 0; i < length; i++)
+        *hash = (*hash ^ bytes[i]) * UINT64_C(1099511628211);
+    return 1;
+}
+
+static int st_dh_hash_integer(st_dh_engine *engine, uint64_t *hash,
+                              unsigned char tag, uint64_t value)
+{
+    unsigned char bytes[9];
+    bytes[0] = tag;
+    for (int i = 0; i < 8; i++)
+    {
+        bytes[i + 1] = (unsigned char)(value & UINT64_C(255));
+        value >>= 8;
+    }
+    return st_dh_hash_bytes(engine, hash, bytes, sizeof(bytes));
+}
+
+static int st_dh_hash_text(st_dh_engine *engine, uint64_t *hash,
+                           unsigned char tag, const char *text)
+{
+    size_t length = strlen(text);
+    return st_dh_hash_integer(engine, hash, tag, (uint64_t)length) &&
+        st_dh_hash_bytes(engine, hash, (const unsigned char *)text, length);
+}
+
+static uint64_t st_dh_mix(uint64_t value)
+{
+    value += UINT64_C(0x9e3779b97f4a7c15);
+    value = (value ^ (value >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
+    value = (value ^ (value >> 27)) * UINT64_C(0x94d049bb133111eb);
+    value ^= value >> 31;
+    return value ? value : UINT64_C(88172645463325252);
+}
+
+static int st_dh_root_key(st_dh_engine *engine, uint64_t seed,
+                           uint64_t *hash)
+{
+    *hash = UINT64_C(14695981039346656037);
+    return st_dh_hash_bytes(engine, hash,
+        (const unsigned char *)st_dh_protocol, sizeof(st_dh_protocol)) &&
+        st_dh_hash_text(engine, hash, 1, engine->view.core_key) &&
+        st_dh_hash_integer(engine, hash, 2, seed);
+}
+
+static int st_dh_family_key(st_dh_engine *engine, uint64_t root,
+                             int replicate, int first, int second,
+                             uint64_t *hash)
+{
+    *hash = root;
+    return st_dh_hash_integer(engine, hash, 3, (uint64_t)replicate) &&
+        st_dh_hash_text(engine, hash, 4, engine->view.parent_ids[first]) &&
+        st_dh_hash_text(engine, hash, 5, engine->view.parent_ids[second]);
+}
+
+static int st_dh_priority(st_dh_engine *engine, uint64_t prefix,
+                           uint64_t word, uint64_t *priority)
+{
+    if (!st_dh_hash_integer(engine, &prefix, 7, 3) ||
+        !st_dh_hash_integer(engine, &prefix, 9, word) ||
+        !st_dh_charge(engine, 5, 1)) return 0;
+    uint64_t state = st_dh_mix(prefix);
+    *priority = st_cross_private_random(&state);
+    return 1;
+}
+
+static int st_dh_compare(st_dh_engine *engine, const st_dh_entry *left,
+                          const st_dh_entry *right, int *comparison)
+{
+    if (!st_dh_charge(engine, 7, 1)) return 0;
+    if (left->score != right->score)
+    {
+        *comparison = left->score > right->score ? 1 : -1;
+        return 1;
+    }
+    for (int i = 0; i < 2; i++)
+        if (left->priority[i] != right->priority[i])
+        {
+            *comparison = left->priority[i] > right->priority[i] ? 1 : -1;
+            return 1;
+        }
+    if (left->candidate == right->candidate)
+    {
+        *comparison = 0;
+        return 1;
+    }
+    for (uint64_t word = 2; ; word++)
+    {
+        uint64_t a, b;
+        if (!st_dh_priority(engine, left->prefix, word, &a) ||
+            !st_dh_priority(engine, right->prefix, word, &b))
+        {
+            engine->reason = "tie.refinement.work.limit";
+            return 0;
+        }
+        if (a != b)
+        {
+            *comparison = a > b ? 1 : -1;
+            return 1;
+        }
+        if (word == UINT64_MAX)
+        {
+            engine->failure = 2;
+            engine->reason = "tie.refinement.numeric.range";
+            return 0;
+        }
+    }
+}
+
+static int st_dh_heap_insert(st_dh_engine *engine, st_dh_entry *heap,
+                              size_t *used, size_t capacity,
+                              const st_dh_entry *entry)
+{
+    int comparison;
+    if (*used < capacity)
+    {
+        size_t at = (*used)++;
+        heap[at] = *entry;
+        while (at)
+        {
+            size_t parent = (at - 1) / 2;
+            if (!st_dh_compare(engine, heap + at, heap + parent,
+                               &comparison)) return 0;
+            if (comparison >= 0) break;
+            if (!st_dh_charge(engine, 7, 1)) return 0;
+            st_dh_entry temporary = heap[parent];
+            heap[parent] = heap[at];
+            heap[at] = temporary;
+            at = parent;
+        }
+        return 1;
+    }
+    if (!st_dh_compare(engine, entry, heap, &comparison)) return 0;
+    if (comparison <= 0) return 1;
+    heap[0] = *entry;
+    size_t at = 0;
+    while (at < *used / 2)
+    {
+        size_t child = at * 2 + 1;
+        if (child + 1 < *used)
+        {
+            if (!st_dh_compare(engine, heap + child + 1, heap + child,
+                               &comparison)) return 0;
+            if (comparison < 0) child++;
+        }
+        if (!st_dh_compare(engine, heap + at, heap + child,
+                           &comparison)) return 0;
+        if (comparison <= 0) break;
+        if (!st_dh_charge(engine, 7, 1)) return 0;
+        st_dh_entry temporary = heap[at];
+        heap[at] = heap[child];
+        heap[child] = temporary;
+        at = child;
+    }
+    return 1;
+}
+
+static int st_dh_bit(const st_cross_dh_view *view, int parent, int marker)
+{
+    size_t at = (size_t)parent * view->founder_stride + (size_t)marker / 8;
+    return (view->founder_bits[at] >> (marker % 8)) & 1;
+}
+
+static int st_dh_path(st_dh_engine *engine, uint64_t prefix,
+                       int first, int second, int selected,
+                       uint64_t *allele_count, long double *origin,
+                       double *deviation, double *first_origin)
+{
+    const st_cross_dh_view *view = &engine->view;
+    if (!st_dh_charge(engine, selected ? 8 : 6, (uint64_t)view->markers))
+        return 0;
+    long double trait = 0, trait_error = 0, contribution = 0;
+    for (int chromosome = 0; chromosome < view->chromosomes; chromosome++)
+    {
+        uint64_t hash = prefix;
+        if (!st_dh_hash_integer(engine, &hash, 7, 1) ||
+            !st_dh_hash_integer(engine, &hash, 8, (uint64_t)chromosome) ||
+            !st_dh_charge(engine, 5,
+                           engine->chromosome_draws[chromosome])) return 0;
+        uint64_t state = st_dh_mix(hash);
+        int parent = (st_cross_private_random(&state) >> 63) ? 1 : 0;
+        int begin = view->chromosome_start[chromosome],
+            end = view->chromosome_start[chromosome + 1];
+        for (int marker = begin; marker < end; marker++)
+        {
+            double probability = view->switch_probability[marker];
+            if (marker > begin && probability > 0)
+            {
+                double uniform = (double)(st_cross_private_random(&state) >> 11) *
+                    0x1p-53;
+                if (uniform < probability) parent = !parent;
+            }
+            int a = st_dh_bit(view, first, marker),
+                b = st_dh_bit(view, second, marker);
+            long double term = (long double)view->effect[marker] * (a - b) *
+                (parent ? -1 : 1), next = trait + term;
+            trait_error += fabsl(trait) >= fabsl(term) ? (trait - next) + term : (term - next) + trait;
+            trait = next;
+            if (selected)
+            {
+                allele_count[marker] += (uint64_t)(parent ? b : a);
+                contribution += parent ? 0 : (long double)view->weight[marker];
+            }
+        }
+    }
+    trait += trait_error;
+    if (!isfinite(trait) || fabsl(trait) > DBL_MAX)
+    {
+        engine->failure = 2;
+        engine->reason = "numeric.range";
+        return 0;
+    }
+    *deviation = (double)trait;
+    if (selected)
+    {
+        *first_origin = (double)contribution;
+        origin[first] += contribution;
+        origin[second] += 1 - contribution;
+    }
+    return 1;
+}
+
+static int st_dh_score(st_dh_engine *engine, uint64_t prefix,
+                        double deviation, double variance, double accuracy,
+                        double *score)
+{
+    if (variance == 0)
+    {
+        *score = 0;
+        return 1;
+    }
+    double noise = 0;
+    if (accuracy < 1)
+    {
+        if (!st_dh_hash_integer(engine, &prefix, 7, 2) ||
+            !st_dh_charge(engine, 5, 2)) return 0;
+        uint64_t state = st_dh_mix(prefix);
+        double left = ((double)(st_cross_private_random(&state) >> 12) + .5) *
+            0x1p-52;
+        double right = ((double)(st_cross_private_random(&state) >> 12) + .5) *
+            0x1p-52;
+        noise = sqrt(-2 * log(left)) *
+            cos(6.283185307179586476925286766559 * right);
+    }
+    long double value = (long double)accuracy *
+        ((long double)deviation / sqrt(variance)) +
+        sqrt((1 - accuracy) * (1 + accuracy)) * noise;
+    if (!isfinite(value) || fabsl(value) > DBL_MAX)
+    {
+        engine->failure = 2;
+        engine->reason = "numeric.range";
+        return 0;
+    }
+    *score = (double)value;
+    return 1;
+}
+
+static void st_dh_stat_add(st_dh_stat *statistic, long double value)
+{
+    int64_t count = ++statistic->count;
+    long double delta = value - statistic->mean;
+    statistic->mean += delta / count;
+    statistic->variance = statistic->variance * ((long double)(count - 1) / count) +
+        (delta / count) * (value - statistic->mean);
+}
+
+static void st_dh_result_slots(double *value, double *SE,
+                                int *state, int *SE_state, size_t count)
+{
+    for (size_t i = 0; i < count; i++)
+    {
+        value[i] = SE[i] = NAN;
+        state[i] = SE_state[i] = 0;
+    }
+}
+
+static void st_dh_publish(const st_dh_stat *statistic, double *value,
+                          double *SE, int *state, int *SE_state)
+{
+    if (!statistic->count) return;
+    if (!isfinite(statistic->mean) || fabsl(statistic->mean) > DBL_MAX)
+    {
+        *state = *SE_state = -5;
+        return;
+    }
+    *value = (double)statistic->mean;
+    *state = 1;
+    if (statistic->count == 1)
+    {
+        *SE_state = -4;
+        return;
+    }
+    long double error = sqrtl(statistic->variance /
+        (statistic->count - 1));
+    if (!isfinite(error) || error > DBL_MAX)
+    {
+        *SE_state = -5;
+        return;
+    }
+    *SE = (double)error;
+    *SE_state = 1;
+}
+
+static void st_dh_marginal(const st_dh_stat *within,
+                            const st_dh_stat *panel_mean, double *value,
+                            double *SE, int *state, int *SE_state)
+{
+    *value = *SE = NAN;
+    *SE_state = -6;
+    if (panel_mean->count < 2)
+    {
+        *state = panel_mean->count ? -4 : 0;
+        return;
+    }
+    long double marginal = within->mean + panel_mean->variance *
+        ((long double)panel_mean->count / (panel_mean->count - 1));
+    if (!isfinite(marginal) || marginal < 0 || marginal > DBL_MAX)
+    {
+        *state = -5;
+        return;
+    }
+    *value = (double)marginal;
+    *state = 1;
+}
+
+void *st_cross_dh_create(const st_cross_dh_view *view, void *budget_context,
+                          st_cross_dh_alloc allocate,
+                          st_cross_dh_charge charge)
+{
+    if (!view || !allocate || !charge || view->version != 1 ||
+        view->parents < 1 || view->markers < 1 || view->chromosomes < 1 ||
+        !view->founder_bits || !view->parent_ids || !view->core_key ||
+        !view->effect || !view->weight || !view->p0 ||
+        !view->switch_probability || !view->chromosome_start) return NULL;
+    st_dh_engine *engine = allocate(budget_context, 1, sizeof(*engine));
+    if (!engine) return NULL;
+    memset(engine, 0, sizeof(*engine));
+    engine->view = *view;
+    engine->budget = budget_context;
+    engine->allocate = allocate;
+    engine->charge = charge;
+    engine->chromosome_draws = allocate(budget_context,
+        (size_t)view->chromosomes, sizeof(*engine->chromosome_draws));
+    if (!engine->chromosome_draws) return NULL;
+    if (!st_dh_charge(engine, 1, (uint64_t)view->markers)) return engine;
+    for (int chromosome = 0; chromosome < view->chromosomes; chromosome++)
+    {
+        int begin = view->chromosome_start[chromosome],
+            end = view->chromosome_start[chromosome + 1];
+        if (begin < 0 || end <= begin || end > view->markers)
+        {
+            engine->failure = 2;
+            engine->reason = "invalid.model.view";
+            return engine;
+        }
+        uint64_t draws = 1;
+        for (int marker = begin + 1; marker < end; marker++)
+            draws += view->switch_probability[marker] > 0;
+        engine->chromosome_draws[chromosome] = draws;
+    }
+    return engine;
+}
+
+int st_cross_dh_run(void *context, int families,
+                      const int *first, const int *second,
+                      const int64_t *produced, const int64_t *retained,
+                      const double *accuracy, const double *additive_center,
+                      const double *variance, int replicates, uint64_t seed,
+                      st_cross_dh_result *result)
+{
+    st_dh_engine *engine = context;
+    if (!engine || !result || families < 1 || replicates < 1 ||
+        !first || !second || !produced || !retained || !accuracy ||
+        !additive_center || !variance || !result->population ||
+        !result->population_SE || !result->population_state ||
+        !result->population_SE_state || !result->family || !result->family_SE ||
+        !result->family_state || !result->family_SE_state || !result->origin ||
+        !result->origin_SE || !result->origin_state || !result->origin_SE_state)
+        return -4;
+    result->requested = replicates;
+    result->completed = 0;
+    result->status = -4;
+    result->reason = "invalid.internal.request";
+    result->families = families;
+    result->parents = engine->view.parents;
+    result->seed = seed;
+    result->bank_protocol = st_dh_protocol;
+    if ((size_t)families > SIZE_MAX / 7) return result->status;
+    size_t family_cells = (size_t)families * 7;
+    st_dh_result_slots(result->population, result->population_SE,
+        result->population_state, result->population_SE_state, 7);
+    st_dh_result_slots(result->family, result->family_SE,
+        result->family_state, result->family_SE_state, family_cells);
+    st_dh_result_slots(result->origin, result->origin_SE,
+        result->origin_state, result->origin_SE_state,
+        (size_t)engine->view.parents);
+    int64_t total_retained = 0, maximum_heap = 0;
+    for (int family = 0; family < families; family++)
+    {
+        if (first[family] < 0 || first[family] >= engine->view.parents ||
+            second[family] < 0 || second[family] >= engine->view.parents ||
+            first[family] == second[family] || produced[family] < 1 ||
+            retained[family] < 0 || retained[family] > produced[family] ||
+            !isfinite(accuracy[family]) || accuracy[family] < 0 ||
+            accuracy[family] > 1 || !isfinite(additive_center[family]) ||
+            !isfinite(variance[family]) || variance[family] < 0 ||
+            retained[family] > INT64_MAX - total_retained) return result->status;
+        total_retained += retained[family];
+        if (retained[family] < produced[family] &&
+            retained[family] > maximum_heap) maximum_heap = retained[family];
+    }
+    if (!total_retained)
+    {
+        for (size_t i = 0; i < 7; i++)
+            result->population_state[i] = result->population_SE_state[i] = -1;
+        for (size_t i = 0; i < family_cells; i++)
+            result->family_state[i] = result->family_SE_state[i] = -1;
+        for (int i = 0; i < engine->view.parents; i++)
+            result->origin_state[i] = result->origin_SE_state[i] = -1;
+        result->status = -3;
+        result->reason = "empty.retained.population";
+        return result->status;
+    }
+    long double panel_anchor = 0;
+    for (int family = 0; family < families; family++)
+        if (retained[family])
+        {
+            panel_anchor = additive_center[family];
+            break;
+        }
+    if (engine->failure)
+    {
+        result->status = engine->failure == 1 ? 0 : -2;
+        result->reason = engine->reason;
+        return result->status;
+    }
+    if ((uint64_t)maximum_heap > SIZE_MAX)
+    {
+        result->status = -1;
+        result->reason = "memory.limit";
+        return result->status;
+    }
+    st_dh_entry *heap = maximum_heap ? engine->allocate(engine->budget,
+        (size_t)maximum_heap, sizeof(*heap)) : NULL;
+    st_dh_stat *population = engine->allocate(engine->budget, 7,
+        sizeof(*population)), *family_statistics = engine->allocate(engine->budget,
+        family_cells, sizeof(*family_statistics)),
+        *origin_statistics = engine->allocate(engine->budget,
+        (size_t)engine->view.parents, sizeof(*origin_statistics));
+    double *family_values = engine->allocate(engine->budget, family_cells,
+        sizeof(*family_values));
+    uint64_t *allele_count = engine->allocate(engine->budget,
+        (size_t)engine->view.markers, sizeof(*allele_count));
+    long double *origin = engine->allocate(engine->budget,
+        (size_t)engine->view.parents, sizeof(*origin));
+    if ((maximum_heap && !heap) || !population || !family_statistics ||
+        !origin_statistics || !family_values || !allele_count || !origin)
+    {
+        result->status = -1;
+        result->reason = "memory.limit";
+        return result->status;
+    }
+    memset(population, 0, 7 * sizeof(*population));
+    memset(family_statistics, 0, family_cells * sizeof(*family_statistics));
+    memset(origin_statistics, 0,
+        (size_t)engine->view.parents * sizeof(*origin_statistics));
+    uint64_t root;
+    result->status = 1;
+    result->reason = "complete";
+    if (!st_dh_root_key(engine, seed, &root)) result->status = 0;
+    for (int replicate = 0; replicate < replicates && !engine->failure; replicate++)
+    {
+        memset(allele_count, 0,
+            (size_t)engine->view.markers * sizeof(*allele_count));
+        memset(origin, 0, (size_t)engine->view.parents * sizeof(*origin));
+        for (size_t i = 0; i < family_cells; i++) family_values[i] = NAN;
+        st_dh_stat panel = {0};
+        long double response = 0;
+        for (int family = 0; family < families && !engine->failure; family++)
+        {
+            int64_t n = produced[family], r = retained[family];
+            if (!r) continue;
+            int a = first[family], b = second[family];
+            if (a > b)
+            {
+                int temporary = a;
+                a = b;
+                b = temporary;
+            }
+            uint64_t family_prefix;
+            if (!st_dh_family_key(engine, root, replicate, a, b,
+                                  &family_prefix)) break;
+            size_t used = 0;
+            if (r < n)
+                for (int64_t candidate = 0; candidate < n; candidate++)
+                {
+                    uint64_t prefix = family_prefix;
+                    if (!st_dh_hash_integer(engine, &prefix, 6,
+                                             (uint64_t)candidate)) break;
+                    double deviation = 0, ignored_origin = 0, score;
+                    if (accuracy[family] > 0 && variance[family] > 0 &&
+                        !st_dh_path(engine, prefix, a, b, 0, NULL, NULL,
+                                     &deviation, &ignored_origin)) break;
+                    if (!st_dh_score(engine, prefix, deviation, variance[family],
+                                      accuracy[family], &score)) break;
+                    st_dh_entry entry = {.candidate = candidate, .score = score,
+                                          .prefix = prefix, .priority = {0, 0}};
+                    if (!st_dh_priority(engine, prefix, 0, entry.priority) ||
+                        !st_dh_priority(engine, prefix, 1, entry.priority + 1) ||
+                        !st_dh_heap_insert(engine, heap, &used, (size_t)r,
+                                            &entry)) break;
+                }
+            if (engine->failure) break;
+            if (r < n && used != (size_t)r)
+            {
+                engine->failure = 2;
+                engine->reason = "invalid.selected.heap";
+                break;
+            }
+            if (!st_dh_charge(engine, 10, (uint64_t)r) ||
+                !st_dh_charge(engine, 10, (uint64_t)r) ||
+                !st_dh_charge(engine, 10, 7)) break;
+            st_dh_stat selected = {0};
+            long double first_origin = 0;
+            for (int64_t line = 0; line < r; line++)
+            {
+                uint64_t prefix;
+                if (r == n)
+                {
+                    prefix = family_prefix;
+                    if (!st_dh_hash_integer(engine, &prefix, 6,
+                                             (uint64_t)line)) break;
+                }
+                else prefix = heap[(size_t)line].prefix;
+                double deviation, contribution;
+                if (!st_dh_path(engine, prefix, a, b, 1, allele_count, origin,
+                                 &deviation, &contribution)) break;
+                if (variance[family] == 0) deviation = 0;
+                st_dh_stat_add(&selected, deviation);
+                st_dh_stat_add(&panel, ((long double)additive_center[family] -
+                                        panel_anchor) + deviation);
+                first_origin += contribution;
+            }
+            if (engine->failure) break;
+            long double center = (long double)additive_center[family] +
+                selected.mean, panel_variance = selected.variance;
+            if (!isfinite(center) || fabsl(center) > DBL_MAX ||
+                !isfinite(panel_variance) || panel_variance > DBL_MAX)
+            {
+                engine->failure = 2;
+                engine->reason = "numeric.range";
+                break;
+            }
+            size_t at = (size_t)family * 7;
+            family_values[at] = (double)selected.mean;
+            family_values[at + 1] = (double)selected.mean;
+            family_values[at + 2] = (double)panel_variance;
+            if (r > 1)
+            {
+                long double sample = panel_variance * ((long double)r / (r - 1));
+                if (isfinite(sample) && sample <= DBL_MAX)
+                    family_values[at + 3] = (double)sample;
+            }
+            double share = (double)(first_origin / r);
+            family_values[at + 5] = first[family] == a ? share : 1 - share;
+            family_values[at + 6] = 1 - family_values[at + 5];
+            response += ((long double)r / total_retained) * selected.mean;
+        }
+        if (engine->failure) break;
+        if (!st_dh_charge(engine, 9, (uint64_t)engine->view.markers) ||
+            !st_dh_charge(engine, 10, (uint64_t)family_cells +
+                              (uint64_t)engine->view.parents + 7)) break;
+        long double genomic = 0, diversity = 0;
+        for (int marker = 0; marker < engine->view.markers; marker++)
+        {
+            long double frequency = (long double)allele_count[marker] /
+                total_retained, difference = frequency - engine->view.p0[marker],
+                weight = engine->view.weight[marker];
+            if (engine->view.reference_denominator > 0 && difference != 0)
+                genomic += (weight / engine->view.reference_denominator) *
+                    difference * difference;
+            diversity += 2 * weight * frequency * (1 - frequency);
+        }
+        long double panel_variance = panel.variance;
+        if (!isfinite(panel.mean) || fabsl(panel.mean) > DBL_MAX ||
+            !isfinite(response) || fabsl(response) > DBL_MAX ||
+            !isfinite(panel_variance) || panel_variance > DBL_MAX)
+        {
+            engine->failure = 2;
+            engine->reason = "numeric.range";
+            break;
+        }
+        double values[7] = {(double)response, (double)panel.mean,
+            (double)panel_variance, NAN, NAN, NAN, (double)diversity};
+        if (total_retained > 1)
+        {
+            long double sample = panel_variance *
+                ((long double)total_retained / (total_retained - 1));
+            if (isfinite(sample) && sample <= DBL_MAX) values[3] = (double)sample;
+        }
+        if (engine->view.reference_denominator > 0)
+        {
+            if (isfinite(genomic) && genomic <= DBL_MAX) values[5] = (double)genomic;
+        }
+        for (int i = 0; i < 7; i++)
+            if (isfinite(values[i])) st_dh_stat_add(population + i, values[i]);
+        for (size_t i = 0; i < family_cells; i++)
+            if (isfinite(family_values[i]))
+                st_dh_stat_add(family_statistics + i, family_values[i]);
+        for (int parent = 0; parent < engine->view.parents; parent++)
+            st_dh_stat_add(origin_statistics + parent,
+                origin[parent] / total_retained);
+        result->completed++;
+    }
+    if (engine->failure)
+    {
+        result->status = engine->failure == 1 ? 0 : -2;
+        result->reason = engine->reason;
+    }
+    for (int i = 0; i < 7; i++)
+        st_dh_publish(population + i, result->population + i,
+            result->population_SE + i, result->population_state + i,
+            result->population_SE_state + i);
+    for (size_t i = 0; i < family_cells; i++)
+        st_dh_publish(family_statistics + i, result->family + i,
+            result->family_SE + i, result->family_state + i,
+            result->family_SE_state + i);
+    for (int i = 0; i < engine->view.parents; i++)
+        st_dh_publish(origin_statistics + i, result->origin + i,
+            result->origin_SE + i, result->origin_state + i,
+            result->origin_SE_state + i);
+    if (result->population_state[1] == 1)
+    {
+        long double mean = population[1].mean + panel_anchor;
+        if (isfinite(mean) && fabsl(mean) <= DBL_MAX)
+            result->population[1] = (double)mean;
+        else
+        {
+            result->population[1] = NAN;
+            result->population_state[1] = -5;
+        }
+        result->population_SE[1] = result->population_SE[0];
+        result->population_SE_state[1] = result->population_SE_state[0];
+    }
+    st_dh_marginal(population + 2, population, result->population + 4,
+        result->population_SE + 4, result->population_state + 4,
+        result->population_SE_state + 4);
+    if (total_retained == 1)
+        result->population_state[3] = result->population_SE_state[3] = -2;
+    else if (result->completed && population[3].count != result->completed)
+    {
+        result->population[3] = result->population_SE[3] = NAN;
+        result->population_state[3] = result->population_SE_state[3] = -5;
+    }
+    if (engine->view.reference_denominator == 0)
+        result->population_state[5] = result->population_SE_state[5] = -3;
+    else if (result->completed && population[5].count != result->completed)
+    {
+        result->population[5] = result->population_SE[5] = NAN;
+        result->population_state[5] = result->population_SE_state[5] = -5;
+    }
+    for (int family = 0; family < families; family++)
+    {
+        size_t at = (size_t)family * 7;
+        if (!retained[family])
+        {
+            for (size_t i = 0; i < 7; i++)
+                result->family_state[at + i] =
+                    result->family_SE_state[at + i] = -1;
+            continue;
+        }
+        if (result->family_state[at + 1] == 1)
+        {
+            long double mean = family_statistics[at].mean + additive_center[family];
+            if (isfinite(mean) && fabsl(mean) <= DBL_MAX)
+                result->family[at + 1] = (double)mean;
+            else
+            {
+                result->family[at + 1] = NAN;
+                result->family_state[at + 1] = -5;
+            }
+            result->family_SE[at + 1] = result->family_SE[at];
+            result->family_SE_state[at + 1] = result->family_SE_state[at];
+        }
+        st_dh_marginal(family_statistics + at + 2, family_statistics + at,
+            result->family + at + 4, result->family_SE + at + 4,
+            result->family_state + at + 4, result->family_SE_state + at + 4);
+        if (retained[family] == 1)
+            result->family_state[at + 3] = result->family_SE_state[at + 3] = -2;
+        else if (result->completed &&
+                 family_statistics[at + 3].count != result->completed)
+        {
+            result->family[at + 3] = result->family_SE[at + 3] = NAN;
+            result->family_state[at + 3] = result->family_SE_state[at + 3] = -5;
+        }
+    }
+    return result->status;
+}
+typedef struct
+{
+    int64_t produced, retained;
+    double accuracy;
+    int training, evaluation;
+    uint64_t training_seed, evaluation_seed;
+    int request_training, request_evaluation;
+} st_cross_future_parameters;
+
+typedef struct
+{
+    int rows, direction_known, operations_known;
+    const int *seed, *pollen, *family_hint;
+    const int64_t *produced, *retained, *operations;
+} st_cross_future_operations;
+
+typedef struct
+{
+    int families;
+    const int *first, *second;
+    const int64_t *produced, *retained;
+    const double *accuracy;
+    const st_cross_future_operations *operation_view;
+} st_cross_future_design;
+
+typedef struct
+{
+    long double baseline, tail, g1_response, g2_response;
+} st_cross_future_score;
+
+typedef struct
+{
+    int complete, requested, completed, status;
+    st_cross_future_score score;
+    const char *reason;
+} st_cross_future_engine_value;
+
+typedef struct
+{
+    int designs, requested, completed, status;
+    const char *reason;
+    st_cross_future_score *score;
+    double *population, *population_SE;
+    int *population_state, *population_SE_state;
+    double *pair_moments, *pair_moments_SE;
+    int *pair_moments_state, *pair_moments_SE_state;
+    double *contrast, *contrast_SE;
+    int *contrast_state, *contrast_SE_state;
+} st_cross_future_final_result;
+
+typedef struct
+{
+    int valid, role, stage, replicate, first, second;
+    uint64_t candidate, slot, prefix, priority[2];
+    long double deviation;
+    double noise;
+} st_future_path_cache;
+
+typedef struct
+{
+    int first, second;
+    int64_t candidate;
+    size_t position;
+    long double value, center_tail, deviation;
+} st_future_line;
+
+typedef struct
+{
+    size_t first, second;
+} st_future_pair;
+
+typedef struct
+{
+    int64_t candidate;
+    uint64_t prefix;
+    double score;
+    uint64_t priority[2];
+} st_future_entry;
+
+typedef struct
+{
+    int valid, role, replicate, first, second;
+    int64_t produced, retained;
+    double accuracy;
+} st_future_family_cache;
+
+typedef struct
+{
+    int valid, first, second;
+    long double center, center_tail, variance, sd;
+} st_future_founder_cache;
+
+typedef struct
+{
+    int valid, role, replicate;
+    size_t slot;
+    st_future_line left, right;
+    long double mean, variance, pair_variance, pair_sd;
+} st_future_pair_cache;
+
+typedef struct
+{
+    st_dh_engine base;
+    st_cross_future_parameters parameters;
+    int initialized, permanent_failure, families;
+    long double panel_anchor, panel_tail;
+    int64_t produced, retained, future_retained;
+    size_t stride, path_capacity, family_capacity, pair_capacity;
+    st_future_path_cache *path_cache;
+    unsigned char *path_bits, *selected_bits;
+    st_future_family_cache *family_cache;
+    st_future_entry *family_choices, *heap;
+    st_future_founder_cache *founder_cache;
+    st_future_pair_cache *pair_cache;
+    uint64_t *pair_counts, *allele_count;
+    st_future_line *lines;
+    st_future_pair *pairs;
+    size_t *permutation;
+    long double *parent_center, *parent_tail;
+    unsigned char *parent_valid;
+    uint64_t cache_hits, cache_misses, cache_evictions;
+    uint64_t bank_root[2][3], bank_seed[2][3];
+    unsigned char bank_valid[2][3];
+    st_dh_stat *final_statistics;
+    double *replicate_values;
+    st_cross_future_score *replicate_scores;
+    int final_design_capacity;
+} st_future_engine;
+
+static const char st_future_protocol[] = "dh.two.cycle.haldane.slot.xorshift64star.v1";
+
+static int st_future_fail(st_future_engine *engine, int failure, const char *reason)
+{
+    engine->base.failure = failure;
+    engine->base.reason = reason;
+    return 0;
+}
+
+static int st_future_product(size_t a, size_t b, size_t *value)
+{
+    if (b && a > SIZE_MAX / b) return 0;
+    *value = a * b;
+    return 1;
+}
+
+static void *st_future_allocate(st_future_engine *engine, size_t count, size_t size)
+{
+    size_t bytes;
+    if (engine->base.failure) return NULL;
+    if (!count || !size || !st_future_product(count, size, &bytes))
+    {
+        st_future_fail(engine, 2, "numeric.range");
+        return NULL;
+    }
+    void *result = engine->base.allocate(engine->base.budget, count, size);
+    if (!result) st_future_fail(engine, 1, "memory.limit");
+    return result;
+}
+
+static size_t st_future_capacity(uint64_t requested, size_t maximum)
+{
+    size_t capacity = 16;
+    while (capacity < requested && capacity < maximum) capacity *= 2;
+    return capacity;
+}
+
+static int st_future_group_prefix(st_future_engine *engine, int role, int stage,
+    int replicate, int first, int second, uint64_t *prefix)
+{
+    st_dh_engine *base = &engine->base;
+    uint64_t seed = role == 1 ? engine->parameters.training_seed :
+        engine->parameters.evaluation_seed;
+    int r = role - 1, k = stage - 1;
+    if (!engine->bank_valid[r][k] || engine->bank_seed[r][k] != seed)
+    {
+        uint64_t root = UINT64_C(14695981039346656037);
+        if (!st_dh_hash_bytes(base, &root, (const unsigned char *)st_future_protocol,
+                sizeof(st_future_protocol)) ||
+            !st_dh_hash_text(base, &root, 1, base->view.core_key) ||
+            !st_dh_hash_integer(base, &root, 2, seed) ||
+            !st_dh_hash_integer(base, &root, 3, (uint64_t)role) ||
+            !st_dh_hash_integer(base, &root, 4, (uint64_t)stage)) return 0;
+        engine->bank_root[r][k] = root; engine->bank_seed[r][k] = seed;
+        engine->bank_valid[r][k] = 1;
+    }
+    *prefix = engine->bank_root[r][k];
+    if (!st_dh_hash_integer(base, prefix, 5, (uint64_t)replicate)) return 0;
+    if (stage == 1 &&
+        (!st_dh_hash_text(base, prefix, 6, base->view.parent_ids[first]) ||
+         !st_dh_hash_text(base, prefix, 7, base->view.parent_ids[second]))) return 0;
+    return 1;
+}
+
+static int st_future_prefix(st_future_engine *engine, int role, int stage,
+    int replicate, int first, int second, uint64_t candidate, uint64_t *prefix)
+{
+    return st_future_group_prefix(engine, role, stage, replicate, first, second, prefix) &&
+        (stage == 2 || st_dh_hash_integer(&engine->base, prefix, 8, candidate));
+}
+
+static int st_future_domain(st_future_engine *engine, uint64_t prefix,
+    int stage, uint64_t slot, int domain, uint64_t counter, uint64_t *state)
+{
+    st_dh_engine *base = &engine->base;
+    if (!st_dh_hash_integer(base, &prefix, 9, (uint64_t)domain)) return 0;
+    if (domain == 1 && !st_dh_hash_integer(base, &prefix, 10, counter)) return 0;
+    if (domain == 3 && !st_dh_hash_integer(base, &prefix, 11, counter)) return 0;
+    if (stage == 3 && !st_dh_hash_integer(base, &prefix, 12, slot)) return 0;
+    *state = st_dh_mix(prefix);
+    return 1;
+}
+
+static int st_future_priority(st_future_engine *engine, uint64_t prefix,
+    int stage, uint64_t slot, uint64_t word, uint64_t *priority)
+{
+    uint64_t state;
+    if (!st_future_domain(engine, prefix, stage, slot, 3, word, &state) ||
+        !st_dh_charge(&engine->base, 5, 1)) return 0;
+    *priority = st_cross_private_random(&state);
+    return 1;
+}
+
+static int st_future_compare_entry(st_future_engine *engine,
+    const st_future_entry *left, const st_future_entry *right,
+    int stage, uint64_t slot, int *comparison)
+{
+    if (!st_dh_charge(&engine->base, 7, 1)) return 0;
+    if (left->score != right->score)
+    {
+        *comparison = left->score > right->score ? 1 : -1;
+        return 1;
+    }
+    for (int i = 0; i < 2; i++) if (left->priority[i] != right->priority[i])
+    {
+        *comparison = left->priority[i] > right->priority[i] ? 1 : -1;
+        return 1;
+    }
+    if (left->candidate == right->candidate) { *comparison = 0; return 1; }
+    for (uint64_t word = 2; ; word++)
+    {
+        uint64_t a, b;
+        if (!st_future_priority(engine, left->prefix, stage, slot, word, &a) ||
+            !st_future_priority(engine, right->prefix, stage, slot, word, &b))
+        {
+            engine->base.reason = "tie.refinement.work.limit";
+            return 0;
+        }
+        if (a != b) { *comparison = a > b ? 1 : -1; return 1; }
+        if (word == UINT64_MAX)
+            return st_future_fail(engine, 2, "tie.refinement.numeric.range");
+    }
+}
+
+static int st_future_heap(st_future_engine *engine, size_t *used,
+    size_t capacity, const st_future_entry *entry, int stage, uint64_t slot)
+{
+    st_future_entry *heap = engine->heap;
+    int comparison;
+    if (*used < capacity)
+    {
+        size_t at = (*used)++;
+        heap[at] = *entry;
+        while (at)
+        {
+            size_t parent = (at - 1) / 2;
+            if (!st_future_compare_entry(engine, heap + at, heap + parent,
+                    stage, slot, &comparison)) return 0;
+            if (comparison >= 0) break;
+            st_future_entry temporary = heap[parent]; heap[parent] = heap[at];
+            heap[at] = temporary; at = parent;
+        }
+        return 1;
+    }
+    if (!st_future_compare_entry(engine, entry, heap, stage, slot, &comparison)) return 0;
+    if (comparison <= 0) return 1;
+    heap[0] = *entry;
+    size_t at = 0;
+    while (at < *used / 2)
+    {
+        size_t child = at * 2 + 1;
+        if (child + 1 < *used)
+        {
+            if (!st_future_compare_entry(engine, heap + child + 1, heap + child,
+                    stage, slot, &comparison)) return 0;
+            if (comparison < 0) child++;
+        }
+        if (!st_future_compare_entry(engine, heap + at, heap + child,
+                stage, slot, &comparison)) return 0;
+        if (comparison <= 0) break;
+        st_future_entry temporary = heap[at]; heap[at] = heap[child];
+        heap[child] = temporary; at = child;
+    }
+    return 1;
+}
+
+static int st_future_bit(const unsigned char *bits, int marker)
+{ return (bits[(size_t)marker / 8] >> (marker % 8)) & 1; }
+
+static void st_future_sum(long double *sum, long double *error, long double term)
+{
+    long double next = *sum + term;
+    *error += fabsl(*sum) >= fabsl(term) ? (*sum - next) + term : (term - next) + *sum;
+    *sum = next;
+}
+
+static void st_future_trait_sum(long double *sum, long double *error, long double term)
+{
+    long double next = *sum + term;
+    *error += fabsl(*sum) >= fabsl(term) ? (*sum - next) + term : (term - next) + *sum;
+    *sum = next;
+}
+
+static int st_future_parent(st_future_engine *engine, int parent, long double *center, long double *tail)
+{
+    if (!engine->parent_valid[parent])
+    {
+        if (!st_dh_charge(&engine->base, 2, (uint64_t)engine->base.view.markers)) return 0;
+        long double sum = 0, error = 0;
+        for (int j = 0; j < engine->base.view.markers; j++)
+            st_future_trait_sum(&sum, &error, 2.0L * engine->base.view.effect[j] *
+                (st_dh_bit(&engine->base.view, parent, j) -
+                 st_dh_bit(&engine->base.view, 0, j)));
+        if (!isfinite(sum) || !isfinite(error) || !isfinite(sum + error) || fabsl(sum + error) > DBL_MAX)
+            return st_future_fail(engine, 2, "numeric.range");
+        engine->parent_center[parent] = sum; engine->parent_tail[parent] = error;
+        engine->parent_valid[parent] = 1;
+    }
+    *center = engine->parent_center[parent]; *tail = engine->parent_tail[parent];
+    return 1;
+}
+
+static int st_future_moment(st_future_engine *engine,
+    const unsigned char *left, const unsigned char *right,
+    long double *variance, long double *sd)
+{
+    const st_cross_dh_view *view = &engine->base.view;
+    if (!st_dh_charge(&engine->base, 2, (uint64_t)view->markers)) return 0;
+    long double norm = 0;
+    for (int k = 0; k < view->chromosomes; k++)
+    {
+        int begin = view->chromosome_start[k], end = view->chromosome_start[k + 1];
+        long double forward = 0, correction = 0;
+        for (int j = begin; j < end; j++)
+        {
+            long double probability = view->switch_probability[j], decay =
+                j == begin ? 0 : 1 - 2 * probability;
+            forward *= decay; correction *= decay;
+            long double term = (long double)view->effect[j] *
+                (st_future_bit(left, j) - st_future_bit(right, j)), next = forward + term;
+            correction += fabsl(forward) >= fabsl(term) ? (forward - next) + term : (term - next) + forward;
+            forward = next;
+            long double value = forward + correction;
+            if (j + 1 == end) norm = hypotl(norm, value);
+            else
+            {
+                long double next = view->switch_probability[j + 1],
+                    innovation = sqrtl(4 * next * (1 - next)), component = innovation * value;
+                if (innovation > 0 && value != 0 && component == 0)
+                    return st_future_fail(engine, 2, "numeric.range");
+                norm = hypotl(norm, component);
+            }
+        }
+    }
+    *sd = norm; *variance = norm * norm;
+    if (!isfinite(*variance) || *variance > DBL_MAX ||
+        (norm > 0 && (*variance == 0 || (double)*variance == 0)))
+        return st_future_fail(engine, 2, "numeric.range");
+    return 1;
+}
+
+static int st_future_founders(st_future_engine *engine, int first, int second,
+    long double *center, long double *center_tail, long double *variance, long double *sd)
+{
+    size_t at = ((size_t)(unsigned)first * (size_t)UINT64_C(11400714819323198485) ^
+        (unsigned)second) & (engine->family_capacity - 1);
+    st_future_founder_cache *cache = engine->founder_cache + at;
+    if (!st_dh_charge(&engine->base, 2, 1)) return 0;
+    if (!cache->valid || cache->first != first || cache->second != second)
+    {
+        long double left, left_tail, right, right_tail;
+        if (!st_future_parent(engine, first, &left, &left_tail) ||
+            !st_future_parent(engine, second, &right, &right_tail)) return 0;
+        cache->valid = 0;
+        if (!st_future_moment(engine,
+                engine->base.view.founder_bits + (size_t)first * engine->base.view.founder_stride,
+                engine->base.view.founder_bits + (size_t)second * engine->base.view.founder_stride,
+                &cache->variance, &cache->sd)) return 0;
+        cache->first = first; cache->second = second;
+        cache->center = cache->center_tail = 0;
+        st_future_sum(&cache->center, &cache->center_tail, left / 2);
+        st_future_sum(&cache->center, &cache->center_tail, right / 2);
+        st_future_sum(&cache->center, &cache->center_tail, left_tail / 2);
+        st_future_sum(&cache->center, &cache->center_tail, right_tail / 2);
+        cache->valid = 1;
+    }
+    *center = cache->center; *center_tail = cache->center_tail;
+    *variance = cache->variance; *sd = cache->sd;
+    return 1;
+}
+
+static int st_future_path(st_future_engine *engine, int role, int stage,
+    int replicate, int first, int second, uint64_t candidate, uint64_t slot,
+    uint64_t prefix, st_future_path_cache **output, unsigned char **bits)
+{
+    st_dh_engine *base = &engine->base;
+    uint64_t index = st_dh_mix(prefix ^ (slot * UINT64_C(0x9e3779b97f4a7c15)));
+    size_t at = (size_t)index & (engine->path_capacity - 1);
+    st_future_path_cache *cache = engine->path_cache + at;
+    *bits = engine->path_bits + at * engine->stride;
+    if (!st_dh_charge(base, 2, 1)) return 0;
+    if (cache->valid && cache->role == role && cache->stage == stage &&
+        cache->replicate == replicate && cache->first == first &&
+        cache->second == second && cache->candidate == candidate && cache->slot == slot)
+    {
+        engine->cache_hits++; *output = cache; return 1;
+    }
+    if (cache->valid) engine->cache_evictions++;
+    engine->cache_misses++; cache->valid = 0;
+    if (!st_dh_charge(base, 6, (uint64_t)base->view.markers)) return 0;
+    memset(*bits, 0, engine->stride);
+    long double deviation = 0, error = 0;
+    for (int chromosome = 0; chromosome < base->view.chromosomes; chromosome++)
+    {
+        uint64_t state;
+        if (!st_future_domain(engine, prefix, stage, slot, 1, (uint64_t)chromosome, &state) ||
+            !st_dh_charge(base, 5, base->chromosome_draws[chromosome])) return 0;
+        int parent = (st_cross_private_random(&state) >> 63) ? 1 : 0;
+        int begin = base->view.chromosome_start[chromosome],
+            end = base->view.chromosome_start[chromosome + 1];
+        for (int j = begin; j < end; j++)
+        {
+            double probability = base->view.switch_probability[j];
+            if (j > begin && probability > 0 &&
+                (double)(st_cross_private_random(&state) >> 11) * 0x1p-53 < probability)
+                parent = !parent;
+            int allele = parent;
+            if (stage == 1)
+            {
+                int a = st_dh_bit(&base->view, first, j), b = st_dh_bit(&base->view, second, j);
+                allele = parent ? b : a;
+                st_future_trait_sum(&deviation, &error,
+                    (long double)base->view.effect[j] * (a - b) * (parent ? -1 : 1));
+            }
+            if (allele) (*bits)[(size_t)j / 8] |= (unsigned char)(1u << (j % 8));
+        }
+    }
+    uint64_t state;
+    if (!st_future_domain(engine, prefix, stage, slot, 2, 0, &state) ||
+        !st_dh_charge(base, 5, 2)) return 0;
+    double a = ((double)(st_cross_private_random(&state) >> 12) + .5) * 0x1p-52,
+        b = ((double)(st_cross_private_random(&state) >> 12) + .5) * 0x1p-52;
+    cache->noise = sqrt(-2 * log(a)) * cos(6.283185307179586476925286766559 * b);
+    if (!st_future_priority(engine, prefix, stage, slot, 0, cache->priority) ||
+        !st_future_priority(engine, prefix, stage, slot, 1, cache->priority + 1)) return 0;
+    deviation += error;
+    if (!isfinite(deviation) || fabsl(deviation) > DBL_MAX)
+        return st_future_fail(engine, 2, "numeric.range");
+    cache->role = role; cache->stage = stage; cache->replicate = replicate;
+    cache->first = first; cache->second = second; cache->candidate = candidate;
+    cache->slot = slot; cache->prefix = prefix; cache->deviation = deviation;
+    cache->valid = 1; *output = cache;
+    return 1;
+}
+
+static int st_future_index(st_future_engine *engine, long double deviation,
+    long double sd, double accuracy, double noise, double *score)
+{
+    long double value = sd == 0 ? 0 : (long double)accuracy * (deviation / sd) +
+        sqrtl((1 - (long double)accuracy) * (1 + (long double)accuracy)) * noise;
+    if (!isfinite(value) || fabsl(value) > DBL_MAX)
+        return st_future_fail(engine, 2, "numeric.range");
+    *score = (double)value;
+    return 1;
+}
+
+static int st_future_design_totals(st_future_engine *engine,
+    const st_cross_future_design *design, int64_t *produced, int64_t *retained)
+{
+    if (!design || design->families < 1 || !design->first || !design->second ||
+        !design->produced || !design->retained || !design->accuracy) return 0;
+    *produced = *retained = 0;
+    for (int j = 0; j < design->families; j++)
+    {
+        int a = design->first[j], b = design->second[j];
+        int64_t n = design->produced[j], r = design->retained[j];
+        double rho = design->accuracy[j];
+        if (a < 0 || b < 0 || a >= engine->base.view.parents || b >= engine->base.view.parents ||
+            a == b || n < 1 || r < 0 || r > n || !isfinite(rho) || rho < 0 || rho > 1 ||
+            n > INT64_MAX - *produced || r > INT64_MAX - *retained) return 0;
+        *produced += n; *retained += r;
+    }
+    return *retained >= 2 && !(*retained % 2);
+}
+
+static int st_future_initialize(st_future_engine *engine, const st_cross_future_design *design)
+{
+    int64_t produced, retained;
+    if (!st_future_design_totals(engine, design, &produced, &retained))
+        return st_future_fail(engine, 2, "invalid.future.design");
+    if (engine->initialized)
+    {
+        if (engine->families != design->families || engine->produced != produced ||
+            engine->retained != retained) return st_future_fail(engine, 2, "future.resource.conflict");
+        return 1;
+    }
+    if ((uint64_t)retained > SIZE_MAX || engine->parameters.retained < 1 ||
+        engine->parameters.produced < engine->parameters.retained ||
+        (uint64_t)(retained / 2) > UINT64_C(9007199254740991) /
+            (uint64_t)engine->parameters.produced)
+        return st_future_fail(engine, 2, "numeric.range");
+    engine->families = design->families; engine->produced = produced; engine->retained = retained;
+    engine->future_retained = (retained / 2) * engine->parameters.retained;
+    uint64_t bank = (uint64_t)(engine->parameters.training > engine->parameters.evaluation ?
+        engine->parameters.training : engine->parameters.evaluation);
+    uint64_t demand = (uint64_t)produced;
+    if (bank > UINT64_MAX / demand / 4) demand = UINT64_MAX;
+    else demand *= bank * 4;
+    engine->path_capacity = st_future_capacity(demand, 131072);
+    demand = (uint64_t)design->families;
+    if (bank > UINT64_MAX / demand / 2) demand = UINT64_MAX;
+    else demand *= bank * 2;
+    engine->family_capacity = st_future_capacity(demand, 1024);
+    demand = (uint64_t)retained;
+    if (bank > UINT64_MAX / demand) demand = UINT64_MAX;
+    else demand *= bank;
+    engine->pair_capacity = st_future_capacity(demand, 2048);
+    size_t bytes, choices, counts, selected_bytes, allele_cells;
+    if ((uint64_t)engine->parameters.retained > SIZE_MAX ||
+        !st_future_product(engine->path_capacity, engine->stride, &bytes) ||
+        !st_future_product(engine->family_capacity, (size_t)retained, &choices) ||
+        !st_future_product(engine->pair_capacity, (size_t)engine->base.view.markers, &counts) ||
+        !st_future_product((size_t)retained, engine->stride, &selected_bytes) ||
+        !st_future_product((size_t)engine->base.view.markers, 2, &allele_cells))
+        return st_future_fail(engine, 2, "numeric.range");
+    engine->path_cache = st_future_allocate(engine, engine->path_capacity, sizeof(*engine->path_cache));
+    engine->path_bits = st_future_allocate(engine, bytes, 1);
+    engine->family_cache = st_future_allocate(engine, engine->family_capacity, sizeof(*engine->family_cache));
+    engine->family_choices = st_future_allocate(engine, choices, sizeof(*engine->family_choices));
+    engine->founder_cache = st_future_allocate(engine, engine->family_capacity, sizeof(*engine->founder_cache));
+    engine->pair_cache = st_future_allocate(engine, engine->pair_capacity, sizeof(*engine->pair_cache));
+    engine->pair_counts = st_future_allocate(engine, counts, sizeof(*engine->pair_counts));
+    engine->lines = st_future_allocate(engine, (size_t)retained, sizeof(*engine->lines));
+    engine->pairs = st_future_allocate(engine, (size_t)retained / 2, sizeof(*engine->pairs));
+    engine->permutation = st_future_allocate(engine, (size_t)retained, sizeof(*engine->permutation));
+    size_t heap = (size_t)retained;
+    if ((size_t)engine->parameters.retained > heap) heap = (size_t)engine->parameters.retained;
+    engine->heap = st_future_allocate(engine, heap, sizeof(*engine->heap));
+    engine->selected_bits = st_future_allocate(engine, selected_bytes, 1);
+    engine->allele_count = st_future_allocate(engine, allele_cells,
+        sizeof(*engine->allele_count));
+    if (engine->base.failure) { engine->permanent_failure = engine->base.failure; return 0; }
+    memset(engine->path_cache, 0, engine->path_capacity * sizeof(*engine->path_cache));
+    memset(engine->family_cache, 0, engine->family_capacity * sizeof(*engine->family_cache));
+    memset(engine->founder_cache, 0, engine->family_capacity * sizeof(*engine->founder_cache));
+    memset(engine->pair_cache, 0, engine->pair_capacity * sizeof(*engine->pair_cache));
+    engine->initialized = 1;
+    return 1;
+}
+
+static int st_future_line_compare(const void *a, const void *b)
+{
+    const st_future_line *left = a, *right = b;
+    if (left->first != right->first) return left->first < right->first ? -1 : 1;
+    if (left->second != right->second) return left->second < right->second ? -1 : 1;
+    return left->candidate < right->candidate ? -1 : left->candidate > right->candidate;
+}
+
+static int st_future_pair_compare(const void *a, const void *b)
+{
+    const st_future_pair *left = a, *right = b;
+    if (left->first != right->first) return left->first < right->first ? -1 : 1;
+    return left->second < right->second ? -1 : left->second > right->second;
+}
+
+static int st_future_same_line(const st_future_line *a, const st_future_line *b)
+{ return a->first == b->first && a->second == b->second && a->candidate == b->candidate; }
+
+static int st_future_g1(st_future_engine *engine, const st_cross_future_design *design,
+    int role, int replicate, st_cross_future_score *score, st_dh_stat *panel)
+{
+    long double baseline = 0, baseline_tail = 0, weighted = 0, weighted_error = 0, response = 0, response_error = 0;
+    size_t line_count = 0;
+    for (int family = 0; family < design->families; family++)
+    {
+        int64_t n = design->produced[family], r = design->retained[family];
+        if (!r) continue;
+        int first = design->first[family], second = design->second[family];
+        if (first > second) { int temporary = first; first = second; second = temporary; }
+        long double center, center_tail, variance, sd;
+        if (!st_future_founders(engine, first, second, &center, &center_tail, &variance, &sd)) return 0;
+        if (!line_count) { baseline = center; baseline_tail = center_tail; }
+        st_future_sum(&weighted, &weighted_error,
+            ((long double)r / engine->retained) * center);
+        st_future_sum(&weighted, &weighted_error,
+            ((long double)r / engine->retained) * center_tail);
+        double accuracy = design->accuracy[family];
+        uint64_t family_prefix, zero_prefix;
+        if (!st_future_group_prefix(engine, role, 1, replicate, first, second, &family_prefix)) return 0;
+        zero_prefix = family_prefix;
+        if (!st_dh_hash_integer(&engine->base, &zero_prefix, 8, 0)) return 0;
+        uint64_t family_hash = st_dh_mix(zero_prefix ^ (uint64_t)n ^
+            ((uint64_t)r * UINT64_C(0x9e3779b97f4a7c15)));
+        size_t at = (size_t)family_hash & (engine->family_capacity - 1);
+        st_future_family_cache *cache = engine->family_cache + at;
+        st_future_entry *choices = engine->family_choices + at * (size_t)engine->retained;
+        if (!st_dh_charge(&engine->base, 2, 1)) return 0;
+        int hit = cache->valid && cache->role == role && cache->replicate == replicate &&
+            cache->first == first && cache->second == second && cache->produced == n &&
+            cache->retained == r && cache->accuracy == accuracy;
+        if (!hit)
+        {
+            cache->valid = 0;
+            size_t used = 0;
+            for (int64_t candidate = 0; candidate < n; candidate++)
+            {
+                uint64_t prefix = family_prefix;
+                if (!st_dh_hash_integer(&engine->base, &prefix, 8, (uint64_t)candidate)) return 0;
+                st_future_entry entry = {.candidate = candidate, .prefix = prefix,
+                    .score = 0, .priority = {0, 0}};
+                if (r < n)
+                {
+                    st_future_path_cache *path; unsigned char *bits;
+                    if (!st_future_path(engine, role, 1, replicate, first, second,
+                            (uint64_t)candidate, 0, prefix, &path, &bits) ||
+                        !st_future_index(engine, path->deviation, sd, accuracy, path->noise,
+                            &entry.score)) return 0;
+                    entry.priority[0] = path->priority[0]; entry.priority[1] = path->priority[1];
+                    if (!st_future_heap(engine, &used, (size_t)r, &entry, 1, 0)) return 0;
+                }
+                else choices[(size_t)candidate] = entry;
+            }
+            if (r < n)
+            {
+                if (used != (size_t)r) return st_future_fail(engine, 2, "invalid.selected.heap");
+                if (!st_dh_charge(&engine->base, 8, (uint64_t)r)) return 0;
+                memcpy(choices, engine->heap, (size_t)r * sizeof(*choices));
+            }
+            cache->role = role; cache->replicate = replicate; cache->first = first;
+            cache->second = second; cache->produced = n; cache->retained = r;
+            cache->accuracy = accuracy; cache->valid = 1;
+        }
+        for (int64_t j = 0; j < r; j++)
+        {
+            st_future_path_cache *path; unsigned char *bits;
+            st_future_entry *choice = choices + (size_t)j;
+            if (!st_future_path(engine, role, 1, replicate, first, second,
+                    (uint64_t)choice->candidate, 0, choice->prefix, &path, &bits) ||
+                !st_dh_charge(&engine->base, 8, (uint64_t)engine->stride)) return 0;
+            st_future_line *line = engine->lines + line_count;
+            line->first = first; line->second = second; line->candidate = choice->candidate;
+            line->position = line_count; line->value = center;
+            line->center_tail = center_tail; line->deviation = path->deviation;
+            memcpy(engine->selected_bits + line_count * engine->stride, bits, engine->stride);
+            long double relative = 0, relative_error = 0;
+            st_future_sum(&relative, &relative_error, center);
+            st_future_sum(&relative, &relative_error, -baseline);
+            st_future_sum(&relative, &relative_error, center_tail);
+            st_future_sum(&relative, &relative_error, -baseline_tail);
+            st_future_sum(&relative, &relative_error, path->deviation);
+            st_dh_stat_add(panel, relative + relative_error);
+            st_future_sum(&response, &response_error, path->deviation / engine->retained);
+            line_count++;
+        }
+    }
+    if (line_count != (size_t)engine->retained)
+        return st_future_fail(engine, 2, "invalid.selected.population");
+    int levels = 0;
+    for (size_t count = line_count; count; count >>= 1) levels++;
+    if (!st_dh_charge(&engine->base, 7, (uint64_t)line_count * (uint64_t)levels)) return 0;
+    qsort(engine->lines, line_count, sizeof(*engine->lines), st_future_line_compare);
+    engine->panel_anchor = baseline; engine->panel_tail = baseline_tail;
+    score->baseline = weighted; score->tail = weighted_error;
+    score->g1_response = response + response_error; score->g2_response = 0;
+    return 1;
+}
+
+static int st_future_matching(st_future_engine *engine, int role, int replicate)
+{
+    size_t total = (size_t)engine->retained;
+    if (!st_dh_charge(&engine->base, 7, (uint64_t)total)) return 0;
+    for (size_t i = 0; i < total; i++) engine->permutation[i] = i;
+    uint64_t prefix, state;
+    if (!st_future_prefix(engine, role, 2, replicate, 0, 0, 0, &prefix) ||
+        !st_future_domain(engine, prefix, 2, 0, 4, 0, &state)) return 0;
+    for (size_t i = total - 1; i; i--)
+    {
+        uint64_t bound = (uint64_t)i + 1, threshold = (UINT64_MAX - bound + 1) % bound, value;
+        do {
+            if (!st_dh_charge(&engine->base, 5, 1)) return 0;
+            value = st_cross_private_random(&state);
+        } while (value < threshold);
+        size_t other = (size_t)(value % bound), temporary = engine->permutation[i];
+        engine->permutation[i] = engine->permutation[other]; engine->permutation[other] = temporary;
+    }
+    for (size_t i = 0; i < total / 2; i++)
+    {
+        size_t first = engine->permutation[2 * i], second = engine->permutation[2 * i + 1];
+        engine->pairs[i].first = first < second ? first : second;
+        engine->pairs[i].second = first < second ? second : first;
+    }
+    int levels = 0;
+    for (size_t count = total / 2; count; count >>= 1) levels++;
+    if (!st_dh_charge(&engine->base, 7, (uint64_t)(total / 2) * (uint64_t)levels)) return 0;
+    qsort(engine->pairs, total / 2, sizeof(*engine->pairs), st_future_pair_compare);
+    return 1;
+}
+
+static int st_future_g2_deviation(st_future_engine *engine, const unsigned char *left,
+    const unsigned char *right, const unsigned char *selector, long double *deviation,
+    uint64_t *counts)
+{
+    const st_cross_dh_view *view = &engine->base.view;
+    if (!st_dh_charge(&engine->base, counts ? 8 : 6, (uint64_t)view->markers)) return 0;
+    long double value = 0, error = 0;
+    for (int j = 0; j < view->markers; j++)
+    {
+        int a = st_future_bit(left, j), b = st_future_bit(right, j), parent = st_future_bit(selector, j);
+        st_future_trait_sum(&value, &error, (long double)view->effect[j] * (a - b) * (parent ? -1 : 1));
+        if (counts) counts[j] += (uint64_t)(parent ? b : a);
+    }
+    value += error;
+    if (!isfinite(value) || fabsl(value) > DBL_MAX)
+        return st_future_fail(engine, 2, "numeric.range");
+    *deviation = value;
+    return 1;
+}
+
+static uint64_t st_future_line_hash(const st_future_line *line)
+{
+    uint64_t value = (uint64_t)(unsigned)line->first * UINT64_C(0x9e3779b97f4a7c15) ^
+        (uint64_t)(unsigned)line->second * UINT64_C(0xbf58476d1ce4e5b9) ^ (uint64_t)line->candidate;
+    return st_dh_mix(value);
+}
+
+static int st_future_pair_result(st_future_engine *engine, int role, int replicate,
+    size_t slot, st_future_pair_cache **output, uint64_t **counts)
+{
+    st_future_pair *pair = engine->pairs + slot;
+    st_future_line *a = engine->lines + pair->first, *b = engine->lines + pair->second;
+    uint64_t hash = st_future_line_hash(a) ^ (st_future_line_hash(b) * UINT64_C(0x9e3779b97f4a7c15)) ^
+        (uint64_t)slot ^ (uint64_t)(unsigned)replicate * UINT64_C(0xbf58476d1ce4e5b9) ^ (uint64_t)role;
+    size_t at = (size_t)st_dh_mix(hash) & (engine->pair_capacity - 1);
+    st_future_pair_cache *cache = engine->pair_cache + at;
+    *counts = engine->pair_counts + at * (size_t)engine->base.view.markers;
+    if (!st_dh_charge(&engine->base, 2, 1)) return 0;
+    if (cache->valid && cache->role == role && cache->replicate == replicate && cache->slot == slot &&
+        st_future_same_line(&cache->left, a) && st_future_same_line(&cache->right, b))
+    { engine->cache_hits++; *output = cache; return 1; }
+    if (cache->valid) engine->cache_evictions++;
+    engine->cache_misses++; cache->valid = 0;
+    const unsigned char *left = engine->selected_bits + a->position * engine->stride,
+        *right = engine->selected_bits + b->position * engine->stride;
+    if (!st_future_moment(engine, left, right, &cache->pair_variance, &cache->pair_sd)) return 0;
+    int64_t n = engine->parameters.produced, r = engine->parameters.retained;
+    uint64_t group_prefix;
+    if (!st_future_group_prefix(engine, role, 3, replicate, 0, 0, &group_prefix)) return 0;
+    size_t used = 0;
+    if (r < n) for (int64_t candidate = 0; candidate < n; candidate++)
+    {
+        uint64_t prefix = group_prefix;
+        if (!st_dh_hash_integer(&engine->base, &prefix, 8, (uint64_t)candidate)) return 0;
+        st_future_path_cache *path; unsigned char *bits; long double deviation;
+        if (!st_future_path(engine, role, 3, replicate, 0, 0, (uint64_t)candidate,
+                (uint64_t)slot, prefix, &path, &bits) ||
+            !st_future_g2_deviation(engine, left, right, bits, &deviation, NULL)) return 0;
+        st_future_entry entry = {.candidate = candidate, .prefix = prefix,
+            .score = 0, .priority = {path->priority[0], path->priority[1]}};
+        if (!st_future_index(engine, deviation, cache->pair_sd, engine->parameters.accuracy,
+                path->noise, &entry.score) ||
+            !st_future_heap(engine, &used, (size_t)r, &entry, 3, (uint64_t)slot)) return 0;
+    }
+    if (r < n && used != (size_t)r) return st_future_fail(engine, 2, "invalid.selected.heap");
+    if (role == 2)
+    {
+        if (!st_dh_charge(&engine->base, 8, (uint64_t)engine->base.view.markers)) return 0;
+        memset(*counts, 0, (size_t)engine->base.view.markers * sizeof(**counts));
+    }
+    st_dh_stat selected = {0};
+    for (int64_t i = 0; i < r; i++)
+    {
+        uint64_t prefix, candidate = r < n ? (uint64_t)engine->heap[(size_t)i].candidate : (uint64_t)i;
+        if (r < n) prefix = engine->heap[(size_t)i].prefix;
+        else
+        {
+            prefix = group_prefix;
+            if (!st_dh_hash_integer(&engine->base, &prefix, 8, candidate)) return 0;
+        }
+        st_future_path_cache *path; unsigned char *bits; long double deviation;
+        if (!st_future_path(engine, role, 3, replicate, 0, 0, candidate,
+                (uint64_t)slot, prefix, &path, &bits) ||
+            !st_future_g2_deviation(engine, left, right, bits, &deviation, role == 2 ? *counts : NULL)) return 0;
+        st_dh_stat_add(&selected, deviation);
+    }
+    cache->mean = selected.mean; cache->variance = selected.variance;
+    cache->role = role; cache->replicate = replicate; cache->slot = slot;
+    cache->left = *a; cache->right = *b; cache->valid = 1;
+    *output = cache;
+    return 1;
+}
+
+static int st_future_metrics(st_future_engine *engine, const uint64_t *counts,
+    int64_t retained, const st_dh_stat *panel, long double response, long double center,
+    double *value)
+{
+    const st_cross_dh_view *view = &engine->base.view;
+    if (!st_dh_charge(&engine->base, 9, (uint64_t)view->markers)) return 0;
+    long double genomic = 0, diversity = 0;
+    for (int j = 0; j < view->markers; j++)
+    {
+        long double p = (long double)counts[j] / retained, delta = p - view->p0[j],
+            weight = view->weight[j];
+        if (view->reference_denominator > 0 && delta != 0)
+            genomic += (weight / view->reference_denominator) * delta * delta;
+        diversity += 2 * weight * p * (1 - p);
+    }
+    long double mean = center;
+    if (!isfinite(mean) || fabsl(mean) > DBL_MAX || !isfinite(response) || fabsl(response) > DBL_MAX ||
+        !isfinite(panel->variance) || panel->variance > DBL_MAX || !isfinite(diversity) || diversity > DBL_MAX)
+        return st_future_fail(engine, 2, "numeric.range");
+    value[0] = (double)response; value[1] = (double)mean; value[2] = (double)panel->variance;
+    value[3] = value[4] = value[5] = NAN; value[6] = (double)diversity;
+    if (retained > 1)
+    {
+        long double sample = panel->variance * ((long double)retained / (retained - 1));
+        if (isfinite(sample) && sample <= DBL_MAX) value[3] = (double)sample;
+    }
+    if (view->reference_denominator > 0 && isfinite(genomic) && genomic <= DBL_MAX)
+        value[5] = (double)genomic;
+    return 1;
+}
+
+static int st_future_replicate(st_future_engine *engine, const st_cross_future_design *design,
+    int role, int replicate, st_cross_future_score *score, double *value)
+{
+    st_dh_stat g1 = {0}, g2 = {0};
+    if (!st_future_g1(engine, design, role, replicate, score, &g1) ||
+        !st_future_matching(engine, role, replicate)) return 0;
+    size_t markers = (size_t)engine->base.view.markers;
+    if (value)
+    {
+        if (!st_dh_charge(&engine->base, 8, (uint64_t)markers * 2)) return 0;
+        memset(engine->allele_count, 0, markers * 2 * sizeof(*engine->allele_count));
+        for (size_t i = 0; i < (size_t)engine->retained; i++)
+        {
+            const unsigned char *bits = engine->selected_bits + i * engine->stride;
+            if (!st_dh_charge(&engine->base, 8, (uint64_t)markers)) return 0;
+            for (int j = 0; j < engine->base.view.markers; j++)
+                engine->allele_count[j] += (uint64_t)st_future_bit(bits, j);
+        }
+    }
+    long double response = 0, error = 0, pair_variance = 0, pair_sd = 0;
+    size_t pairs = (size_t)engine->retained / 2;
+    for (size_t slot = 0; slot < pairs; slot++)
+    {
+        st_future_pair_cache *cache; uint64_t *counts;
+        if (!st_future_pair_result(engine, role, replicate, slot, &cache, &counts)) return 0;
+        st_future_sum(&response, &error, cache->mean / pairs);
+        if (value)
+        {
+            if (!st_dh_charge(&engine->base, 8, (uint64_t)markers)) return 0;
+            st_future_pair *pair = engine->pairs + slot;
+            long double mean = 0, mean_error = 0;
+            st_future_sum(&mean, &mean_error, engine->lines[pair->first].value / 2);
+            st_future_sum(&mean, &mean_error, engine->lines[pair->second].value / 2);
+            st_future_sum(&mean, &mean_error, -engine->panel_anchor);
+            st_future_sum(&mean, &mean_error, engine->lines[pair->first].center_tail / 2);
+            st_future_sum(&mean, &mean_error, engine->lines[pair->second].center_tail / 2);
+            st_future_sum(&mean, &mean_error, -engine->panel_tail);
+            st_future_sum(&mean, &mean_error, engine->lines[pair->first].deviation / 2);
+            st_future_sum(&mean, &mean_error, engine->lines[pair->second].deviation / 2);
+            st_future_sum(&mean, &mean_error, cache->mean);
+            mean += mean_error;
+            long double delta = mean - g2.mean;
+            int64_t count = engine->parameters.retained, total = g2.count + count;
+            g2.mean += delta * ((long double)count / total);
+            g2.variance = ((long double)g2.count / total) * g2.variance +
+                ((long double)count / total) * cache->variance +
+                ((long double)g2.count / total) * ((long double)count / total) * delta * delta;
+            g2.count = total;
+            pair_variance += cache->pair_variance / pairs; pair_sd += cache->pair_sd / pairs;
+            for (size_t j = 0; j < markers; j++) engine->allele_count[markers + j] += counts[j];
+        }
+    }
+    response += error;
+    score->g2_response = response;
+    if (!isfinite(response) || fabsl(response) > DBL_MAX ||
+        !isfinite(score->g1_response) || fabsl(score->g1_response) > DBL_MAX)
+        return st_future_fail(engine, 2, "numeric.range");
+    if (!value) return 1;
+    if (!isfinite(pair_variance) || pair_variance > DBL_MAX || !isfinite(pair_sd) || pair_sd > DBL_MAX)
+        return st_future_fail(engine, 2, "numeric.range");
+    long double current_mean = 0, current_error = 0, future_mean = 0, future_error = 0;
+    st_future_sum(&current_mean, &current_error, score->baseline);
+    st_future_sum(&current_mean, &current_error, score->tail);
+    st_future_sum(&current_mean, &current_error, score->g1_response);
+    future_mean = current_mean; future_error = current_error;
+    st_future_sum(&future_mean, &future_error, score->g2_response);
+    if (!st_future_metrics(engine, engine->allele_count, engine->retained, &g1,
+            score->g1_response, current_mean + current_error, value) ||
+        !st_future_metrics(engine, engine->allele_count + markers, engine->future_retained, &g2,
+            score->g2_response, future_mean + future_error, value + 7)) return 0;
+    value[14] = (double)pair_variance; value[15] = (double)pair_sd;
+    return 1;
+}
+
+void *st_cross_future_engine_create(const st_cross_dh_view *view,
+    const st_cross_future_parameters *parameters, void *budget,
+    st_cross_dh_alloc allocate, st_cross_dh_charge charge)
+{
+    if (!view || !parameters || !allocate || !charge || view->version != 1 ||
+        view->parents < 1 || view->markers < 1 || view->chromosomes < 1 ||
+        !view->founder_bits || !view->parent_ids || !view->core_key || !view->effect ||
+        !view->weight || !view->p0 || !view->switch_probability || !view->chromosome_start ||
+        parameters->produced < 1 || parameters->retained < 1 ||
+        parameters->retained > parameters->produced || !isfinite(parameters->accuracy) ||
+        parameters->accuracy < 0 || parameters->accuracy > 1 ||
+        parameters->training < 1 || parameters->evaluation < 1) return NULL;
+    st_future_engine *engine = allocate(budget, 1, sizeof(*engine));
+    if (!engine) return NULL;
+    memset(engine, 0, sizeof(*engine)); engine->base.view = *view;
+    engine->base.budget = budget; engine->base.allocate = allocate; engine->base.charge = charge;
+    engine->parameters = *parameters; engine->stride = ((size_t)view->markers + 7) / 8;
+    engine->base.chromosome_draws = st_future_allocate(engine,
+        (size_t)view->chromosomes, sizeof(*engine->base.chromosome_draws));
+    engine->parent_center = st_future_allocate(engine, (size_t)view->parents, sizeof(*engine->parent_center));
+    engine->parent_tail = st_future_allocate(engine, (size_t)view->parents, sizeof(*engine->parent_tail));
+    engine->parent_valid = st_future_allocate(engine, (size_t)view->parents, sizeof(*engine->parent_valid));
+    if (engine->base.failure) { engine->permanent_failure = engine->base.failure; return engine; }
+    memset(engine->parent_valid, 0, (size_t)view->parents * sizeof(*engine->parent_valid));
+    if (!st_dh_charge(&engine->base, 1, (uint64_t)view->markers))
+    { engine->permanent_failure = engine->base.failure; return engine; }
+    for (int k = 0; k < view->chromosomes; k++)
+    {
+        int begin = view->chromosome_start[k], end = view->chromosome_start[k + 1];
+        if (begin < 0 || end <= begin || end > view->markers)
+        { st_future_fail(engine, 2, "invalid.model.view"); engine->permanent_failure = 2; return engine; }
+        uint64_t draws = 1;
+        for (int j = begin + 1; j < end; j++) draws += view->switch_probability[j] > 0;
+        engine->base.chromosome_draws[k] = draws;
+    }
+    return engine;
+}
+
+static void st_future_reset(st_future_engine *engine)
+{
+    if (!engine->permanent_failure) { engine->base.failure = 0; engine->base.reason = "complete"; }
+}
+
+int st_cross_future_engine_score(void *opaque, const st_cross_future_design *design,
+    st_cross_future_engine_value *value)
+{
+    st_future_engine *engine = opaque;
+    if (!engine || !value) return -4;
+    memset(value, 0, sizeof(*value)); value->requested = engine->parameters.training;
+    value->status = -4; value->reason = "invalid.internal.request";
+    st_future_reset(engine);
+    if (!engine->base.failure && !st_future_initialize(engine, design)) { }
+    if (engine->base.failure)
+    {
+        value->status = engine->base.failure == 1 ? 0 : -2;
+        value->reason = engine->base.reason; return value->status;
+    }
+    st_dh_stat g1 = {0}, g2 = {0}; st_cross_future_score current = {0};
+    for (int replicate = 0; replicate < engine->parameters.training; replicate++)
+    {
+        if (!st_future_replicate(engine, design, 1, replicate, &current, NULL)) break;
+        st_dh_stat_add(&g1, current.g1_response); st_dh_stat_add(&g2, current.g2_response);
+        value->completed++;
+    }
+    value->score = current;
+    value->score.g1_response = g1.mean; value->score.g2_response = g2.mean;
+    value->complete = value->completed == value->requested;
+    value->status = value->complete ? 1 : engine->base.failure == 2 ? -2 : 0;
+    value->reason = value->complete ? "complete" : engine->base.reason;
+    return value->status;
+}
+
+static int st_future_final_workspace(st_future_engine *engine, int designs)
+{
+    if (designs <= engine->final_design_capacity) return 1;
+    size_t statistics, cells;
+    if (designs < 1 || !st_future_product((size_t)designs, 19, &statistics) ||
+        !st_future_product((size_t)designs, 16, &cells))
+        return st_future_fail(engine, 2, "numeric.range");
+    engine->final_statistics = st_future_allocate(engine, statistics, sizeof(*engine->final_statistics));
+    engine->replicate_values = st_future_allocate(engine, cells, sizeof(*engine->replicate_values));
+    engine->replicate_scores = st_future_allocate(engine, (size_t)designs, sizeof(*engine->replicate_scores));
+    if (engine->base.failure) return 0;
+    engine->final_design_capacity = designs;
+    return 1;
+}
+
+int st_cross_future_engine_final(void *opaque, int designs,
+    const st_cross_future_design *design, st_cross_future_final_result *result)
+{
+    st_future_engine *engine = opaque;
+    if (!engine || !result || designs < 1 || !design || !result->score ||
+        !result->population || !result->population_SE || !result->population_state ||
+        !result->population_SE_state || !result->pair_moments || !result->pair_moments_SE ||
+        !result->pair_moments_state || !result->pair_moments_SE_state ||
+        (designs > 1 && (!result->contrast || !result->contrast_SE ||
+            !result->contrast_state || !result->contrast_SE_state))) return -4;
+    result->designs = designs; result->requested = engine->parameters.evaluation;
+    result->completed = 0; result->status = -4; result->reason = "invalid.internal.request";
+    if ((size_t)designs > SIZE_MAX / 19) return result->status;
+    st_dh_result_slots(result->population, result->population_SE,
+        result->population_state, result->population_SE_state, (size_t)designs * 14);
+    st_dh_result_slots(result->pair_moments, result->pair_moments_SE,
+        result->pair_moments_state, result->pair_moments_SE_state, (size_t)designs * 2);
+    if (designs > 1) st_dh_result_slots(result->contrast, result->contrast_SE,
+        result->contrast_state, result->contrast_SE_state, (size_t)(designs - 1) * 3);
+    st_future_reset(engine);
+    for (int i = 0; i < designs && !engine->base.failure; i++)
+        if (!st_future_initialize(engine, design + i)) break;
+    if (!engine->base.failure && !st_future_final_workspace(engine, designs)) { }
+    if (engine->base.failure)
+    {
+        result->status = engine->base.failure == 1 ? 0 : -2;
+        result->reason = engine->base.reason; return result->status;
+    }
+    memset(engine->final_statistics, 0, (size_t)designs * 19 * sizeof(*engine->final_statistics));
+    memset(engine->replicate_scores, 0, (size_t)designs * sizeof(*engine->replicate_scores));
+    for (int replicate = 0; replicate < engine->parameters.evaluation; replicate++)
+    {
+        int complete = 1;
+        for (int i = 0; i < designs; i++)
+            if (!st_future_replicate(engine, design + i, 2, replicate,
+                    engine->replicate_scores + i, engine->replicate_values + (size_t)i * 16))
+            { complete = 0; break; }
+        if (!complete) break;
+        if (!st_dh_charge(&engine->base, 10, (uint64_t)designs * 19)) break;
+        for (int i = 0; i < designs; i++)
+        {
+            st_dh_stat *statistics = engine->final_statistics + (size_t)i * 19;
+            double *metrics = engine->replicate_values + (size_t)i * 16;
+            for (int j = 0; j < 16; j++) if (isfinite(metrics[j]))
+            {
+                long double value = metrics[j];
+                if (j == 1) value = engine->replicate_scores[i].g1_response;
+                else if (j == 8)
+                {
+                    long double error = 0;
+                    value = engine->replicate_scores[i].g1_response;
+                    st_future_sum(&value, &error, engine->replicate_scores[i].g2_response);
+                    value += error;
+                }
+                st_dh_stat_add(statistics + j, value);
+            }
+            if (i)
+            {
+                const st_cross_future_score *chosen = engine->replicate_scores, *other = chosen + i;
+                long double base = (chosen->baseline - other->baseline) + (chosen->tail - other->tail),
+                    first = base + (chosen->g1_response - other->g1_response),
+                    second = first + (chosen->g2_response - other->g2_response);
+                st_dh_stat_add(statistics + 16, first); st_dh_stat_add(statistics + 17, second);
+                st_dh_stat_add(statistics + 18, chosen->g2_response - other->g2_response);
+            }
+        }
+        result->completed++;
+    }
+    for (int i = 0; i < designs; i++)
+    {
+        st_dh_stat *statistics = engine->final_statistics + (size_t)i * 19;
+        result->score[i] = engine->replicate_scores[i];
+        result->score[i].g1_response = statistics[0].mean;
+        result->score[i].g2_response = statistics[7].mean;
+        for (int j = 0; j < 14; j++)
+        {
+            size_t at = (size_t)i * 14 + (size_t)j;
+            st_dh_publish(statistics + j, result->population + at, result->population_SE + at,
+                result->population_state + at, result->population_SE_state + at);
+        }
+        for (int generation = 0; generation < 2; generation++)
+        {
+            size_t at = (size_t)i * 14 + (size_t)generation * 7;
+            if (result->population_state[at + 1] == 1)
+            {
+                long double mean = 0, error = 0;
+                st_future_sum(&mean, &error, result->score[i].baseline);
+                st_future_sum(&mean, &error, result->score[i].tail);
+                st_future_sum(&mean, &error, statistics[generation * 7 + 1].mean);
+                mean += error;
+                if (isfinite(mean) && fabsl(mean) <= DBL_MAX) result->population[at + 1] = (double)mean;
+                else
+                {
+                    result->population[at + 1] = NAN; result->population_state[at + 1] = -5;
+                }
+            }
+            st_dh_marginal(statistics + generation * 7 + 2, statistics + generation * 7 + 1,
+                result->population + at + 4, result->population_SE + at + 4,
+                result->population_state + at + 4, result->population_SE_state + at + 4);
+            int64_t retained = generation ? engine->future_retained : engine->retained;
+            if (retained == 1) result->population_state[at + 3] = result->population_SE_state[at + 3] = -2;
+            if (engine->base.view.reference_denominator == 0)
+                result->population_state[at + 5] = result->population_SE_state[at + 5] = -3;
+            for (int j = 0; j < 7; j++) if (j != 4 && result->completed &&
+                statistics[generation * 7 + j].count != result->completed &&
+                !(j == 3 && retained == 1) && !(j == 5 && engine->base.view.reference_denominator == 0))
+            {
+                result->population[at + j] = result->population_SE[at + j] = NAN;
+                result->population_state[at + j] = result->population_SE_state[at + j] = -5;
+            }
+        }
+        for (int j = 0; j < 2; j++)
+        {
+            size_t at = (size_t)i * 2 + (size_t)j;
+            st_dh_publish(statistics + 14 + j, result->pair_moments + at, result->pair_moments_SE + at,
+                result->pair_moments_state + at, result->pair_moments_SE_state + at);
+        }
+        if (i) for (int j = 0; j < 3; j++)
+        {
+            size_t at = (size_t)(i - 1) * 3 + (size_t)j;
+            st_dh_publish(statistics + 16 + j, result->contrast + at, result->contrast_SE + at,
+                result->contrast_state + at, result->contrast_SE_state + at);
+        }
+    }
+    result->status = result->completed == result->requested ? 1 : engine->base.failure == 2 ? -2 : 0;
+    result->reason = result->status == 1 ? "complete" : engine->base.reason;
+    return result->status;
+}
+
+void st_cross_future_engine_counters(const void *opaque, uint64_t *hits,
+    uint64_t *misses, uint64_t *evictions)
+{
+    const st_future_engine *engine = opaque;
+    if (hits) *hits = engine ? engine->cache_hits : 0;
+    if (misses) *misses = engine ? engine->cache_misses : 0;
+    if (evictions) *evictions = engine ? engine->cache_evictions : 0;
 }

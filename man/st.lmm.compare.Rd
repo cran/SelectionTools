@@ -49,7 +49,7 @@ meaningful. Refitting is reported in the table note and its
 \code{ML.refitted} attribute. The supplied objects are not changed.
 With \code{refit=FALSE}, ML and REML cannot be mixed. REML comparisons also
 require the same numeric fixed design matrix: using different contrast
-bases can change the additive constant in a restricted likelihood even
+bases can change the additive constant in a REML likelihood even
 when the fixed model spaces coincide.
 
 Models are ordered by their number of free parameters. This count is the

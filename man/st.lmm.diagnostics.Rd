@@ -15,7 +15,9 @@ st.lmm.diagnostics(object, type = "conditional")
 }
 \arguments{
 \item{object,model}{An \code{st.lmm} object fitted by ML or REML.
-Univariate and multivariate responses are supported.}
+Univariate and multivariate responses are supported. The \code{hatvalues}
+and \code{rstandard} methods also support univariate method-of-moments
+models containing only fixed effects.}
 \item{type}{\code{"conditional"} includes fitted random effects in the
 mean. \code{"marginal"} uses the fixed mean, including fitted offsets.}
 \item{...}{Additional arguments to the generic; currently unused.}
@@ -44,6 +46,14 @@ variance given by the diagonal of \eqn{V-XCX'}.
 \code{rstandard} divides the selected residual by the square root of its
 variance. A zero variance gives \code{NA} and an explicit status rather
 than a zero standardized residual.
+
+For a univariate fixed-only method-of-moments model, \code{hatvalues}
+uses the weighted fixed-design leverage and \code{rstandard} uses the
+ordinary regression residual variance with DF equal to the number of
+observations minus the fixed-design rank. Positive precision weights
+multiply the response residual by their square root before
+standardization. Marginal and conditional results agree in this case.
+The \code{st.lmm.diagnostics} table remains available only for ML and REML.
 
 \code{residuals(object)} uses the conditional response residual for a
 likelihood mixed model and the ANOVA projection residual for a mixed

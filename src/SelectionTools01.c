@@ -45,6 +45,62 @@
 #include <Rinternals.h>
 #include "SelectionToolsAllele.h"
 
+
+int st_text_write(char *, size_t, const char *, ...) R_PRINTF_FORMAT(3, 4);
+
+int st_text_write(char *out, size_t capacity, const char *format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    int needed = vsnprintf(out, capacity, format, args);
+    va_end(args);
+    if (needed < 0 || (size_t)needed >= capacity)
+        error("Formatted text exceeds its output buffer");
+    return needed;
+}
+
+void st_text_message(char *out, size_t capacity, const char *text)
+{
+    if (!capacity)
+        return;
+    size_t count = strlen(text);
+    if (count >= capacity)
+        count = capacity - 1;
+    if (count)
+        memcpy(out, text, count);
+    out[count] = '\0';
+}
+
+static void st_text_log(char *out, size_t capacity, const char *format, ...) R_PRINTF_FORMAT(3, 4);
+
+static void st_text_log(char *out, size_t capacity, const char *format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    int written = vsnprintf(out, capacity, format, args);
+    va_end(args);
+    if (written < 0)
+        st_text_message(out, capacity, "Cannot format diagnostic message");
+    else if ((size_t)written >= capacity)
+        st_text_message(out, capacity, "Diagnostic message exceeds its output buffer");
+}
+
+static int gs_native_resize(void *old, size_t rows, size_t columns,
+                            size_t width, void **out)
+{
+    if (columns && rows > SIZE_MAX / columns)
+        return 0;
+    size_t count = rows * columns;
+    if (width && count > SIZE_MAX / width)
+        return 0;
+    size_t bytes = count * width;
+    void *replacement = realloc(old, bytes ? bytes : 1);
+    if (!replacement)
+        return 0;
+    *out = replacement;
+    return 1;
+}
+
 typedef struct st_work_block
 {
     void *data;
@@ -215,9 +271,11 @@ const char *st_io_memory(const char *name)
     if (!buffer)
         error("Cannot allocate memory stream");
     st_work_adopt(buffer, st_io_buffer_destroy);
-    size_t n = strlen(name) + 18;
+    size_t length = strlen(name);
+    if (length > SIZE_MAX - 18) error("Memory stream name size overflow");
+    size_t n = length + 18;
     char *key = st_work_alloc(n, 1);
-    snprintf(key, n, "@SelectionTools:%s", name);
+    st_text_write(key, n, "@SelectionTools:%s", name);
     buffer->name = key;
     buffer->next = st_io_active->buffers;
     st_io_active->buffers = buffer;
@@ -290,9 +348,12 @@ int st_io_close(st_io_stream *stream)
 size_t st_io_write(const void *source, size_t size, size_t count,
                    st_io_stream *stream)
 {
+    if (!size || !count)
+        return 0;
     if (stream->file)
         return fwrite(source, size, count, stream->file);
-    if (size && count > (SIZE_MAX - stream->position - 1) / size)
+    if (stream->position == SIZE_MAX ||
+        count > (SIZE_MAX - stream->position - 1) / size)
         error("Memory stream size overflow");
     size_t bytes = size * count, needed = stream->position + bytes + 1;
     st_io_buffer *buffer = stream->buffer;
@@ -331,7 +392,7 @@ int st_io_printf(st_io_stream *stream, const char *format, ...)
         error("Cannot format memory stream");
     }
     size_t bytes = (size_t)n;
-    if (bytes > SIZE_MAX - stream->position - 1)
+    if (stream->position == SIZE_MAX || bytes > SIZE_MAX - stream->position - 1)
     {
         va_end(args);
         error("Memory stream size overflow");
@@ -349,8 +410,10 @@ int st_io_printf(st_io_stream *stream, const char *format, ...)
         }
         buffer->text = text; buffer->capacity = capacity;
     }
-    vsnprintf(buffer->text + stream->position,bytes + 1,format,args);
+    int written = vsnprintf(buffer->text + stream->position, bytes + 1, format, args);
     va_end(args);
+    if (written < 0 || (size_t)written >= bytes + 1 || written != n)
+        error("Cannot format memory stream within its reserved buffer");
     stream->position += bytes;
     if (buffer->used < stream->position) buffer->used = stream->position;
     buffer->text[buffer->used] = '\0';
@@ -662,6 +725,8 @@ static char *st_data_copy_string(const char *text)
     if (!text)
         return NULL;
     size_t n = strlen(text);
+    if (n == SIZE_MAX)
+        error("Native text size overflow");
     char *out = st_data_allocate(n + 1, 1);
     memcpy(out, text, n + 1);
     return out;
@@ -767,18 +832,21 @@ static void st_data_read_value(st_data_value *out, SEXP input, int depth)
     {
     case ST_DATA_REAL:
         out->data.real = st_data_allocate(out->length, sizeof(double));
-        memcpy(out->data.real, REAL(input), out->length * sizeof(double));
+        if (out->length)
+            memcpy(out->data.real, REAL(input), out->length * sizeof(double));
         break;
     case ST_DATA_INTEGER:
     case ST_DATA_LOGICAL:
         out->data.integer = st_data_allocate(out->length, sizeof(int));
-        memcpy(out->data.integer,
-               type == INTSXP ? INTEGER(input) : LOGICAL(input),
-               out->length * sizeof(int));
+        if (out->length)
+            memcpy(out->data.integer,
+                   type == INTSXP ? INTEGER(input) : LOGICAL(input),
+                   out->length * sizeof(int));
         break;
     case ST_DATA_RAW:
         out->data.raw = st_data_allocate(out->length, 1);
-        memcpy(out->data.raw, RAW(input), out->length);
+        if (out->length)
+            memcpy(out->data.raw, RAW(input), out->length);
         break;
     case ST_DATA_STRING:
         out->data.string = st_data_allocate(out->length, sizeof(char *));
@@ -872,16 +940,20 @@ static SEXP st_data_write_value(const st_data_value *value, int depth)
     switch (value->kind)
     {
     case ST_DATA_REAL:
-        memcpy(REAL(out), value->data.real, value->length * sizeof(double));
+        if (value->length)
+            memcpy(REAL(out), value->data.real, value->length * sizeof(double));
         break;
     case ST_DATA_INTEGER:
-        memcpy(INTEGER(out), value->data.integer, value->length * sizeof(int));
+        if (value->length)
+            memcpy(INTEGER(out), value->data.integer, value->length * sizeof(int));
         break;
     case ST_DATA_LOGICAL:
-        memcpy(LOGICAL(out), value->data.integer, value->length * sizeof(int));
+        if (value->length)
+            memcpy(LOGICAL(out), value->data.integer, value->length * sizeof(int));
         break;
     case ST_DATA_RAW:
-        memcpy(RAW(out), value->data.raw, value->length);
+        if (value->length)
+            memcpy(RAW(out), value->data.raw, value->length);
         break;
     case ST_DATA_STRING:
         for (size_t i = 0; i < value->length; i++)
@@ -917,6 +989,14 @@ SEXP st_data_to_R(const st_data_value *value)
     return st_data_write_value(value, 0);
 }
 
+static void st_data_bytes_add(size_t *bytes, size_t count, size_t width)
+{
+    if ((width && count > SIZE_MAX / width) ||
+        *bytes > SIZE_MAX - count * width)
+        error("Metadata size exceeds the supported range");
+    *bytes += count * width;
+}
+
 size_t st_data_bytes(const st_data_value *value)
 {
     if (!value)
@@ -924,23 +1004,31 @@ size_t st_data_bytes(const st_data_value *value)
     size_t bytes = sizeof(*value);
     if (value->kind == ST_DATA_LIST)
     {
-        bytes += value->length * sizeof(st_data_value *);
+        st_data_bytes_add(&bytes, value->length, sizeof(st_data_value *));
         for (size_t i = 0; i < value->length; i++)
-            bytes += st_data_bytes(value->data.list[i]);
+            st_data_bytes_add(&bytes, st_data_bytes(value->data.list[i]), 1);
     }
     else if (value->kind == ST_DATA_STRING)
     {
-        bytes += value->length * sizeof(char *);
+        st_data_bytes_add(&bytes, value->length, sizeof(char *));
         for (size_t i = 0; i < value->length; i++)
             if (value->data.string[i])
-                bytes += strlen(value->data.string[i]) + 1;
+            {
+                st_data_bytes_add(&bytes, strlen(value->data.string[i]), 1);
+                st_data_bytes_add(&bytes, 1, 1);
+            }
     }
     else
-        bytes += value->length * (value->kind == ST_DATA_REAL  ? sizeof(double)
-                                  : value->kind == ST_DATA_RAW ? 1
-                                                               : sizeof(int));
+        st_data_bytes_add(&bytes, value->length,
+                          value->kind == ST_DATA_REAL ? sizeof(double)
+                          : value->kind == ST_DATA_RAW ? 1 : sizeof(int));
     for (st_data_attribute *a = value->attributes; a; a = a->next)
-        bytes += sizeof(*a) + strlen(a->name) + 1 + st_data_bytes(a->value);
+    {
+        st_data_bytes_add(&bytes, 1, sizeof(*a));
+        st_data_bytes_add(&bytes, strlen(a->name), 1);
+        st_data_bytes_add(&bytes, 1, 1);
+        st_data_bytes_add(&bytes, st_data_bytes(a->value), 1);
+    }
     return bytes;
 }
 
@@ -990,17 +1078,20 @@ static void st_data_copy_value(st_data_value *out, const st_data_value *input,
     {
     case ST_DATA_REAL:
         out->data.real = st_data_allocate(out->length, sizeof(double));
-        memcpy(out->data.real, input->data.real, out->length * sizeof(double));
+        if (out->length)
+            memcpy(out->data.real, input->data.real, out->length * sizeof(double));
         break;
     case ST_DATA_INTEGER:
     case ST_DATA_LOGICAL:
         out->data.integer = st_data_allocate(out->length, sizeof(int));
-        memcpy(out->data.integer, input->data.integer,
-               out->length * sizeof(int));
+        if (out->length)
+            memcpy(out->data.integer, input->data.integer,
+                   out->length * sizeof(int));
         break;
     case ST_DATA_RAW:
         out->data.raw = st_data_allocate(out->length, 1);
-        memcpy(out->data.raw, input->data.raw, out->length);
+        if (out->length)
+            memcpy(out->data.raw, input->data.raw, out->length);
         break;
     case ST_DATA_STRING:
         out->data.string = st_data_allocate(out->length, sizeof(char *));
@@ -1051,17 +1142,23 @@ st_data_value *st_data_with_real_column(const st_data_value *table,
     if (!names || names->kind != ST_DATA_STRING ||
         names->length != table->length)
         error("Native performance table has invalid column names");
+    if (n && !values)
+        error("Native performance values are missing");
     size_t at = table->length;
     for (size_t i = 0; i < table->length; i++)
     {
-        if (table->data.list[i]->length != n)
+        if (!table->data.list[i] || table->data.list[i]->length != n)
             error("Native performance row counts differ");
+        if (!names->data.string[i] || !names->data.string[i][0])
+            error("Native performance table has invalid column names");
         if (!strcmp(names->data.string[i], name))
             at = i;
     }
     st_data_value *out = st_data_new();
     st_work_adopt(out, st_data_destroy);
     out->kind = ST_DATA_LIST;
+    if (at == table->length && table->length == SIZE_MAX)
+        error("Native performance column count overflow");
     out->length = table->length + (at == table->length);
     out->data.list = st_data_allocate(out->length, sizeof(st_data_value *));
     for (size_t i = 0; i < table->length; i++)
@@ -1075,7 +1172,8 @@ st_data_value *st_data_with_real_column(const st_data_value *table,
     column->kind = ST_DATA_REAL;
     column->length = n;
     column->data.real = st_data_allocate(n, sizeof(double));
-    memcpy(column->data.real, values, n * sizeof(double));
+    if (n)
+        memcpy(column->data.real, values, n * sizeof(double));
     st_data_attribute **tail = &out->attributes;
     for (st_data_attribute *a = table->attributes; a; a = a->next)
     {
@@ -1106,7 +1204,12 @@ st_data_value *st_data_with_real_column(const st_data_value *table,
 
 double **st_dmatv(double *a, gs_UNSIGNED nr, gs_UNSIGNED nc)
 {
-    double **p = malloc(nr * sizeof(double *));
+    if (!a || !nr || !nc || (size_t)nr > SIZE_MAX / sizeof(double *) ||
+        (size_t)nr > SIZE_MAX / (size_t)nc / sizeof(double))
+        return NULL;
+    double **p = malloc((size_t)nr * sizeof(*p));
+    if (!p)
+        return NULL;
 
     p[0] = &a[0];
     for (gs_UNSIGNED i = 1; i < nr; i++)
@@ -1161,7 +1264,7 @@ void gs_mm_add(gs_UNSIGNED nr, gs_UNSIGNED nc, double *A, double *B, double *C)
 
     for (i = 0; i < nr; i++)
         for (j = 0; j < nc; j++)
-            C[i * nc + j] = A[i * nc + j] + B[i * nc + j];
+            C[(size_t)i * nc + j] = A[(size_t)i * nc + j] + B[(size_t)i * nc + j];
 }
 
 void gs_sm_add(gs_UNSIGNED nr, gs_UNSIGNED nc, double *A, double *B, double *C)
@@ -1170,7 +1273,7 @@ void gs_sm_add(gs_UNSIGNED nr, gs_UNSIGNED nc, double *A, double *B, double *C)
 
     for (i = 0; i < nr; i++)
         for (j = 0; j < nc; j++)
-            C[i * nc + j] = *A + B[i * nc + j];
+            C[(size_t)i * nc + j] = *A + B[(size_t)i * nc + j];
 }
 
 static int st_threads_initialized = 0;
@@ -1256,8 +1359,12 @@ static void st_thread_blas_initialize(void)
         if (dladdr(address, &owner) == 0 || owner.dli_fname == NULL)
             return;
         base = owner.dli_fbase;
-        snprintf(st_blas_library, sizeof(st_blas_library), "%s",
-                 owner.dli_fname);
+        int written = snprintf(st_blas_library, sizeof(st_blas_library), "%s", owner.dli_fname);
+        if (written < 0 || (size_t)written >= sizeof(st_blas_library))
+        {
+            st_blas_library[0] = '\0';
+            return;
+        }
         library = dlopen(owner.dli_fname, RTLD_LAZY | RTLD_NOLOAD);
         if (library == NULL)
             return;
@@ -1368,11 +1475,47 @@ void gs_set_num_threads(int *activate)
     omp_set_num_threads(st_threads_effective);
 }
 
+void gs_set_openblas_threads(int *activate)
+{
+    if (!activate || *activate < 1 || *activate > MAXTHREADS)
+        error("BLAS thread count must be an integer from 1 to %d", MAXTHREADS);
+    st_thread_initialize();
+    if (!st_blas_get_threads || !st_blas_set_threads)
+        error("The linked BLAS does not support thread control");
+    int previous = st_blas_get_threads();
+    if (previous < 1)
+        error("The linked BLAS did not report its thread count");
+#ifdef MT
+    int maximum = omp_get_max_threads(), dynamic = omp_get_dynamic();
+    if (st_blas_get_parallel && st_blas_get_parallel() == 2 &&
+        *activate != maximum)
+        error("This BLAS shares OpenMP thread settings with the package");
+#endif
+    st_blas_set_threads(*activate);
+#ifdef MT
+    if (omp_get_max_threads() != maximum)
+        omp_set_num_threads(maximum);
+    if (omp_get_dynamic() != dynamic)
+        omp_set_dynamic(dynamic);
+#endif
+    if (st_blas_get_threads() != *activate)
+    {
+        st_blas_set_threads(previous);
+#ifdef MT
+        if (omp_get_max_threads() != maximum)
+            omp_set_num_threads(maximum);
+        if (omp_get_dynamic() != dynamic)
+            omp_set_dynamic(dynamic);
+#endif
+        error("The linked BLAS could not set an independent thread count");
+    }
+}
+
 void gs_get_num_threads(int *activate)
 {
     st_thread_initialize();
     *activate = st_num_threads();
-    snprintf(gv->msg, sizeof(gv->msg), "Number of threads %i", *activate);
+    st_text_log(gv->msg, sizeof(gv->msg), "Number of threads %i", *activate);
     gs_info(gv, 0, gv->msg);
 }
 
@@ -1725,7 +1868,7 @@ void gs_set_info_level(gs_varset_type *gv, int *level)
     if (*level > 3)
         *level = 3;
     gv->info_level = *level;
-    snprintf(gv->msg, sizeof(gv->msg), "Info level %i", gv->info_level);
+    st_text_log(gv->msg, sizeof(gv->msg), "Info level %i", gv->info_level);
     gs_info(gv, 3, gv->msg);
 }
 
@@ -1738,6 +1881,8 @@ gs_varset_type *gs_fdta(char *set_name)
 {
     gs_UNSIGNED i;
     gs_varset_type *sp = NULL;
+    if (!set_name || strlen(set_name) >= sizeof(gv->name))
+        return NULL;
 
     if (0 == strcmp(set_name, "default"))
         sp = gv;
@@ -1755,36 +1900,54 @@ gs_varset_type *gs_fdta(char *set_name)
 
         if (st_hybrid_name_exists(set_name))
             Rf_error("Data set '%s' is already a hybrid data set", set_name);
-        gs_ndta++;
-        gs_data = realloc(gs_data, gs_ndta * sizeof(gs_varset_type *));
-        gs_data[gs_ndta - 1] = malloc(sizeof(gs_varset_type));
-        sp = gs_data[gs_ndta - 1];
-
+        if (gs_ndta == (gs_UNSIGNED)-1 ||
+            (size_t)gs_ndta >= SIZE_MAX / sizeof(*gs_data))
+            return NULL;
+        sp = malloc(sizeof(*sp));
+        if (!sp)
+            return NULL;
         gs_init(sp);
+        void *resized;
+        if (!gs_native_resize(gs_data, (size_t)gs_ndta + 1, 1,
+                              sizeof(*gs_data), &resized))
+        {
+            free(sp);
+            return NULL;
+        }
+        gs_data = resized;
+        gs_data[gs_ndta++] = sp;
         strcpy(sp->name, set_name);
         sp->info_level = gv->info_level;
 
-        snprintf(sp->msg, sizeof(sp->msg), "New data set generated '%s'",
+        st_text_log(sp->msg, sizeof(sp->msg), "New data set generated '%s'",
                  sp->name);
 
         gs_info(sp, 0, sp->msg);
     }
 
-    snprintf(sp->msg, sizeof(sp->msg), "Working on data set '%s'", sp->name);
+    st_text_log(sp->msg, sizeof(sp->msg), "Working on data set '%s'", sp->name);
 
     gs_info(sp, 2, sp->msg);
 
     return sp;
 }
 
+static gs_varset_type *gs_fdta_checked(char *set_name)
+{
+    gs_varset_type *result = gs_fdta(set_name);
+    if (!result)
+        Rf_error("Cannot allocate or register marker data set");
+    return result;
+}
+
 void gs_get_info_level_GV(int *level, char **set_name)
 {
-    gs_get_info_level(gs_fdta(*set_name), level);
+    gs_get_info_level(gs_fdta_checked(*set_name), level);
 }
 
 void gs_set_info_level_GV(int *level, char **set_name)
 {
-    gs_set_info_level(gs_fdta(*set_name), level);
+    gs_set_info_level(gs_fdta_checked(*set_name), level);
 }
 
 void gs_set_all_info_levels(int *level)
@@ -1835,7 +1998,7 @@ static void *gs_malloc_array(size_t count, size_t element_size)
     if (0 != gs_size_mul(count, element_size, &bytes))
         return NULL;
 
-    return malloc(bytes);
+    return malloc(bytes ? bytes : 1);
 }
 
 static void *gs_realloc_array(void *ptr, size_t count, size_t element_size)
@@ -1845,7 +2008,7 @@ static void *gs_realloc_array(void *ptr, size_t count, size_t element_size)
     if (0 != gs_size_mul(count, element_size, &bytes))
         return NULL;
 
-    return realloc(ptr, bytes);
+    return realloc(ptr, bytes ? bytes : 1);
 }
 
 static int gs_size_add(size_t a, size_t b, size_t *result)
@@ -2146,8 +2309,26 @@ static gs_UNSIGNED gs_find_sorted_fixed_name(char (*names)[gs_MAXNME],
 static void gs_tmp_init_from(gs_varset_type *tmp, const gs_varset_type *src)
 {
     gs_init(tmp);
-    snprintf(tmp->name, sizeof(tmp->name), "%s", src->name);
+    st_text_write(tmp->name, sizeof(tmp->name), "%s", src->name);
     tmp->info_level = src->info_level;
+}
+
+static void gs_tmp_destroy(void *pointer)
+{
+    gs_varset_type *tmp = pointer;
+    gs_reset(tmp);
+    free(tmp);
+}
+
+static gs_varset_type *gs_tmp_owned_from(const gs_varset_type *source)
+{
+    gs_varset_type *tmp = malloc(sizeof(*tmp));
+    if (!tmp)
+        error("Cannot allocate marker data staging");
+    gs_init(tmp);
+    st_work_adopt(tmp, gs_tmp_destroy);
+    gs_tmp_init_from(tmp, source);
+    return tmp;
 }
 
 static int gs_prepare_allele_commit(gs_varset_type *tmp)
@@ -2787,7 +2968,7 @@ static gs_UNSIGNED *gs_map_storage_index(gs_varset_type *gv,
         {
             if (0 == strcmp(names[m - 1], names[m]))
             {
-                snprintf(gv->msg, sizeof(gv->msg),
+                st_text_log(gv->msg, sizeof(gv->msg),
                          "Duplicate marker name %s in marker data", names[m]);
                 gs_info(gv, -2, gv->msg);
                 goto cleanup;
@@ -3060,8 +3241,11 @@ static double st_data_set_ram_core_mb(const gs_varset_type *x)
     ST_RAM_ADD_IF(x->allele_raw1, n, *x->allele_raw1);
     ST_RAM_ADD_IF(x->allele_raw2, n, *x->allele_raw2);
     ST_RAM_ADD_IF(x->allele_packed, x->allele_packed_bytes, unsigned char);
-    ST_RAM_ADD_IF(x->allele_dictionary,
-                  x->NoMar * (st_allele_bits(x) == 4 ? 3 : 15), unsigned char);
+    size_t dictionary_count;
+    if (gs_size_mul((size_t)x->NoMar,
+                     st_allele_bits(x) == 4 ? 3 : 15, &dictionary_count))
+        return NA_REAL;
+    ST_RAM_ADD_IF(x->allele_dictionary, dictionary_count, unsigned char);
 
     ST_RAM_ADD_IF(x->map_S, x->NLoc, *x->map_S);
     ST_RAM_ADD_IF(x->map_str_S, x->map_str_N, *x->map_str_S);
@@ -4392,7 +4576,7 @@ void gs_read_marker_data_01_GV(char **dta_filename, char **ind_filename,
                                char **mar_filename, char **gen_filename,
                                int *auxfiles, int *retval, char **set_name)
 {
-    gs_read_marker_data_01(gs_fdta(*set_name), dta_filename, ind_filename,
+    gs_read_marker_data_01(gs_fdta_checked(*set_name), dta_filename, ind_filename,
                            mar_filename, gen_filename, auxfiles, retval);
 }
 
@@ -4400,7 +4584,9 @@ static void gs_build_Z_impl(gs_varset_type *gv, char **out_filename,
                             int *auxfiles, int *retval, int allow_monomorphic)
 {
 
-    gs_UNSIGNED i, m, idx_Z;
+    gs_UNSIGNED i, m;
+
+    size_t idx_Z;
     FILE *outfp;
 
     if ((0 == gv->NoInd) || (0 == gv->NoMar))
@@ -4410,12 +4596,42 @@ static void gs_build_Z_impl(gs_varset_type *gv, char **out_filename,
         return;
     }
 
-    gv->Z = realloc(gv->Z, gv->NoInd * gv->NoMar * sizeof(double));
+    {
+        void *resized;
+        if (!gs_native_resize(gv->Z, gv->NoInd, gv->NoMar, sizeof(double), &resized))
+        {
+            ERR_M;
+        }
+        gv->Z = resized;
+    }
 
+    if (gv->NoMar >= SIZE_MAX || gv->NoMar == (gs_UNSIGNED)-1)
+        ERR_M;
     gv->NoEff = 1 + gv->NoMar;
-    gv->EffNme = realloc(gv->EffNme, gv->NoEff * sizeof(char[gs_MAXNME]));
-    gv->EffAll = realloc(gv->EffAll, gv->NoEff * sizeof(int));
-    gv->CmpAll = realloc(gv->CmpAll, gv->NoEff * sizeof(int));
+    {
+        void *resized;
+        if (!gs_native_resize(gv->EffNme, gv->NoEff, 1, sizeof(char[gs_MAXNME]), &resized))
+        {
+            ERR_M;
+        }
+        gv->EffNme = resized;
+    }
+    {
+        void *resized;
+        if (!gs_native_resize(gv->EffAll, gv->NoEff, 1, sizeof(int), &resized))
+        {
+            ERR_M;
+        }
+        gv->EffAll = resized;
+    }
+    {
+        void *resized;
+        if (!gs_native_resize(gv->CmpAll, gv->NoEff, 1, sizeof(int), &resized))
+        {
+            ERR_M;
+        }
+        gv->CmpAll = resized;
+    }
 
     if ((NULL == gv->Z) || (NULL == gv->EffNme) || (NULL == gv->EffAll) ||
         (NULL == gv->CmpAll))
@@ -4501,7 +4717,7 @@ static void gs_build_Z_impl(gs_varset_type *gv, char **out_filename,
     }
     if (bad_marker < gv->NoMar)
     {
-        snprintf(gv->msg, sizeof(gv->msg), "More than two alleles: %s",
+        st_text_log(gv->msg, sizeof(gv->msg), "More than two alleles: %s",
                  gv->MarName[bad_marker]);
         gs_info(gv, -2, gv->msg);
         *retval = -2;
@@ -4523,7 +4739,7 @@ static void gs_build_Z_impl(gs_varset_type *gv, char **out_filename,
             fprintf(outfp, "%s ", gv->IndName[i]);
             for (m = 0; m < gv->NoMar; m++)
             {
-                idx_Z = i * gv->NoMar + m;
+                idx_Z = (size_t)i * gv->NoMar + m;
                 fprintf(outfp, "%f ", gv->Z[idx_Z]);
             }
             fprintf(outfp, "\n");
@@ -4535,7 +4751,7 @@ static void gs_build_Z_impl(gs_varset_type *gv, char **out_filename,
     if (1 == mono_warning && !allow_monomorphic)
     {
 
-        snprintf(gv->msg, sizeof(gv->msg),
+        st_text_log(gv->msg, sizeof(gv->msg),
                  "Monomorphic markers in the design matrix");
 
         gs_info(gv, -1, gv->msg);
@@ -4563,7 +4779,7 @@ void st_build_Z_for_A(gs_varset_type *gv, int *retval)
 void gs_build_Z_01_GV(char **out_filename, int *auxfiles, int *retval,
                       char **set_name)
 {
-    gs_build_Z_01(gs_fdta(*set_name), out_filename, auxfiles, retval);
+    gs_build_Z_01(gs_fdta_checked(*set_name), out_filename, auxfiles, retval);
 }
 
 void gs_neg_effall_01(gs_varset_type *gv, int *retval)
@@ -4595,7 +4811,7 @@ void gs_neg_effall_01(gs_varset_type *gv, int *retval)
 
 void gs_neg_effall_01_GV(int *retval, char **set_name)
 {
-    gs_neg_effall_01(gs_fdta(*set_name), retval);
+    gs_neg_effall_01(gs_fdta_checked(*set_name), retval);
 }
 
 void gs_pos_effall_01(gs_varset_type *gv, int *retval)
@@ -4627,7 +4843,7 @@ void gs_pos_effall_01(gs_varset_type *gv, int *retval)
 
 void gs_pos_effall_01_GV(int *retval, char **set_name)
 {
-    gs_pos_effall_01(gs_fdta(*set_name), retval);
+    gs_pos_effall_01(gs_fdta_checked(*set_name), retval);
 }
 
 long long int st_getline(char **, size_t *, FILE *);
@@ -4850,7 +5066,7 @@ void gs_read_performance_data_01(gs_varset_type *gv, char **dta_filename,
         }
     }
 
-    snprintf(gv->msg, sizeof(gv->msg), "No. of performance data: %lu",
+    st_text_log(gv->msg, sizeof(gv->msg), "No. of performance data: %lu",
              tmp.NoInd);
     gs_info(gv, 0, gv->msg);
 
@@ -4900,7 +5116,7 @@ cleanup:
 void gs_read_performance_data_01_GV(char **dta_filename, char **out_filename,
                                     int *auxfiles, int *retval, char **set_name)
 {
-    gs_read_performance_data_01(gs_fdta(*set_name), dta_filename, out_filename,
+    gs_read_performance_data_01(gs_fdta_checked(*set_name), dta_filename, out_filename,
                                 auxfiles, retval);
 }
 
@@ -4948,7 +5164,7 @@ void gs_return_performance_data_01(gs_varset_type *gv, char **out_filename,
 void gs_return_performance_data_01_GV(char **out_filename, int *auxfiles,
                                       int *retval, char **set_name)
 {
-    gs_return_performance_data_01(gs_fdta(*set_name), out_filename, auxfiles,
+    gs_return_performance_data_01(gs_fdta_checked(*set_name), out_filename, auxfiles,
                                   retval);
 }
 
@@ -4964,7 +5180,14 @@ void gs_lambda_const_01(gs_varset_type *gv, double *lambda, char **out_filename,
         return;
     }
 
-    gv->ladi = realloc(gv->ladi, gv->NoMar * sizeof(double));
+    {
+        void *resized;
+        if (!gs_native_resize(gv->ladi, gv->NoMar, 1, sizeof(double), &resized))
+        {
+            ERR_M;
+        }
+        gv->ladi = resized;
+    }
     if (NULL == gv->ladi)
         ERR_M;
 
@@ -4993,7 +5216,7 @@ void gs_lambda_const_01_GV(double *lambda, char **out_filename, int *auxfiles,
                            int *retval, char **set_name)
 
 {
-    gs_lambda_const_01(gs_fdta(*set_name), lambda, out_filename, auxfiles,
+    gs_lambda_const_01(gs_fdta_checked(*set_name), lambda, out_filename, auxfiles,
                        retval);
 }
 
@@ -5016,7 +5239,14 @@ void gs_lambda_var_01(gs_varset_type *gv, double *lambda, int *n,
         return;
     }
 
-    gv->ladi = realloc(gv->ladi, gv->NoMar * sizeof(double));
+    {
+        void *resized;
+        if (!gs_native_resize(gv->ladi, gv->NoMar, 1, sizeof(double), &resized))
+        {
+            ERR_M;
+        }
+        gv->ladi = resized;
+    }
     if (NULL == gv->ladi)
         ERR_M;
 
@@ -5044,7 +5274,7 @@ void gs_lambda_var_01_GV(double *lambda, int *n, char **out_filename,
                          int *auxfiles, int *retval, char **set_name)
 
 {
-    gs_lambda_var_01(gs_fdta(*set_name), lambda, n, out_filename, auxfiles,
+    gs_lambda_var_01(gs_fdta_checked(*set_name), lambda, n, out_filename, auxfiles,
                      retval);
 }
 
@@ -5052,7 +5282,9 @@ void gs_build_V_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
                    int *retval)
 {
 
-    gs_UNSIGNED i, j, idx_A;
+    gs_UNSIGNED i, j;
+
+    size_t idx_A;
     FILE *outfp;
 
     if (NULL == gv->Z)
@@ -5067,7 +5299,14 @@ void gs_build_V_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
         }
     }
 
-    gv->V = realloc(gv->V, gv->NoInd * gv->NoInd * sizeof(double));
+    {
+        void *resized;
+        if (!gs_native_resize(gv->V, gv->NoInd, gv->NoInd, sizeof(double), &resized))
+        {
+            ERR_M;
+        }
+        gv->V = resized;
+    }
     if (NULL == gv->V)
         ERR_M;
 
@@ -5083,7 +5322,7 @@ void gs_build_V_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
         {
             for (j = 0; j < gv->NoInd; j++)
             {
-                idx_A = i * gv->NoInd + j;
+                idx_A = (size_t)i * gv->NoInd + j;
                 fprintf(outfp, "%f ", gv->V[idx_A]);
             }
             fprintf(outfp, "\n");
@@ -5099,7 +5338,7 @@ void gs_build_V_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
 void gs_build_V_01_GV(char **out_filename, int *auxfiles, int *retval,
                       char **set_name)
 {
-    gs_build_V_01(gs_fdta(*set_name), out_filename, auxfiles, retval);
+    gs_build_V_01(gs_fdta_checked(*set_name), out_filename, auxfiles, retval);
 }
 
 static int gs_restrict_read_name_file(gs_varset_type *gv, const char *filename,
@@ -5571,7 +5810,7 @@ void gs_restrict_marker_data_03_GV(char **ind_fname, char **mar_fname,
                                    double *ExHetMIN, double *InMisMAX,
                                    int *retval, char **set_name)
 {
-    gs_restrict_marker_data_03(gs_fdta(*set_name), ind_fname, mar_fname,
+    gs_restrict_marker_data_03(gs_fdta_checked(*set_name), ind_fname, mar_fname,
                                NoAllMAX, MaMisMAX, ExHetMIN, InMisMAX, retval);
 }
 
@@ -5601,11 +5840,30 @@ static void gs_copy_marker_data_01_raw(gs_varset_type *new, gs_varset_type *gv,
     new->phased = gv->phased;
 
     new->IndName = calloc(new->NoInd, sizeof(*new->IndName));
-    new->MarName = realloc(new->MarName, new->NoMar * sizeof(char[gs_MAXNME]));
-    new->allele_raw1 = realloc(new->allele_raw1, new->NoMar *new->NoInd *
-                                                     sizeof(*new->allele_raw1));
-    new->allele_raw2 = realloc(new->allele_raw2, new->NoMar *new->NoInd *
-                                                     sizeof(*new->allele_raw2));
+    {
+        void *resized;
+        if (!gs_native_resize(new->MarName, new->NoMar, 1, sizeof(char[gs_MAXNME]), &resized))
+        {
+            ERR_M;
+        }
+        new->MarName = resized;
+    }
+    {
+        void *resized;
+        if (!gs_native_resize(new->allele_raw1, new->NoMar, new->NoInd, sizeof(*new->allele_raw1), &resized))
+        {
+            ERR_M;
+        }
+        new->allele_raw1 = resized;
+    }
+    {
+        void *resized;
+        if (!gs_native_resize(new->allele_raw2, new->NoMar, new->NoInd, sizeof(*new->allele_raw2), &resized))
+        {
+            ERR_M;
+        }
+        new->allele_raw2 = resized;
+    }
 
     if ((NULL == new->allele_raw1) || (NULL == new->allele_raw2) ||
         (NULL == new->IndName) || (NULL == new->MarName))
@@ -5658,7 +5916,14 @@ static void gs_copy_marker_data_01_raw(gs_varset_type *new, gs_varset_type *gv,
 
     if (NULL != gv->y)
     {
-        new->y = realloc(new->y, new->NoInd * sizeof(double));
+        {
+            void *resized;
+            if (!gs_native_resize(new->y, new->NoInd, 1, sizeof(double), &resized))
+            {
+                ERR_M;
+            }
+            new->y = resized;
+        }
         if (NULL == new->y)
             ERR_M;
         memcpy(new->y, gv->y, (size_t)new->NoInd * sizeof(double));
@@ -5688,14 +5953,12 @@ void gs_copy_marker_data_01(gs_varset_type *dst, gs_varset_type *src,
 void gs_copy_marker_data_01_GV(int *retval, char **set_name_t,
                                char **set_name_s)
 {
-    gs_copy_marker_data_01(gs_fdta(*set_name_t), gs_fdta(*set_name_s), retval);
+    gs_copy_marker_data_01(gs_fdta_checked(*set_name_t), gs_fdta_checked(*set_name_s), retval);
 }
 
 static void st_combine_destroy(void *pointer)
 {
-    gs_varset_type *tmp = pointer;
-    gs_reset(tmp);
-    free(tmp);
+    gs_tmp_destroy(pointer);
 }
 
 static const char *st_combine_source_name(SEXP sources, R_xlen_t i)
@@ -5826,7 +6089,7 @@ SEXP st_data_combine(SEXP target, SEXP sources)
         error("Cannot allocate combined marker data set");
     gs_init(tmp);
     st_work_adopt(tmp, st_combine_destroy);
-    snprintf(tmp->name, sizeof(tmp->name), "%s", name);
+    st_text_write(tmp->name, sizeof(tmp->name), "%s", name);
     tmp->info_level = destination ? destination->info_level : gv->info_level;
     tmp->NoInd = individuals;
     tmp->NoMar = markers;
@@ -5927,10 +6190,17 @@ void gs_estimate_bv_01(gs_varset_type *effect_set, gs_varset_type *marker_set,
         *retval = -2;
         return;
     }
-    gs_UNSIGNED i, m, idx_all, idx_Z;
+    gs_UNSIGNED i, m;
+    size_t idx_all, idx_Z;
 
-    marker_set->est =
-        realloc(marker_set->est, marker_set->NoInd * sizeof(double));
+    {
+        void *resized;
+        if (!gs_native_resize(marker_set->est, marker_set->NoInd, 1, sizeof(double), &resized))
+        {
+            ERR_M;
+        }
+        marker_set->est = resized;
+    }
     if (NULL == marker_set->est)
         ERR_M;
 
@@ -5961,9 +6231,14 @@ void gs_estimate_bv_01(gs_varset_type *effect_set, gs_varset_type *marker_set,
 
             gs_info(effect_set, 1, "Constructing design matrix");
 
-            marker_set->Z =
-                realloc(marker_set->Z,
-                        marker_set->NoInd * marker_set->NoMar * sizeof(double));
+            {
+                void *resized;
+                if (!gs_native_resize(marker_set->Z, marker_set->NoInd, marker_set->NoMar, sizeof(double), &resized))
+                {
+                    ERR_M;
+                }
+                marker_set->Z = resized;
+            }
             int a, b, lar_all, sml_all;
             for (m = 0; m < marker_set->NoMar; m++)
             {
@@ -5973,12 +6248,12 @@ void gs_estimate_bv_01(gs_varset_type *effect_set, gs_varset_type *marker_set,
 
                 for (i = 0; i < marker_set->NoInd; i++)
                 {
-                    idx_all = m * marker_set->NoInd + i;
+                    idx_all = (size_t)m * marker_set->NoInd + i;
 
                     a = st_allele_get(marker_set, idx_all, 0);
                     b = st_allele_get(marker_set, idx_all, 1);
 
-                    idx_Z = i * marker_set->NoMar + m;
+                    idx_Z = (size_t)i * marker_set->NoMar + m;
 
                     if ((a == lar_all) && (b == lar_all))
                     {
@@ -6033,10 +6308,12 @@ void gs_estimate_bv_01(gs_varset_type *effect_set, gs_varset_type *marker_set,
         gs_info(effect_set, 1, "Different marker sets");
 
 #ifdef MT
-#pragma omp parallel
+#pragma omp parallel \
+    num_threads(st_num_threads()) if (st_num_threads() > 1)
 #endif
         {
-            gs_UNSIGNED i, j, m, idx_all;
+            gs_UNSIGNED i, j, m;
+            size_t idx_all;
             int a, b, lar_all, sml_all;
             double count;
 
@@ -6057,7 +6334,7 @@ void gs_estimate_bv_01(gs_varset_type *effect_set, gs_varset_type *marker_set,
                             lar_all = effect_set->EffAll[j];
                             sml_all = effect_set->CmpAll[j];
 
-                            idx_all = m * marker_set->NoInd + i;
+                            idx_all = (size_t)m * marker_set->NoInd + i;
                             a = st_allele_get(marker_set, idx_all, 0);
                             b = st_allele_get(marker_set, idx_all, 1);
 
@@ -6146,7 +6423,7 @@ void gs_estimate_bv_01(gs_varset_type *effect_set, gs_varset_type *marker_set,
 void gs_estimate_bv_01_GV(char **effect_set, char **marker_set,
                           char **out_filename, int *auxfiles, int *retval)
 {
-    gs_estimate_bv_01(gs_fdta(*effect_set), gs_fdta(*marker_set), out_filename,
+    gs_estimate_bv_01(gs_fdta_checked(*effect_set), gs_fdta_checked(*marker_set), out_filename,
                       auxfiles, retval);
 }
 
@@ -6272,13 +6549,14 @@ static void gs_build_esvs_01_raw(gs_varset_type *gv, gs_varset_type *es,
 
     gs_UNSIGNED CVSiEst = (gs_UNSIGNED)*n_estimation;
 
-    gs_UNSIGNED i, j, k, m, idx_g, idx_e, idx_v, idx;
+    gs_UNSIGNED i, j, k, m;
+    size_t idx_g, idx_e, idx_v, idx;
 
-    gs_UNSIGNED *CVes = malloc(gv->NoInd * sizeof(gs_UNSIGNED));
+    gs_UNSIGNED *CVes = gs_malloc_array(gv->NoInd, sizeof(*CVes));
     if (NULL == CVes)
         ERR_M;
 
-    int *p = malloc(gv->NoInd * sizeof(int));
+    int *p = gs_malloc_array(gv->NoInd, sizeof(*p));
     if (NULL == p)
     {
         free(CVes);
@@ -6335,8 +6613,24 @@ static void gs_build_esvs_01_raw(gs_varset_type *gv, gs_varset_type *es,
     es->NoMar = gv->NoMar;
     vs->NoMar = gv->NoMar;
 
-    es->MarName = realloc(es->MarName, es->NoMar * sizeof(char[gs_MAXNME]));
-    vs->MarName = realloc(vs->MarName, vs->NoMar * sizeof(char[gs_MAXNME]));
+    {
+        void *resized;
+        if (!gs_native_resize(es->MarName, es->NoMar, 1, sizeof(char[gs_MAXNME]), &resized))
+        {
+            free(CVes);
+            ERR_M;
+        }
+        es->MarName = resized;
+    }
+    {
+        void *resized;
+        if (!gs_native_resize(vs->MarName, vs->NoMar, 1, sizeof(char[gs_MAXNME]), &resized))
+        {
+            free(CVes);
+            ERR_M;
+        }
+        vs->MarName = resized;
+    }
     if ((NULL == es->MarName) || (NULL == vs->MarName))
     {
         free(CVes);
@@ -6349,20 +6643,48 @@ static void gs_build_esvs_01_raw(gs_varset_type *gv, gs_varset_type *es,
         strcpy(vs->MarName[m], gv->MarName[m]);
     }
 
-    es->allele_raw1 = realloc(es->allele_raw1,
-                              es->NoMar * es->NoInd * sizeof(*es->allele_raw1));
-    es->allele_raw2 = realloc(es->allele_raw2,
-                              es->NoMar * es->NoInd * sizeof(*es->allele_raw1));
+    {
+        void *resized;
+        if (!gs_native_resize(es->allele_raw1, es->NoMar, es->NoInd, sizeof(*es->allele_raw1), &resized))
+        {
+            free(CVes);
+            ERR_M;
+        }
+        es->allele_raw1 = resized;
+    }
+    {
+        void *resized;
+        if (!gs_native_resize(es->allele_raw2, es->NoMar, es->NoInd, sizeof(*es->allele_raw1), &resized))
+        {
+            free(CVes);
+            ERR_M;
+        }
+        es->allele_raw2 = resized;
+    }
     if ((NULL == es->allele_raw1) || (NULL == es->allele_raw2))
     {
         free(CVes);
         ERR_M;
     }
 
-    vs->allele_raw1 = realloc(vs->allele_raw1,
-                              vs->NoMar * vs->NoInd * sizeof(*vs->allele_raw1));
-    vs->allele_raw2 = realloc(vs->allele_raw2,
-                              vs->NoMar * vs->NoInd * sizeof(*vs->allele_raw1));
+    {
+        void *resized;
+        if (!gs_native_resize(vs->allele_raw1, vs->NoMar, vs->NoInd, sizeof(*vs->allele_raw1), &resized))
+        {
+            free(CVes);
+            ERR_M;
+        }
+        vs->allele_raw1 = resized;
+    }
+    {
+        void *resized;
+        if (!gs_native_resize(vs->allele_raw2, vs->NoMar, vs->NoInd, sizeof(*vs->allele_raw1), &resized))
+        {
+            free(CVes);
+            ERR_M;
+        }
+        vs->allele_raw2 = resized;
+    }
     if ((NULL == vs->allele_raw1) || (NULL == vs->allele_raw2))
     {
         free(CVes);
@@ -6373,9 +6695,9 @@ static void gs_build_esvs_01_raw(gs_varset_type *gv, gs_varset_type *es,
     {
         for (i = 0, j = 0, k = 0; i < gv->NoInd; i++)
         {
-            idx_g = m * gv->NoInd + i;
-            idx_e = m * es->NoInd + j;
-            idx_v = m * vs->NoInd + k;
+            idx_g = (size_t)m * gv->NoInd + i;
+            idx_e = (size_t)m * es->NoInd + j;
+            idx_v = (size_t)m * vs->NoInd + k;
 
             if (1 == CVes[i])
             {
@@ -6392,8 +6714,24 @@ static void gs_build_esvs_01_raw(gs_varset_type *gv, gs_varset_type *es,
         }
     }
 
-    es->y = realloc(es->y, es->NoInd * sizeof(double));
-    vs->y = realloc(vs->y, vs->NoInd * sizeof(double));
+    {
+        void *resized;
+        if (!gs_native_resize(es->y, es->NoInd, 1, sizeof(double), &resized))
+        {
+            free(CVes);
+            ERR_M;
+        }
+        es->y = resized;
+    }
+    {
+        void *resized;
+        if (!gs_native_resize(vs->y, vs->NoInd, 1, sizeof(double), &resized))
+        {
+            free(CVes);
+            ERR_M;
+        }
+        vs->y = resized;
+    }
     if ((NULL == es->y) || (NULL == vs->y))
     {
         free(CVes);
@@ -6424,13 +6762,23 @@ static void gs_build_esvs_01_raw(gs_varset_type *gv, gs_varset_type *es,
         FILE *fp3 = fopen(*out_vs_m, "w");
         FILE *fp4 = fopen(*out_vs_p, "w");
         if ((NULL == fp1) || (NULL == fp2) || (NULL == fp3) || (NULL == fp4))
+        {
+            if (fp1)
+                fclose(fp1);
+            if (fp2)
+                fclose(fp2);
+            if (fp3)
+                fclose(fp3);
+            if (fp4)
+                fclose(fp4);
             ERR_F;
+        }
 
         fprintf(fp1, "I;M;A\n");
         for (i = 0; i < es->NoInd; i++)
             for (m = 0; m < es->NoMar; m++)
             {
-                idx = m * es->NoInd + i;
+                idx = (size_t)m * es->NoInd + i;
                 if (GS_ALLELE_MISSING != st_allele_get(es, idx, 0))
                 {
                     fprintf(fp1, "%s;%s;%i\n", es->IndName[i], es->MarName[m],
@@ -6449,7 +6797,7 @@ static void gs_build_esvs_01_raw(gs_varset_type *gv, gs_varset_type *es,
         for (i = 0; i < vs->NoInd; i++)
             for (m = 0; m < vs->NoMar; m++)
             {
-                idx = m * vs->NoInd + i;
+                idx = (size_t)m * vs->NoInd + i;
                 if (GS_ALLELE_MISSING != st_allele_get(vs, idx, 0))
                 {
                     fprintf(fp3, "%s;%s;%i\n", vs->IndName[i], vs->MarName[m],
@@ -6479,9 +6827,10 @@ void gs_build_esvs_01(gs_varset_type *gv, gs_varset_type *es,
                       char **out_es_p, char **out_vs_m, char **out_vs_p,
                       int *auxfiles, int *retval)
 {
-    gs_varset_type tmp_es, tmp_vs;
+    gs_varset_type *tmp_es, *tmp_vs;
     *retval = -2;
-    if (gv == es || gv == vs || es == vs || *n_estimation < 1 ||
+    if (gv == es || gv == vs || es == vs || gv->NoInd > INT_MAX ||
+        *n_estimation < 1 ||
         (gs_UNSIGNED)*n_estimation >= gv->NoInd)
     {
         gs_info(
@@ -6489,32 +6838,34 @@ void gs_build_esvs_01(gs_varset_type *gv, gs_varset_type *es,
             "Estimation and validation sets must be distinct and non-empty");
         return;
     }
-    gs_tmp_init_from(&tmp_es, es);
-    gs_tmp_init_from(&tmp_vs, vs);
-    gs_build_esvs_01_raw(gv, &tmp_es, &tmp_vs, n_estimation, out_es_m, out_es_p,
+    void *mark = st_work_mark();
+    tmp_es = gs_tmp_owned_from(es);
+    tmp_vs = gs_tmp_owned_from(vs);
+    gs_build_esvs_01_raw(gv, tmp_es, tmp_vs, n_estimation, out_es_m, out_es_p,
                          out_vs_m, out_vs_p, auxfiles, retval);
     if (*retval >= 0)
     {
-        tmp_es.phased = tmp_vs.phased = gv->phased;
-        if (gs_copy_map_primary(&tmp_es, gv) ||
-            gs_copy_map_primary(&tmp_vs, gv) ||
-            st_allele_statistics_prepare(&tmp_es) ||
-            st_allele_statistics_prepare(&tmp_vs))
+        tmp_es->phased = tmp_vs->phased = gv->phased;
+        if (gs_copy_map_primary(tmp_es, gv) ||
+            gs_copy_map_primary(tmp_vs, gv) ||
+            st_allele_statistics_prepare(tmp_es) ||
+            st_allele_statistics_prepare(tmp_vs))
             *retval = -2;
     }
     if (*retval >= 0)
     {
-        if (gs_prepare_allele_commit(&tmp_es) ||
-            gs_prepare_allele_commit(&tmp_vs))
+        if (gs_prepare_allele_commit(tmp_es) ||
+            gs_prepare_allele_commit(tmp_vs))
             *retval = -2;
         else
         {
-            gs_tmp_install(es, &tmp_es);
-            gs_tmp_install(vs, &tmp_vs);
+            gs_tmp_install(es, tmp_es);
+            gs_tmp_install(vs, tmp_vs);
         }
     }
-    gs_reset(&tmp_es);
-    gs_reset(&tmp_vs);
+    gs_reset(tmp_es);
+    gs_reset(tmp_vs);
+    st_work_reset(mark);
 }
 
 void gs_build_esvs_01_GV(int *n_estimation, char **base_set,
@@ -6538,12 +6889,12 @@ void gs_build_esvs_01_GV(int *n_estimation, char **base_set,
     gs_varset_type *vvs = vs;
 
     if (0 != strcmp("none", *estimation_set))
-        ees = gs_fdta(*estimation_set);
+        ees = gs_fdta_checked(*estimation_set);
 
     if (0 != strcmp("none", *validation_set))
-        vvs = gs_fdta(*validation_set);
+        vvs = gs_fdta_checked(*validation_set);
 
-    gs_build_esvs_01(gs_fdta(*base_set), ees, vvs, n_estimation, out_es_m,
+    gs_build_esvs_01(gs_fdta_checked(*base_set), ees, vvs, n_estimation, out_es_m,
                      out_es_p, out_vs_m, out_vs_p, auxfiles, retval);
 }
 
@@ -6575,7 +6926,7 @@ void gs_return_effects_01(gs_varset_type *gv, char **out_filename, int *retval)
 
 void gs_return_effects_01_GV(char **out_filename, int *retval, char **set_name)
 {
-    gs_return_effects_01(gs_fdta(*set_name), out_filename, retval);
+    gs_return_effects_01(gs_fdta_checked(*set_name), out_filename, retval);
 }
 
 void gs_set_effects_01(gs_varset_type *gv, char **filename, int *retval)
@@ -6590,29 +6941,60 @@ void gs_set_effects_01(gs_varset_type *gv, char **filename, int *retval)
         return;
     }
 
-    GS_FREE(gv->Z);
-    GS_FREE(gv->est);
+    void *mark = st_work_mark();
+    gs_varset_type *stage = gs_tmp_owned_from(gv);
 
-    gv->NoEff = 1 + gv->NoMar;
-    gv->EffNme = realloc(gv->EffNme, gv->NoEff * sizeof(char[gs_MAXNME]));
-    gv->EffAll = realloc(gv->EffAll, gv->NoEff * sizeof(int));
-    gv->CmpAll = realloc(gv->CmpAll, gv->NoEff * sizeof(int));
-    if ((NULL == gv->EffNme) || (NULL == gv->EffAll) || (NULL == gv->CmpAll))
+    if (gv->NoMar >= SIZE_MAX || gv->NoMar == (gs_UNSIGNED)-1)
         ERR_M;
-
-    strcpy(gv->EffNme[0], "mu");
-    for (i = 1; i < gv->NoEff; i++)
-        strcpy(gv->EffNme[i], gv->MarName[i - 1]);
-
-    gv->dimu = 1 + gv->NoMar;
-    gv->u = realloc(gv->u, gv->dimu * sizeof(double));
-    if (NULL == gv->u)
-        ERR_M;
-
-    for (i = 0; i < gv->dimu; i++)
+    stage->NoEff = 1 + gv->NoMar;
     {
-        gv->EffAll[i] = 0;
-        gv->u[i] = 0;
+        void *resized;
+        if (!gs_native_resize(stage->EffNme, stage->NoEff, 1, sizeof(char[gs_MAXNME]), &resized))
+        {
+            ERR_M;
+        }
+        stage->EffNme = resized;
+    }
+    {
+        void *resized;
+        if (!gs_native_resize(stage->EffAll, stage->NoEff, 1, sizeof(int), &resized))
+        {
+            ERR_M;
+        }
+        stage->EffAll = resized;
+    }
+    {
+        void *resized;
+        if (!gs_native_resize(stage->CmpAll, stage->NoEff, 1, sizeof(int), &resized))
+        {
+            ERR_M;
+        }
+        stage->CmpAll = resized;
+    }
+    if ((NULL == stage->EffNme) || (NULL == stage->EffAll) || (NULL == stage->CmpAll))
+        ERR_M;
+
+    strcpy(stage->EffNme[0], "mu");
+    for (i = 1; i < stage->NoEff; i++)
+        strcpy(stage->EffNme[i], gv->MarName[i - 1]);
+
+    stage->dimu = 1 + gv->NoMar;
+    {
+        void *resized;
+        if (!gs_native_resize(stage->u, stage->dimu, 1, sizeof(double), &resized))
+        {
+            ERR_M;
+        }
+        stage->u = resized;
+    }
+    if (NULL == stage->u)
+        ERR_M;
+
+    for (i = 0; i < stage->dimu; i++)
+    {
+        stage->EffAll[i] = 0;
+        stage->CmpAll[i] = 0;
+        stage->u[i] = 0;
     }
 
     {
@@ -6632,21 +7014,26 @@ void gs_set_effects_01(gs_varset_type *gv, char **filename, int *retval)
 
         st_getline(linep, np, fp);
 
-        while (!feof(fp))
+        long long int rc;
+        while (0 < (rc = st_getline(linep, np, fp)))
         {
-            if (0 < st_getline(linep, np, fp))
+            if (rc > 0)
             {
 
                 p = strtok(line, gs_tok_del);
                 if (NULL == p)
                 {
                     gs_info(gv, -2, "Error in map file");
+                    fclose(fp);
+                    free(line);
                     *retval = -2;
                     return;
                 }
-                if (strlen(p) > gs_MAXNME)
+                if (strlen(p) >= gs_MAXNME)
                 {
                     gs_info(gv, -2, "Marker name to long");
+                    fclose(fp);
+                    free(line);
                     *retval = -2;
                     return;
                 }
@@ -6655,6 +7042,8 @@ void gs_set_effects_01(gs_varset_type *gv, char **filename, int *retval)
                 if (NULL == p)
                 {
                     gs_info(gv, -2, "Error in map file");
+                    fclose(fp);
+                    free(line);
                     *retval = -2;
                     return;
                 }
@@ -6663,6 +7052,8 @@ void gs_set_effects_01(gs_varset_type *gv, char **filename, int *retval)
                 if (NULL == p)
                 {
                     gs_info(gv, -2, "Error in map file");
+                    fclose(fp);
+                    free(line);
                     *retval = -2;
                     return;
                 }
@@ -6671,13 +7062,31 @@ void gs_set_effects_01(gs_varset_type *gv, char **filename, int *retval)
                 if (NULL == p)
                 {
                     gs_info(gv, -2, "Error in map file");
+                    fclose(fp);
+                    free(line);
                     *retval = -2;
                     return;
                 }
 
                 strcpy(line, "\0");
+                if (NoLines == gs_UNSIGNED_MAX)
+                {
+                    fclose(fp);
+                    free(line);
+                    gs_info(gv, -2, "Too many effect-file records");
+                    *retval = -2;
+                    return;
+                }
                 NoLines++;
             }
+        }
+        if (rc < 0 || ferror(fp))
+        {
+            fclose(fp);
+            free(line);
+            gs_info(gv, -2, "Cannot read effect file");
+            *retval = -2;
+            return;
         }
         fclose(fp);
 
@@ -6686,23 +7095,60 @@ void gs_set_effects_01(gs_varset_type *gv, char **filename, int *retval)
         int *CmpAll = NULL;
         double *Eff = NULL;
 
-        EffNme = realloc(EffNme, NoLines * sizeof(char[1 + gs_MAXNME]));
-        EffAll = realloc(EffAll, NoLines * sizeof(int));
-        CmpAll = realloc(CmpAll, NoLines * sizeof(int));
-        Eff = realloc(Eff, NoLines * sizeof(double));
+        EffNme = gs_malloc_array(NoLines, sizeof(*EffNme));
+        EffAll = gs_malloc_array(NoLines, sizeof(*EffAll));
+        CmpAll = gs_malloc_array(NoLines, sizeof(*CmpAll));
+        Eff = gs_malloc_array(NoLines, sizeof(*Eff));
         if ((NULL == EffNme) || (NULL == EffAll) || (NULL == CmpAll) ||
             (NULL == Eff))
+        {
+            free(line);
+            free(EffNme);
+            free(EffAll);
+            free(CmpAll);
+            free(Eff);
             ERR_M;
+        }
 
         if (NULL == (fp = fopen(*filename, "r")))
+        {
+            free(line);
+            free(EffNme);
+            free(EffAll);
+            free(CmpAll);
+            free(Eff);
             ERR_F;
+        }
         st_getline(linep, np, fp);
         for (j = 0; j < NoLines; j++)
         {
-            st_getline(linep, np, fp);
+            if (st_getline(linep, np, fp) <= 0)
+            {
+                fclose(fp);
+                free(line);
+                free(EffNme);
+                free(EffAll);
+                free(CmpAll);
+                free(Eff);
+                gs_info(gv, -2, "Cannot read effect-file record");
+                *retval = -2;
+                return;
+            }
             gs_remove_newline(line);
 
             p = strtok(line, gs_tok_del);
+            if (!p || strlen(p) >= sizeof(EffNme[j]))
+            {
+                fclose(fp);
+                free(line);
+                free(EffNme);
+                free(EffAll);
+                free(CmpAll);
+                free(Eff);
+                gs_info(gv, -2, "Invalid effect-file record");
+                *retval = -2;
+                return;
+            }
             strcpy(EffNme[j], p);
 
             p = strtok(NULL, gs_tok_del);
@@ -6746,28 +7192,51 @@ void gs_set_effects_01(gs_varset_type *gv, char **filename, int *retval)
             }
 
             p = strtok(NULL, gs_tok_del);
-            Eff[j] = (double)atof(p);
+            if (!p)
+            {
+                fclose(fp);
+                free(line);
+                free(EffNme);
+                free(EffAll);
+                free(CmpAll);
+                free(Eff);
+                gs_info(gv, -2, "Invalid effect-file record");
+                *retval = -2;
+                return;
+            }
+            if (gs_parse_double_strict(p, &Eff[j]))
+            {
+                fclose(fp);
+                free(line);
+                free(EffNme);
+                free(EffAll);
+                free(CmpAll);
+                free(Eff);
+                gs_info(gv, -2, "Invalid numeric effect");
+                *retval = -2;
+                return;
+            }
         }
         fclose(fp);
         free(line);
 
         for (j = 0; j < NoLines; j++)
         {
-            if (0 == strcmp(EffNme[j], gv->EffNme[j]))
+            if (j < stage->NoEff && 0 == strcmp(EffNme[j], stage->EffNme[j]))
             {
-                gv->EffAll[j] = EffAll[j];
-                gv->CmpAll[j] = CmpAll[j];
-                gv->u[j] = Eff[j];
+                stage->EffAll[j] = EffAll[j];
+                stage->CmpAll[j] = CmpAll[j];
+                stage->u[j] = Eff[j];
             }
             else
             {
                 for (k = 0; k < (1 + gv->NoMar); k++)
                 {
-                    if (0 == strcmp(EffNme[j], gv->EffNme[k]))
+                    if (0 == strcmp(EffNme[j], stage->EffNme[k]))
                     {
-                        gv->EffAll[k] = EffAll[j];
-                        gv->CmpAll[k] = CmpAll[j];
-                        gv->u[k] = Eff[j];
+                        stage->EffAll[k] = EffAll[j];
+                        stage->CmpAll[k] = CmpAll[j];
+                        stage->u[k] = Eff[j];
                         break;
                     }
                 }
@@ -6780,13 +7249,29 @@ void gs_set_effects_01(gs_varset_type *gv, char **filename, int *retval)
         free(Eff);
     }
 
+    GS_FREE(gv->Z);
+    GS_FREE(gv->est);
+    GS_FREE(gv->EffNme);
+    GS_FREE(gv->EffAll);
+    GS_FREE(gv->CmpAll);
+    GS_FREE(gv->u);
+    gv->NoEff = stage->NoEff;
+    gv->dimu = stage->dimu;
+    gv->EffNme = stage->EffNme;
+    gv->EffAll = stage->EffAll;
+    gv->CmpAll = stage->CmpAll;
+    gv->u = stage->u;
+    stage->EffNme = NULL;
+    stage->EffAll = stage->CmpAll = NULL;
+    stage->u = NULL;
+    st_work_reset(mark);
     *retval = 0;
     return;
 }
 
 void gs_set_effects_01_GV(char **filename, int *retval, char **set_name)
 {
-    gs_set_effects_01(gs_fdta(*set_name), filename, retval);
+    gs_set_effects_01(gs_fdta_checked(*set_name), filename, retval);
 }
 
 void gs_return_pvals_01(gs_varset_type *gv, char **out_filename, int *retval)
@@ -6804,7 +7289,7 @@ void gs_return_pvals_01(gs_varset_type *gv, char **out_filename, int *retval)
     if ((outfp = fopen(*out_filename, "w")) == NULL)
         ERR_F;
 
-    fprintf(outfp, " effect pvalue \n");
+    fprintf(outfp, " effect p \n");
     for (i = 0; i < gv->dimu; i++)
         fprintf(outfp, "%s.%i %f %f \n", gv->EffNme[i], gv->EffAll[i], gv->u[i],
                 gv->p[i]);
@@ -6817,7 +7302,7 @@ void gs_return_pvals_01(gs_varset_type *gv, char **out_filename, int *retval)
 
 void gs_return_pvals_01_GV(char **out_filename, int *retval, char **set_name)
 {
-    gs_return_pvals_01(gs_fdta(*set_name), out_filename, retval);
+    gs_return_pvals_01(gs_fdta_checked(*set_name), out_filename, retval);
 }
 
 void gs_check_pvals_01(gs_varset_type *gv, int *retval)
@@ -6831,7 +7316,7 @@ void gs_check_pvals_01(gs_varset_type *gv, int *retval)
 
 void gs_check_pvals_01_GV(int *retval, char **set_name)
 {
-    gs_check_pvals_01(gs_fdta(*set_name), retval);
+    gs_check_pvals_01(gs_fdta_checked(*set_name), retval);
 }
 
 void gs_set_allele_codes_01(gs_varset_type *gv, double *aa, double *aA,
@@ -6852,7 +7337,7 @@ void gs_set_allele_codes_01_GV(double *aa, double *aA, double *AA, double *an,
                                double *nn, double *nA, char **set_name)
 {
 
-    gs_set_allele_codes_01(gs_fdta(*set_name), aa, aA, AA, an, nn, nA);
+    gs_set_allele_codes_01(gs_fdta_checked(*set_name), aa, aA, AA, an, nn, nA);
 }
 
 int gs_mappoint_cmp(const void *a, const void *b)
@@ -6959,7 +7444,7 @@ void gs_chrom_stats_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
     if (0 == gv->NLoc)
     {
 
-        snprintf(gv->msg, sizeof(gv->msg), "No linkage map has been loaded");
+        st_text_log(gv->msg, sizeof(gv->msg), "No linkage map has been loaded");
         gs_info(gv, -2, gv->msg);
         *retval = -2;
         return;
@@ -6967,12 +7452,20 @@ void gs_chrom_stats_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
 
     gs_reset_chrom_stats(gv);
 
-    gv->NChrom = 1;
+    gs_UNSIGNED chromosome_count = 1;
     for (i = 1; i < gv->NLoc; i++)
         if (gv->map[i - 1]->chrom != gv->map[i]->chrom)
-            gv->NChrom++;
+            chromosome_count++;
 
-    gv->chrom = realloc(gv->chrom, gv->NChrom * sizeof(gs_chrom_type));
+    {
+        void *resized;
+        if (!gs_native_resize(gv->chrom, chromosome_count, 1, sizeof(gs_chrom_type), &resized))
+        {
+            ERR_M;
+        }
+        gv->chrom = resized;
+    }
+    gv->NChrom = chromosome_count;
 
     for (c = 0; c < gv->NChrom; c++)
     {
@@ -6981,7 +7474,7 @@ void gs_chrom_stats_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
         gv->chrom[c].ld = NULL;
     }
 
-    snprintf(gv->msg, sizeof(gv->msg), "No. of chromosomes: %lu", gv->NChrom);
+    st_text_log(gv->msg, sizeof(gv->msg), "No. of chromosomes: %lu", gv->NChrom);
 
     gs_info(gv, 1, gv->msg);
 
@@ -7014,7 +7507,7 @@ void gs_chrom_stats_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
         for (c = 0; c < gv->NChrom; c++)
         {
             p = gv->chrom[c].first_loc;
-            snprintf(gv->msg, sizeof(gv->msg), "%lu %lu %f \n", 1 + c,
+            st_text_log(gv->msg, sizeof(gv->msg), "%lu %lu %f \n", 1 + c,
                      gv->chrom[c].NLocC, (p[gv->chrom[c].NLocC - 1])->pos);
             fprintf(outfp, "%s", gv->msg);
         }
@@ -7029,7 +7522,7 @@ void gs_chrom_stats_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
 void gs_chrom_stats_01_GV(char **out_filename, int *auxfiles, int *retval,
                           char **set_name)
 {
-    gs_chrom_stats_01(gs_fdta(*set_name), out_filename, auxfiles, retval);
+    gs_chrom_stats_01(gs_fdta_checked(*set_name), out_filename, auxfiles, retval);
 }
 
 gs_FLOAT gs_rf_haldane(gs_FLOAT d)
@@ -7039,19 +7532,20 @@ gs_FLOAT gs_rf_haldane(gs_FLOAT d)
 
 gs_FLOAT gs_rf_kosambi(gs_FLOAT d)
 {
-    return (exp(4 * d) - 1) / (exp(4 * d) + 1) / 2;
+    return tanh(2 * d) / 2;
 }
 
 void gs_calc_rf_01(gs_varset_type *gv, char **map_function, char **out_filename,
                    int *auxfiles, int *retval)
 {
-    gs_UNSIGNED c, i, j, idx;
+    gs_UNSIGNED c, i, j;
+    size_t idx;
     gs_FLOAT d;
     gs_mappoint_type **p;
 
     if (0 == gv->NChrom)
     {
-        snprintf(gv->msg, sizeof(gv->msg),
+        st_text_log(gv->msg, sizeof(gv->msg),
                  "No chromosome statistics available");
         gs_info(gv, -2, gv->msg);
         *retval = -2;
@@ -7079,12 +7573,21 @@ void gs_calc_rf_01(gs_varset_type *gv, char **map_function, char **out_filename,
 
     for (c = 0; c < gv->NChrom; c++)
     {
-        gv->chrom[c].rf =
-            realloc(gv->chrom[c].rf,
-                    gv->chrom[c].NLocC * gv->chrom[c].NLocC * sizeof(gs_FLOAT));
-        gv->chrom[c].q =
-            realloc(gv->chrom[c].q,
-                    gv->chrom[c].NLocC * gv->chrom[c].NLocC * sizeof(gs_FLOAT));
+        if (!gv->chrom[c].NLocC || !gv->chrom[c].first_loc)
+        {
+            gs_info(gv, -2, "Incomplete chromosome statistics");
+            *retval = -2;
+            return;
+        }
+        void *resized;
+        if (!gs_native_resize(gv->chrom[c].rf, gv->chrom[c].NLocC,
+                              gv->chrom[c].NLocC, sizeof(gs_FLOAT), &resized))
+            ERR_M;
+        gv->chrom[c].rf = resized;
+        if (!gs_native_resize(gv->chrom[c].q, gv->chrom[c].NLocC,
+                              gv->chrom[c].NLocC, sizeof(gs_FLOAT), &resized))
+            ERR_M;
+        gv->chrom[c].q = resized;
     }
 
     for (c = 0; c < gv->NChrom; c++)
@@ -7095,7 +7598,7 @@ void gs_calc_rf_01(gs_varset_type *gv, char **map_function, char **out_filename,
             {
                 d = fabs((p[i])->pos - (p[j])->pos);
 
-                idx = i * gv->chrom[c].NLocC + j;
+                idx = (size_t)i * gv->chrom[c].NLocC + j;
                 (gv->chrom[c].rf)[idx] = gs_rf(d / 100);
             }
     }
@@ -7111,9 +7614,9 @@ void gs_calc_rf_01(gs_varset_type *gv, char **map_function, char **out_filename,
             for (i = 0; i < (gv->chrom[c].NLocC - 1); i++)
                 for (j = i + 1; j < gv->chrom[c].NLocC; j++)
                 {
-                    idx = i * gv->chrom[c].NLocC + j;
+                    idx = (size_t)i * gv->chrom[c].NLocC + j;
 
-                    snprintf(gv->msg, sizeof(gv->msg), "%lu %lu %lu %f \n",
+                    st_text_log(gv->msg, sizeof(gv->msg), "%lu %lu %lu %f \n",
                              1 + c, 1 + i, 1 + j,
                              (double)(gv->chrom[c].rf)[idx]);
                     fprintf(outfp, "%s", gv->msg);
@@ -7130,7 +7633,7 @@ void gs_calc_rf_01(gs_varset_type *gv, char **map_function, char **out_filename,
 void gs_calc_rf_01_GV(char **map_function, char **out_filename, int *auxfiles,
                       int *retval, char **set_name)
 {
-    gs_calc_rf_01(gs_fdta(*set_name), map_function, out_filename, auxfiles,
+    gs_calc_rf_01(gs_fdta_checked(*set_name), map_function, out_filename, auxfiles,
                   retval);
 }
 
@@ -7156,16 +7659,24 @@ gs_FLOAT gs_q_crs(int *t, gs_FLOAT r)
 void gs_calc_q_01(gs_varset_type *gv, char **pop_type, int *t,
                   char **out_filename, int *auxfiles, int *retval)
 {
-    gs_UNSIGNED c, i, j, idx;
+    gs_UNSIGNED c, i, j;
+    size_t idx;
 
     if ((0 == gv->NChrom) || (NULL == gv->chrom[0].rf))
     {
-        snprintf(gv->msg, sizeof(gv->msg),
+        st_text_log(gv->msg, sizeof(gv->msg),
                  "No recombination frequencies available");
         gs_info(gv, -2, gv->msg);
         *retval = -2;
         return;
     }
+    for (c = 0; c < gv->NChrom; c++)
+        if (!gv->chrom[c].NLocC || !gv->chrom[c].rf || !gv->chrom[c].q)
+        {
+            gs_info(gv, -2, "Incomplete recombination frequencies");
+            *retval = -2;
+            return;
+        }
 
     gs_FLOAT (*gs_q)(int *t, gs_FLOAT r);
 
@@ -7196,7 +7707,7 @@ void gs_calc_q_01(gs_varset_type *gv, char **pop_type, int *t,
         for (i = 0; i < gv->chrom[c].NLocC; i++)
             for (j = 0; j < gv->chrom[c].NLocC; j++)
             {
-                idx = i * gv->chrom[c].NLocC + j;
+                idx = (size_t)i * gv->chrom[c].NLocC + j;
                 (gv->chrom[c].q)[idx] = gs_q(t, (gv->chrom[c].rf)[idx]);
             }
     }
@@ -7212,9 +7723,9 @@ void gs_calc_q_01(gs_varset_type *gv, char **pop_type, int *t,
             for (i = 0; i < (gv->chrom[c].NLocC - 1); i++)
                 for (j = i + 1; j < gv->chrom[c].NLocC; j++)
                 {
-                    idx = i * gv->chrom[c].NLocC + j;
+                    idx = (size_t)i * gv->chrom[c].NLocC + j;
 
-                    snprintf(gv->msg, sizeof(gv->msg), "%lu %lu %lu %f \n",
+                    st_text_log(gv->msg, sizeof(gv->msg), "%lu %lu %lu %f \n",
                              1 + c, 1 + i, 1 + j,
                              (double)(gv->chrom[c].q)[idx]);
                     fprintf(outfp, "%s", gv->msg);
@@ -7231,7 +7742,7 @@ void gs_calc_q_01(gs_varset_type *gv, char **pop_type, int *t,
 void gs_calc_q_01_GV(char **pop_type, int *t, char **out_filename,
                      int *auxfiles, int *retval, char **set_name)
 {
-    gs_calc_q_01(gs_fdta(*set_name), pop_type, t, out_filename, auxfiles,
+    gs_calc_q_01(gs_fdta_checked(*set_name), pop_type, t, out_filename, auxfiles,
                  retval);
 }
 
@@ -7496,10 +8007,10 @@ void gs_read_map_01(gs_varset_type *gv, char **map_filename, int *skip,
     free(map_build);
     map_build = NULL;
 
-    snprintf(gv->msg, sizeof(gv->msg), "Description length: Mar %lu, Class %lu",
+    st_text_log(gv->msg, sizeof(gv->msg), "Description length: Mar %lu, Class %lu",
              mar_size, cls_size);
     gs_info(gv, 1, gv->msg);
-    snprintf(gv->msg, sizeof(gv->msg), "No. of markers in map file: %lu", nloc);
+    st_text_log(gv->msg, sizeof(gv->msg), "No. of markers in map file: %lu", nloc);
     gs_info(gv, 1, gv->msg);
 
     map = gs_malloc_array((size_t)nloc, sizeof(*map));
@@ -7762,7 +8273,7 @@ void gs_read_map_01(gs_varset_type *gv, char **map_filename, int *skip,
         fclose(outfp);
     }
 
-    snprintf(gv->msg, sizeof(gv->msg), "No. of matching markers: %lu",
+    st_text_log(gv->msg, sizeof(gv->msg), "No. of matching markers: %lu",
              tmp.NLoc);
     gs_info(gv, 1, gv->msg);
 
@@ -7797,7 +8308,7 @@ void gs_read_map_01_GV(char **map_filename, int *skip, char **fmt,
                        int *retval, char **set_name)
 {
 
-    gs_read_map_01(gs_fdta(*set_name), map_filename, skip, fmt, map_stretch,
+    gs_read_map_01(gs_fdta_checked(*set_name), map_filename, skip, fmt, map_stretch,
                    out_filename, auxfiles, retval);
 }
 
@@ -8834,7 +9345,7 @@ SEXP st_read_vcf(SEXP filename, SEXP dataset, SEXP strictACTG)
         return ScalarInteger(-2);
     strict = LOGICAL(strictACTG)[0];
 
-    gv = gs_fdta((char *)CHAR(STRING_ELT(dataset, 0)));
+    gv = gs_fdta_checked((char *)CHAR(STRING_ELT(dataset, 0)));
     gs_tmp_init_from(&tmp, gv);
 
     fp = fopen(CHAR(STRING_ELT(filename, 0)), "rb");
@@ -9476,7 +9987,7 @@ SEXP st_write_vcf(SEXP filename, SEXP dataset)
         ('\0' == CHAR(STRING_ELT(dataset, 0))[0]))
         return ScalarInteger(-2);
 
-    gv = gs_fdta((char *)CHAR(STRING_ELT(dataset, 0)));
+    gv = gs_fdta_checked((char *)CHAR(STRING_ELT(dataset, 0)));
     if ((0u == gv->NoInd) || (0u == gv->NoMar) || (NULL == gv->IndName) ||
         (NULL == gv->MarName) || !st_allele_present(gv) || (0u == gv->NLoc) ||
         (NULL == gv->map) || (NULL == gv->mdl))
@@ -9813,7 +10324,7 @@ SEXP st_load_vcf_data(SEXP stvcf, SEXP dataset, SEXP strictACTG)
         return ScalarInteger(-2);
     strict = LOGICAL(strictACTG)[0];
 
-    gv = gs_fdta((char *)translateCharUTF8(STRING_ELT(dataset, 0)));
+    gv = gs_fdta_checked((char *)translateCharUTF8(STRING_ELT(dataset, 0)));
     gs_tmp_init_from(&tmp, gv);
 
     if (!st_stvcf_components(stvcf))
@@ -10291,7 +10802,7 @@ SEXP st_markerdata_to_STvcf(SEXP dataset)
         (NA_STRING == STRING_ELT(dataset, 0)))
         return R_NilValue;
 
-    gv = gs_fdta((char *)CHAR(STRING_ELT(dataset, 0)));
+    gv = gs_fdta_checked((char *)CHAR(STRING_ELT(dataset, 0)));
 
     if ((0 == gv->NoInd) || (0 == gv->NoMar) || (NULL == gv->IndName) ||
         (NULL == gv->MarName) || !st_allele_present(gv))
@@ -10495,7 +11006,7 @@ SEXP st_markerdata_to_STvcf(SEXP dataset)
     for (gs_UNSIGNED c = 0; c < no_chrom; c++)
     {
         char label[64];
-        snprintf(label, sizeof(label), "%d", chrom_levels[c]);
+        st_text_write(label, sizeof(label), "%d", chrom_levels[c]);
         SET_STRING_ELT(chrom_levels_s, c, mkChar(label));
     }
 
@@ -10679,7 +11190,7 @@ SEXP st_load_performance_data(SEXP id_s, SEXP y_s, SEXP dataset)
         (NA_STRING == STRING_ELT(dataset, 0)))
         return ScalarInteger(-2);
 
-    gv = gs_fdta((char *)translateCharUTF8(STRING_ELT(dataset, 0)));
+    gv = gs_fdta_checked((char *)translateCharUTF8(STRING_ELT(dataset, 0)));
     gs_tmp_init_from(&tmp, gv);
 
     if ((0 == gv->NoInd) || (0 == gv->NoMar) || (NULL == gv->IndName) ||
@@ -10834,7 +11345,7 @@ SEXP st_load_performance_data(SEXP id_s, SEXP y_s, SEXP dataset)
         }
     }
 
-    snprintf(gv->msg, sizeof(gv->msg), "No. of performance data: %lu",
+    st_text_log(gv->msg, sizeof(gv->msg), "No. of performance data: %lu",
              tmp.NoInd);
     gs_info(gv, 0, gv->msg);
 
@@ -10885,7 +11396,7 @@ void gs_get_map_01(gs_varset_type *gv, char **out_filename, int *retval)
             const char *group = chrom->kind == ST_DATA_STRING
                                     ? st_data_string(chrom, i) : label;
             if (chrom->kind != ST_DATA_STRING)
-                snprintf(label, sizeof(label), "%.15g",
+                st_text_write(label, sizeof(label), "%.15g",
                          chrom->kind == ST_DATA_REAL ? chrom->data.real[i]
                                                     : chrom->data.integer[i]);
             double value = pos->kind == ST_DATA_REAL ? pos->data.real[i]
@@ -10898,7 +11409,7 @@ void gs_get_map_01(gs_varset_type *gv, char **out_filename, int *retval)
     for (lne = 0; lne < gv->NLoc; lne++)
         if (gv->mdl[lne] < gs_UNSIGNED_MAX)
         {
-            snprintf(gv->msg, sizeof(gv->msg), "%i %15.12f %s %s\n",
+            st_text_log(gv->msg, sizeof(gv->msg), "%i %15.12f %s %s\n",
                      (gv->map[lne])->chrom, (gv->map[lne])->pos,
                      (gv->map[lne])->name, (gv->map[lne])->class);
             fprintf(outfp, "%s", gv->msg);
@@ -10912,7 +11423,7 @@ void gs_get_map_01(gs_varset_type *gv, char **out_filename, int *retval)
 void gs_get_map_01_GV(char **out_filename, int *retval, char **set_name)
 {
 
-    gs_get_map_01(gs_fdta(*set_name), out_filename, retval);
+    gs_get_map_01(gs_fdta_checked(*set_name), out_filename, retval);
 }
 
 int minimum(int a, int b)
@@ -10935,7 +11446,8 @@ void gs_recode_ref_01(gs_varset_type *gv, int *reference, int *descending,
                       int *retval)
 
 {
-    gs_UNSIGNED i, j, idx, idx_R;
+    gs_UNSIGNED i, j;
+    size_t idx, idx_R;
     int a, b, c, d;
 
     if ((*reference < 1) || ((gs_UNSIGNED)*reference > gv->NoInd))
@@ -10945,22 +11457,29 @@ void gs_recode_ref_01(gs_varset_type *gv, int *reference, int *descending,
         return;
     }
 
-    GS_ALLELE_TYPE *Ref1 = malloc(gv->NoMar * gv->NoInd * sizeof(*Ref1));
-    GS_ALLELE_TYPE *Ref2 = malloc(gv->NoMar * gv->NoInd * sizeof(*Ref2));
-    if ((NULL == Ref1) || (NULL == Ref2))
+    size_t count;
+    if (gs_size_mul((size_t)gv->NoMar, (size_t)gv->NoInd, &count))
         ERR_M;
+    GS_ALLELE_TYPE *Ref1 = gs_malloc_array(count, sizeof(*Ref1));
+    GS_ALLELE_TYPE *Ref2 = gs_malloc_array(count, sizeof(*Ref2));
+    if ((NULL == Ref1) || (NULL == Ref2))
+    {
+        free(Ref1);
+        free(Ref2);
+        ERR_M;
+    }
 
     gs_UNSIGNED R = (gs_UNSIGNED)*reference - 1;
 
     for (i = 0; i < gv->NoMar; i++)
     {
-        idx_R = i * gv->NoInd + R;
+        idx_R = (size_t)i * gv->NoInd + R;
         a = st_allele_get(gv, idx_R, 0);
         b = st_allele_get(gv, idx_R, 1);
 
         for (j = 0; j < gv->NoInd; j++)
         {
-            idx = i * gv->NoInd + j;
+            idx = (size_t)i * gv->NoInd + j;
             c = st_allele_get(gv, idx, 0);
             d = st_allele_get(gv, idx, 1);
 
@@ -11037,13 +11556,13 @@ void gs_recode_ref_01(gs_varset_type *gv, int *reference, int *descending,
 void gs_recode_ref_01_GV(int *reference, int *descending, int *retval,
                          char **set_name)
 {
-    gs_recode_ref_01(gs_fdta(*set_name), reference, descending, retval);
+    gs_recode_ref_01(gs_fdta_checked(*set_name), reference, descending, retval);
 }
 
 void gs_recode_ref_name_01_GV(char **reference_name, int *descending,
                               int *retval, char **set_name)
 {
-    gs_varset_type *gv = gs_fdta(*set_name);
+    gs_varset_type *gv = gs_fdta_checked(*set_name);
     gs_UNSIGNED i;
     int reference = 0;
 
@@ -11058,13 +11577,19 @@ void gs_recode_ref_name_01_GV(char **reference_name, int *descending,
     for (i = 0; i < gv->NoInd; i++)
         if (0 == strcmp(gv->IndName[i], *reference_name))
         {
+            if (i >= INT_MAX)
+            {
+                gs_info(gv, -2, "Reference index exceeds the integer range");
+                *retval = -2;
+                return;
+            }
             reference = (int)i + 1;
             break;
         }
 
     if (0 == reference)
     {
-        snprintf(gv->msg, sizeof(gv->msg), "Reference individual not found: %s",
+        st_text_log(gv->msg, sizeof(gv->msg), "Reference individual not found: %s",
                  *reference_name);
         gs_info(gv, -2, gv->msg);
         *retval = -2;
@@ -11078,12 +11603,13 @@ gs_FLOAT gs_avg_ld(gs_chrom_type *chrom, gs_UNSIGNED mm_lft, gs_UNSIGNED mm_rgt)
 {
     gs_FLOAT ld = 0;
     gs_FLOAT n;
-    gs_UNSIGNED idx, i, j;
+    gs_UNSIGNED i, j;
+    size_t idx;
 
     for (i = mm_lft; i < mm_rgt; i++)
         for (j = i + 1; j <= mm_rgt; j++)
         {
-            idx = i * chrom->NLocC + j;
+            idx = (size_t)i * chrom->NLocC + j;
             ld += chrom->ld[idx];
         }
     n = ((gs_FLOAT)(mm_rgt - mm_lft) + 1) * ((gs_FLOAT)mm_rgt - mm_lft) / 2;
@@ -11096,19 +11622,21 @@ gs_FLOAT gs_check_extend(gs_chrom_type *chrom, gs_UNSIGNED mm_lft,
                          gs_UNSIGNED tol_rgt, char **ld_criterion)
 {
 
-    gs_UNSIGNED t, idx;
+    gs_UNSIGNED t;
+
+    size_t idx;
     gs_FLOAT tld, ld = 0;
 
     if (0 == strcmp("flanking_fast", *ld_criterion))
     {
-        idx = mm_lft * chrom->NLocC + mm_rgt;
+        idx = (size_t)mm_lft * chrom->NLocC + mm_rgt;
         ld = chrom->ld[idx];
     }
 
     if (0 == strcmp("flanking", *ld_criterion))
     {
 
-        idx = mm_lft * chrom->NLocC + mm_rgt;
+        idx = (size_t)mm_lft * chrom->NLocC + mm_rgt;
         ld = chrom->ld[idx];
 
         if (tol_lft > 0)
@@ -11117,7 +11645,7 @@ gs_FLOAT gs_check_extend(gs_chrom_type *chrom, gs_UNSIGNED mm_lft,
                 tol_lft = mm_lft;
             for (t = 1; t <= tol_lft; t++)
             {
-                idx = (mm_lft - t) * chrom->NLocC + mm_rgt;
+                idx = (size_t)(mm_lft - t) * chrom->NLocC + mm_rgt;
                 if (ld < chrom->ld[idx])
                     ld = chrom->ld[idx];
             }
@@ -11129,7 +11657,7 @@ gs_FLOAT gs_check_extend(gs_chrom_type *chrom, gs_UNSIGNED mm_lft,
                 tol_rgt = ((chrom->NLocC) - 1 - mm_rgt);
             for (t = 1; t <= tol_rgt; t++)
             {
-                idx = mm_lft * chrom->NLocC + (mm_rgt + t);
+                idx = (size_t)mm_lft * chrom->NLocC + (mm_rgt + t);
                 if (ld < chrom->ld[idx])
                     ld = chrom->ld[idx];
             }
@@ -11258,7 +11786,7 @@ void gs_def_hblocks_01(gs_varset_type *gv, int *hap, int *hap_unit,
 
     if (0 == gv->NLoc)
     {
-        snprintf(gv->msg, sizeof(gv->msg), "No linkage map has been loaded");
+        st_text_log(gv->msg, sizeof(gv->msg), "No linkage map has been loaded");
         gs_info(gv, -2, gv->msg);
         *retval = -2;
         return;
@@ -11266,9 +11794,30 @@ void gs_def_hblocks_01(gs_varset_type *gv, int *hap, int *hap_unit,
 
     gs_UNSIGNED i, l, o, n, fib, lib;
 
-    gv->h_u = realloc(gv->h_u, gv->NLoc * sizeof(gs_UNSIGNED));
-    gv->h_o = realloc(gv->h_o, gv->NLoc * sizeof(gs_UNSIGNED));
-    gv->h_n = realloc(gv->h_n, gv->NLoc * sizeof(gs_UNSIGNED));
+    {
+        void *resized;
+        if (!gs_native_resize(gv->h_u, gv->NLoc, 1, sizeof(gs_UNSIGNED), &resized))
+        {
+            ERR_M;
+        }
+        gv->h_u = resized;
+    }
+    {
+        void *resized;
+        if (!gs_native_resize(gv->h_o, gv->NLoc, 1, sizeof(gs_UNSIGNED), &resized))
+        {
+            ERR_M;
+        }
+        gv->h_o = resized;
+    }
+    {
+        void *resized;
+        if (!gs_native_resize(gv->h_n, gv->NLoc, 1, sizeof(gs_UNSIGNED), &resized))
+        {
+            ERR_M;
+        }
+        gv->h_n = resized;
+    }
     if ((NULL == gv->h_u) || (NULL == gv->h_o) || (gv->h_n == 0))
         ERR_M;
 
@@ -11284,17 +11833,17 @@ void gs_def_hblocks_01(gs_varset_type *gv, int *hap, int *hap_unit,
     {
 
         if (0 == strcmp("average", *ld_criterion))
-            snprintf(gv->msg, sizeof(gv->msg),
+            st_text_log(gv->msg, sizeof(gv->msg),
                      "Average LD in haplotype block > %4.2f", *ld_threshold);
         if (0 == strcmp("flanking", *ld_criterion))
-            snprintf(gv->msg, sizeof(gv->msg),
+            st_text_log(gv->msg, sizeof(gv->msg),
                      "LD of markers flanking haplotype blocks > %4.2f",
                      *ld_threshold);
         gs_info(gv, 0, gv->msg);
 
         if ((NULL == gv->chrom) || (NULL == gv->chrom[0].ld))
         {
-            snprintf(gv->msg, sizeof(gv->msg), "No LD values available");
+            st_text_log(gv->msg, sizeof(gv->msg), "No LD values available");
             gs_info(gv, -2, gv->msg);
             *retval = -2;
             return;
@@ -11303,7 +11852,7 @@ void gs_def_hblocks_01(gs_varset_type *gv, int *hap, int *hap_unit,
         gs_UNSIGNED tol;
         if (*tolerance < 0)
         {
-            snprintf(gv->msg, sizeof(gv->msg), "Incorrect tolerance value");
+            st_text_log(gv->msg, sizeof(gv->msg), "Incorrect tolerance value");
             gs_info(gv, -2, gv->msg);
             *retval = -2;
             return;
@@ -11317,7 +11866,9 @@ void gs_def_hblocks_01(gs_varset_type *gv, int *hap, int *hap_unit,
         for (i = 0; i < gv->NLoc; i++)
             blk[i] = 0;
 
-        gs_UNSIGNED c, mm, idx, lfdnr;
+        gs_UNSIGNED c, mm, lfdnr;
+
+        size_t idx;
         gs_UNSIGNED locus1, locus2;
         gs_FLOAT ld;
         int unasigned_loci, block_extendable;
@@ -11342,7 +11893,7 @@ void gs_def_hblocks_01(gs_varset_type *gv, int *hap, int *hap_unit,
                     locus2 = gv->chrom[c].first_loc_i + mm;
                     locus1 = locus2 - 1;
 
-                    idx = (mm - 1) * gv->chrom[c].NLocC + mm;
+                    idx = (size_t)(mm - 1) * gv->chrom[c].NLocC + mm;
                     ld = (gv->chrom[c].ld)[idx];
 
                     if ((0 == blk[locus1]) && (0 == blk[locus2]) &&
@@ -11448,7 +11999,7 @@ void gs_def_hblocks_01(gs_varset_type *gv, int *hap, int *hap_unit,
     else if (0 == *hap_unit)
     {
 
-        snprintf(gv->msg, sizeof(gv->msg),
+        st_text_log(gv->msg, sizeof(gv->msg),
                  "Haplotype borders form disjunct LD segments ");
         gs_info(gv, 0, gv->msg);
 
@@ -11459,7 +12010,9 @@ void gs_def_hblocks_01(gs_varset_type *gv, int *hap, int *hap_unit,
             return;
         }
 
-        gs_UNSIGNED i, m, cc, l1, l2, idx1, idx2;
+        gs_UNSIGNED i, m, cc, l1, l2;
+
+        size_t idx1, idx2;
         for (cc = 0; cc < gv->NChrom; cc++)
         {
             fib = gv->chrom[cc].first_loc_i;
@@ -11472,8 +12025,8 @@ void gs_def_hblocks_01(gs_varset_type *gv, int *hap, int *hap_unit,
                     l2 = gv->chrom[cc].first_loc_i + m;
                     l1 = l2 - 1;
 
-                    idx1 = l1 * gv->NoInd + i;
-                    idx2 = l2 * gv->NoInd + i;
+                    idx1 = (size_t)l1 * gv->NoInd + i;
+                    idx2 = (size_t)l2 * gv->NoInd + i;
 
                     if ((st_allele_get(gv, idx1, 0) !=
                          st_allele_get(gv, idx2, 0)) ||
@@ -11503,7 +12056,7 @@ void gs_def_hblocks_01(gs_varset_type *gv, int *hap, int *hap_unit,
 
     else if (1 == *hap_unit)
     {
-        snprintf(gv->msg, sizeof(gv->msg), "Haplotyp borders every %i markers",
+        st_text_log(gv->msg, sizeof(gv->msg), "Haplotyp borders every %i markers",
                  *hap);
         gs_info(gv, 0, gv->msg);
 
@@ -11541,7 +12094,7 @@ void gs_def_hblocks_01(gs_varset_type *gv, int *hap, int *hap_unit,
     else if (2 == *hap_unit)
     {
 
-        snprintf(gv->msg, sizeof(gv->msg),
+        st_text_log(gv->msg, sizeof(gv->msg),
                  "Haplotyp borders every %i centiMorgans", *hap);
 
         gs_info(gv, 0, gv->msg);
@@ -11582,7 +12135,7 @@ void gs_def_hblocks_01(gs_varset_type *gv, int *hap, int *hap_unit,
 
     {
 
-        snprintf(gv->msg, sizeof(gv->msg),
+        st_text_log(gv->msg, sizeof(gv->msg),
                  "Provide either hap.unit or ld.criterion");
 
         gs_info(gv, -2, gv->msg);
@@ -11619,9 +12172,22 @@ void gs_def_hblocks_01(gs_varset_type *gv, int *hap, int *hap_unit,
         for (l = 0; l < gv->NHap; l++)
         {
             char *lne = (char *)malloc(gs_MAXLNE * sizeof(char));
+            if (!lne)
+            {
+                fclose(outfp);
+                ERR_M;
+            }
 
-            snprintf(lne, gs_MAXLNE, "%i %f %s %s ", gv->Hap_S[l].chrom,
-                     gv->Hap_S[l].pos, gv->Hap_S[l].name, gv->Hap_S[l].class);
+            int written = snprintf(lne, gs_MAXLNE, "%i %f %s %s ", gv->Hap_S[l].chrom,
+                                   gv->Hap_S[l].pos, gv->Hap_S[l].name, gv->Hap_S[l].class);
+            if (written < 0 || (size_t)written >= gs_MAXLNE)
+            {
+                free(lne);
+                fclose(outfp);
+                gs_info(gv, -2, "Haplotype record exceeds its output buffer");
+                *retval = -2;
+                return;
+            }
 
             for (i = gv->h_u[l]; i <= gv->h_o[l]; i++)
             {
@@ -11629,7 +12195,17 @@ void gs_def_hblocks_01(gs_varset_type *gv, int *hap, int *hap_unit,
                 {
                     size_t a = strlen(lne);
                     size_t b = strlen(gv->MarName[gv->mdl[i]]);
-                    lne = realloc(lne, 2 + a + b);
+                    void *resized;
+                    if (b > SIZE_MAX - 2 || a > SIZE_MAX - b - 2 ||
+                        !gs_native_resize(NULL, a + b + 2, 1, 1, &resized))
+                    {
+                        free(lne);
+                        fclose(outfp);
+                        ERR_M;
+                    }
+                    memcpy(resized, lne, a + 1);
+                    free(lne);
+                    lne = resized;
                     strcat(lne, gv->MarName[gv->mdl[i]]);
                     strcat(lne, ";");
                 }
@@ -11648,7 +12224,7 @@ void gs_def_hblocks_01_GV(int *hap, int *hap_unit, double *ld_threshold,
                           char **hap_symbol, char **out_filename, int *auxfiles,
                           int *retval, char **set_name)
 {
-    gs_def_hblocks_01(gs_fdta(*set_name), hap, hap_unit, ld_threshold,
+    gs_def_hblocks_01(gs_fdta_checked(*set_name), hap, hap_unit, ld_threshold,
                       ld_criterion, tolerance, hap_symbol, out_filename,
                       auxfiles, retval);
 }
@@ -11756,29 +12332,46 @@ void gs_recode_hbc_01(gs_varset_type *gv, int *reference, int *retval)
 
     if (0 == gv->NHap)
     {
-        snprintf(gv->msg, sizeof(gv->msg), "No haplotype blocks were defined");
+        st_text_log(gv->msg, sizeof(gv->msg), "No haplotype blocks were defined");
         gs_info(gv, -2, gv->msg);
         *retval = -2;
         return;
     }
 
-    gs_UNSIGNED l, i, j, idx, idx_R;
+    gs_UNSIGNED l, i, j;
+
+    size_t idx, idx_R;
 
     if ((*reference < 1) || ((gs_UNSIGNED)*reference > gv->NoInd))
     {
-        snprintf(gv->msg, sizeof(gv->msg), "Invalid reference individual");
+        st_text_log(gv->msg, sizeof(gv->msg), "Invalid reference individual");
         gs_info(gv, -2, gv->msg);
         *retval = -2;
         return;
     }
 
-    gv->Ref1 = realloc(gv->Ref1, gv->NoMar * gv->NoInd * sizeof(*gv->Ref1));
-    gv->Ref2 = realloc(gv->Ref2, gv->NoMar * gv->NoInd * sizeof(*gv->Ref2));
+    {
+        void *resized;
+        if (!gs_native_resize(gv->Ref1, gv->NoMar, gv->NoInd, sizeof(*gv->Ref1), &resized))
+        {
+            ERR_M;
+        }
+        gv->Ref1 = resized;
+    }
+    {
+        void *resized;
+        if (!gs_native_resize(gv->Ref2, gv->NoMar, gv->NoInd, sizeof(*gv->Ref2), &resized))
+        {
+            ERR_M;
+        }
+        gv->Ref2 = resized;
+    }
     if ((NULL == gv->Ref1) || (NULL == gv->Ref2))
         ERR_M;
 
     gs_UNSIGNED R = (gs_UNSIGNED)*reference - 1;
-    gs_UNSIGNED idx_H, n0, n1, n2;
+    gs_UNSIGNED n0, n1, n2;
+    size_t idx_H;
     int a, b, c, d;
 
     (void)n2;
@@ -11791,17 +12384,17 @@ void gs_recode_hbc_01(gs_varset_type *gv, int *reference, int *retval)
             n0 = 0;
             n1 = 0;
             n2 = 0;
-            idx_H = l * gv->NoInd + j;
+            idx_H = (size_t)l * gv->NoInd + j;
 
             for (i = gv->h_u[l]; i <= gv->h_o[l]; i++)
                 if (gv->mdl[i] < gs_UNSIGNED_MAX)
                 {
 
-                    idx_R = i * gv->NoInd + R;
+                    idx_R = (size_t)i * gv->NoInd + R;
                     a = st_allele_get(gv, idx_R, 0);
                     b = st_allele_get(gv, idx_R, 1);
 
-                    idx = i * gv->NoInd + j;
+                    idx = (size_t)i * gv->NoInd + j;
                     c = st_allele_get(gv, idx, 0);
                     d = st_allele_get(gv, idx, 1);
 
@@ -11866,7 +12459,7 @@ void gs_recode_hbc_01(gs_varset_type *gv, int *reference, int *retval)
 
 void gs_recode_hbc_01_GV(int *reference, int *retval, char **set_name)
 {
-    gs_recode_hbc_01(gs_fdta(*set_name), reference, retval);
+    gs_recode_hbc_01(gs_fdta_checked(*set_name), reference, retval);
 }
 
 int gs_hall_cmp(const void *a, const void *b)
@@ -11894,14 +12487,14 @@ void gs_recode_hil_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
     gs_UNSIGNED *Hidx2 = NULL;
     gs_usp *ar = NULL;
     char **hal = NULL;
-    gs_UNSIGNED n_hal = 0;
+    size_t n_hal = 0;
     size_t genotype_count;
     size_t max_hall;
     int failed = 0;
 
     if (0 == gv->NHap)
     {
-        snprintf(gv->msg, sizeof(gv->msg), "No haplotype blocks were defined");
+        st_text_log(gv->msg, sizeof(gv->msg), "No haplotype blocks were defined");
         gs_info(gv, -2, gv->msg);
         *retval = -2;
         return;
@@ -11917,8 +12510,26 @@ void gs_recode_hil_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
     }
     max_hall = 2 * (size_t)gv->NoInd;
 
-    gv->Ref1 = realloc(gv->Ref1, genotype_count * sizeof(*gv->Ref1));
-    gv->Ref2 = realloc(gv->Ref2, genotype_count * sizeof(*gv->Ref2));
+    {
+        void *resized;
+        if (!gs_native_resize(gv->Ref1, genotype_count, 1, sizeof(*gv->Ref1), &resized))
+        {
+            gs_info(gv, -2, "Memory allocation error");
+            failed = 1;
+            goto cleanup;
+        }
+        gv->Ref1 = resized;
+    }
+    {
+        void *resized;
+        if (!gs_native_resize(gv->Ref2, genotype_count, 1, sizeof(*gv->Ref2), &resized))
+        {
+            gs_info(gv, -2, "Memory allocation error");
+            failed = 1;
+            goto cleanup;
+        }
+        gv->Ref2 = resized;
+    }
     AT1 = gs_malloc_array(genotype_count, sizeof(*AT1));
     AT2 = gs_malloc_array(genotype_count, sizeof(*AT2));
     Hall = gs_malloc_array(max_hall, sizeof(*Hall));
@@ -11953,7 +12564,6 @@ void gs_recode_hil_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
         memset(OcHall, 0, max_hall * sizeof(*OcHall));
 
         Hall[NoHall] = &(AT1[(size_t)i]);
-        OcHall[NoHall]++;
         NoHall++;
 
         for (gs_UNSIGNED j = 0; j < gv->NoInd; j++)
@@ -12013,12 +12623,15 @@ void gs_recode_hil_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
             }
         }
 
-        ar = gs_realloc_array(ar, (size_t)NoHall, sizeof(*ar));
-        if (NULL == ar)
         {
-            gs_info(gv, -2, "Memory allocation error");
-            failed = 1;
-            goto cleanup;
+            gs_usp *new_ar = gs_realloc_array(ar, (size_t)NoHall, sizeof(*ar));
+            if (NULL == new_ar)
+            {
+                gs_info(gv, -2, "Memory allocation error");
+                failed = 1;
+                goto cleanup;
+            }
+            ar = new_ar;
         }
 
         for (gs_UNSIGNED k = 0; k < NoHall; k++)
@@ -12068,8 +12681,15 @@ void gs_recode_hil_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
         }
 
         {
-            char **new_hal = gs_realloc_array(hal, (size_t)(n_hal + NoHall),
-                                              sizeof(*new_hal));
+            size_t additional = (size_t)NoHall;
+            if ((gs_UNSIGNED)additional != NoHall || additional > SIZE_MAX - n_hal)
+            {
+                gs_info(gv, -2, "Haplotype record count overflow");
+                failed = 1;
+                goto cleanup;
+            }
+            size_t count = n_hal + additional;
+            char **new_hal = gs_realloc_array(hal, count, sizeof(*new_hal));
             if (NULL == new_hal)
             {
                 gs_info(gv, -2, "Memory allocation error");
@@ -12081,7 +12701,13 @@ void gs_recode_hil_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
 
         for (gs_UNSIGNED k = 0; k < NoHall; k++)
         {
-            size_t cap = 6 * (size_t)gv->h_n[l] + gs_MAXNME + 10;
+            if ((size_t)gv->h_n[l] > (SIZE_MAX - gs_MAXNME - 32) / 6)
+            {
+                gs_info(gv, -2, "Haplotype record size overflow");
+                failed = 1;
+                goto cleanup;
+            }
+            size_t cap = 6 * (size_t)gv->h_n[l] + gs_MAXNME + 32;
             char *tmp_str = malloc(cap);
             char tmp_str2[gs_MAXSTR];
 
@@ -12092,20 +12718,33 @@ void gs_recode_hil_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
                 goto cleanup;
             }
 
-            snprintf(tmp_str, cap, "%s %lu ", gv->Hap_S[l].name, k + 1);
+            int written = snprintf(tmp_str, cap, "%s %lu ", gv->Hap_S[l].name, k + 1);
+            if (written < 0 || (size_t)written >= cap)
+            {
+                free(tmp_str);
+                gs_info(gv, -2, "Haplotype record exceeds its output buffer");
+                failed = 1;
+                goto cleanup;
+            }
             for (gs_UNSIGNED kk = 0; kk < gv->h_n[l]; kk++)
             {
                 int value = (GS_ALLELE_MISSING == Hall[ar[k].a][kk])
                                 ? -1
                                 : (int)Hall[ar[k].a][kk];
-                snprintf(tmp_str2, sizeof(tmp_str2),
-                         (kk + 1 < gv->h_n[l]) ? "%i;" : "%i", value);
+                written = snprintf(tmp_str2, sizeof(tmp_str2),
+                                   (kk + 1 < gv->h_n[l]) ? "%i;" : "%i", value);
+                if (written < 0 || (size_t)written >= sizeof(tmp_str2) ||
+                    strlen(tmp_str) >= cap || (size_t)written >= cap - strlen(tmp_str))
+                {
+                    free(tmp_str);
+                    gs_info(gv, -2, "Haplotype allele exceeds its output buffer");
+                    failed = 1;
+                    goto cleanup;
+                }
                 strcat(tmp_str, tmp_str2);
             }
-            hal[n_hal + k] = tmp_str;
+            hal[n_hal++] = tmp_str;
         }
-
-        n_hal += NoHall;
     }
 
     free(AT1);
@@ -12154,7 +12793,7 @@ void gs_recode_hil_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
             failed = 1;
             goto cleanup;
         }
-        for (gs_UNSIGNED k = 0; k < n_hal; k++)
+        for (size_t k = 0; k < n_hal; k++)
             fprintf(outfp, "%s\n", hal[k]);
         fclose(outfp);
     }
@@ -12167,7 +12806,7 @@ cleanup:
     free(Hidx1);
     free(Hidx2);
     free(ar);
-    for (gs_UNSIGNED k = 0; k < n_hal; k++)
+    for (size_t k = 0; k < n_hal; k++)
         free(hal[k]);
     free(hal);
 
@@ -12185,7 +12824,7 @@ cleanup:
 void gs_recode_hil_01_GV(char **out_filename, int *auxfiles, int *retval,
                          char **set_name)
 {
-    gs_recode_hil_01(gs_fdta(*set_name), out_filename, auxfiles, retval);
+    gs_recode_hil_01(gs_fdta_checked(*set_name), out_filename, auxfiles, retval);
 }
 
 void gs_write_marker_data_02(gs_varset_type *gv, char **type,
@@ -12669,7 +13308,7 @@ void gs_write_marker_data_02_GV(char **type, char **lpo_filename,
                                 int *auxfiles, int *retval, char **set_name)
 {
 
-    gs_write_marker_data_02(gs_fdta(*set_name), type, lpo_filename,
+    gs_write_marker_data_02(gs_fdta_checked(*set_name), type, lpo_filename,
                             mmp_filename, mpo_filename, ngp_filename,
                             nmp_filename, npo_filename, ind_filename, f_ind,
                             l_ind, add_inum, auxfiles, retval);
@@ -12680,7 +13319,7 @@ void gs_write_map_01(gs_varset_type *gv, char **mmp_filename, int *retval)
 
     if (NULL == gv->map)
     {
-        snprintf(gv->msg, sizeof(gv->msg), "No linkage map was loaded");
+        st_text_log(gv->msg, sizeof(gv->msg), "No linkage map was loaded");
         gs_info(gv, -2, gv->msg);
         *retval = -2;
         return;
@@ -12697,7 +13336,7 @@ void gs_write_map_01(gs_varset_type *gv, char **mmp_filename, int *retval)
     {
         if (gv->mdl[lne] < gs_UNSIGNED_MAX)
         {
-            snprintf(gv->msg, sizeof(gv->msg), "%i %15.12f %s %s\n",
+            st_text_log(gv->msg, sizeof(gv->msg), "%i %15.12f %s %s\n",
                      (gv->map[lne])->chrom, (gv->map[lne])->pos,
                      (gv->map[lne])->name, (gv->map[lne])->class);
 
@@ -12713,7 +13352,7 @@ void gs_write_map_01(gs_varset_type *gv, char **mmp_filename, int *retval)
 void gs_write_map_01_GV(char **mmp_filename, int *retval, char **set_name)
 {
 
-    gs_write_map_01(gs_fdta(*set_name), mmp_filename, retval);
+    gs_write_map_01(gs_fdta_checked(*set_name), mmp_filename, retval);
 }
 
 int gs_determine_alleles(GS_ALLELE_TYPE *a, GS_ALLELE_TYPE *b, const char *p)
@@ -12803,6 +13442,8 @@ long long int st_getline(char **lineptr, size_t *n, FILE *stream)
 
     while (EOF != (c = fgetc(stream)))
     {
+        if (len > SIZE_MAX - 2 || len >= LLONG_MAX)
+            return -1;
         if (len + 2 > *n)
         {
             size_t new_n;
@@ -13160,7 +13801,7 @@ void gs_read_marker_data_02_GV(char **dta_filename, char **ind_filename,
                                char **mar_filename, char **gen_filename,
                                int *auxfiles, int *retval, char **set_name)
 {
-    gs_read_marker_data_02(gs_fdta(*set_name), dta_filename, ind_filename,
+    gs_read_marker_data_02(gs_fdta_checked(*set_name), dta_filename, ind_filename,
                            mar_filename, gen_filename, auxfiles, retval);
 }
 
@@ -13440,7 +14081,7 @@ void gs_read_marker_data_04_GV(char **dta_filename, char **ind_filename,
                                char **mar_filename, char **gen_filename,
                                int *auxfiles, int *retval, char **set_name)
 {
-    gs_read_marker_data_04(gs_fdta(*set_name), dta_filename, ind_filename,
+    gs_read_marker_data_04(gs_fdta_checked(*set_name), dta_filename, ind_filename,
                            mar_filename, gen_filename, auxfiles, retval);
 }
 
@@ -13461,6 +14102,13 @@ void gs_marker_stats_01(gs_varset_type *gv, char **ind_filename,
     size_t total_all = 0;
     size_t offset = 0;
 
+    if (gv->NoInd > gs_UNSIGNED_MAX / 2)
+    {
+        gs_info(gv, -2, "Allele counts exceed the supported count range");
+        *retval = -2;
+        return;
+    }
+
     if ((0 == gv->NoInd) || (0 == gv->NoMar) || !st_allele_present(gv) ||
         (NULL == gv->IndName) || (NULL == gv->MarName))
     {
@@ -13476,7 +14124,7 @@ void gs_marker_stats_01(gs_varset_type *gv, char **ind_filename,
         return;
     }
 
-    snprintf(gv->msg, sizeof(gv->msg),
+    st_text_log(gv->msg, sizeof(gv->msg),
              "No. of individuals: %lu, no. of markers: %lu", gv->NoInd,
              gv->NoMar);
     gs_info(gv, 0, gv->msg);
@@ -13883,7 +14531,7 @@ void gs_marker_stats_01_GV(char **ind_filename, char **mar_filename,
                            char **gen_filename, int *ind, int *mar, int *gen,
                            int *auxfiles, int *retval, char **set_name)
 {
-    gs_marker_stats_01(gs_fdta(*set_name), ind_filename, mar_filename,
+    gs_marker_stats_01(gs_fdta_checked(*set_name), ind_filename, mar_filename,
                        gen_filename, ind, mar, gen, auxfiles, retval);
 }
 
@@ -14287,7 +14935,7 @@ void gs_read_marker_data_03_GV(char **dta_filename, char **ind_filename,
                                char **mar_filename, char **gen_filename,
                                int *auxfiles, int *retval, char **set_name)
 {
-    gs_read_marker_data_03(gs_fdta(*set_name), dta_filename, ind_filename,
+    gs_read_marker_data_03(gs_fdta_checked(*set_name), dta_filename, ind_filename,
                            mar_filename, gen_filename, auxfiles, retval);
 }
 
@@ -14295,11 +14943,15 @@ double st_time_store[5];
 
 void st_start_timer(int *i, double *time)
 {
+    if (*i < 0 || *i >= 5)
+        error("Timer index must be between zero and four");
     st_time_store[*i] = *time;
 }
 
 void st_stop_timer(int *i, double *time)
 {
+    if (*i < 0 || *i >= 5)
+        error("Timer index must be between zero and four");
     *time = st_time_store[*i];
 }
 
@@ -14457,7 +15109,8 @@ void gs_cross_init_01(gs_varset_type *gv, int *retval)
 
 void gs_calc_rd(gs_varset_type *gv, gs_UNSIGNED k)
 {
-    gs_UNSIGNED m, idx_i, idx_j;
+    gs_UNSIGNED m;
+    size_t idx_i, idx_j;
     int a, b, c, d;
 
     gs_UNSIGNED i = (gv->crs_S[k]).p1;
@@ -14468,11 +15121,11 @@ void gs_calc_rd(gs_varset_type *gv, gs_UNSIGNED k)
 
     for (m = 0; m < gv->NoMar; m++)
     {
-        idx_i = m * gv->NoInd + i;
+        idx_i = (size_t)m * gv->NoInd + i;
         a = st_allele_get(gv, idx_i, 0);
         b = st_allele_get(gv, idx_i, 1);
 
-        idx_j = m * gv->NoInd + j;
+        idx_j = (size_t)m * gv->NoInd + j;
         c = st_allele_get(gv, idx_j, 0);
         d = st_allele_get(gv, idx_j, 1);
 
@@ -14500,7 +15153,8 @@ void gs_calc_rd(gs_varset_type *gv, gs_UNSIGNED k)
 
 void gs_calc_mrd(gs_varset_type *gv, gs_UNSIGNED k)
 {
-    gs_UNSIGNED m, idx_i, idx_j;
+    gs_UNSIGNED m;
+    size_t idx_i, idx_j;
     int a, b, c, d;
 
     gs_UNSIGNED i = (gv->crs_S[k]).p1;
@@ -14511,11 +15165,11 @@ void gs_calc_mrd(gs_varset_type *gv, gs_UNSIGNED k)
 
     for (m = 0; m < gv->NoMar; m++)
     {
-        idx_i = m * gv->NoInd + i;
+        idx_i = (size_t)m * gv->NoInd + i;
         a = st_allele_get(gv, idx_i, 0);
         b = st_allele_get(gv, idx_i, 1);
 
-        idx_j = m * gv->NoInd + j;
+        idx_j = (size_t)m * gv->NoInd + j;
         c = st_allele_get(gv, idx_j, 0);
         d = st_allele_get(gv, idx_j, 1);
 
@@ -14543,7 +15197,8 @@ void gs_calc_mrd(gs_varset_type *gv, gs_UNSIGNED k)
 
 void gs_calc_euc(gs_varset_type *gv, gs_UNSIGNED k)
 {
-    gs_UNSIGNED m, idx_i, idx_j;
+    gs_UNSIGNED m;
+    size_t idx_i, idx_j;
     int a, b, c, d;
 
     gs_UNSIGNED i = (gv->crs_S[k]).p1;
@@ -14556,11 +15211,11 @@ void gs_calc_euc(gs_varset_type *gv, gs_UNSIGNED k)
 
     for (m = 0; m < gv->NoMar; m++)
     {
-        idx_i = m * gv->NoInd + i;
+        idx_i = (size_t)m * gv->NoInd + i;
         a = st_allele_get(gv, idx_i, 0);
         b = st_allele_get(gv, idx_i, 1);
 
-        idx_j = m * gv->NoInd + j;
+        idx_j = (size_t)m * gv->NoInd + j;
         c = st_allele_get(gv, idx_j, 0);
         d = st_allele_get(gv, idx_j, 1);
 
@@ -14588,7 +15243,8 @@ void gs_calc_euc(gs_varset_type *gv, gs_UNSIGNED k)
 
 void gs_calc_mu(gs_varset_type *gv, gs_UNSIGNED k)
 {
-    gs_UNSIGNED m, idx_i, idx_j;
+    gs_UNSIGNED m;
+    size_t idx_i, idx_j;
     int a, b, c, d, e, count;
 
     gs_UNSIGNED i = (gv->crs_S[k]).p1;
@@ -14600,11 +15256,11 @@ void gs_calc_mu(gs_varset_type *gv, gs_UNSIGNED k)
 
     for (m = 0; m < gv->NoMar; m++)
     {
-        idx_i = m * gv->NoInd + i;
+        idx_i = (size_t)m * gv->NoInd + i;
         a = st_allele_get(gv, idx_i, 0);
         b = st_allele_get(gv, idx_i, 1);
 
-        idx_j = m * gv->NoInd + j;
+        idx_j = (size_t)m * gv->NoInd + j;
         c = st_allele_get(gv, idx_j, 0);
         d = st_allele_get(gv, idx_j, 1);
 
@@ -14637,7 +15293,8 @@ void gs_cross_eval_mu_01(gs_varset_type *gv, int *retval)
     gs_UNSIGNED k;
 
 #ifdef MT
-#pragma omp parallel for
+#pragma omp parallel for \
+    num_threads(st_num_threads()) if (st_num_threads() > 1)
 #endif
 
     for (k = 0; k < gv->NCrs; k++)
@@ -14653,12 +15310,13 @@ void gs_cross_eval_mu_01(gs_varset_type *gv, int *retval)
 
 void gs_cross_eval_mu_01_GV(int *retval, char **set_name)
 {
-    gs_cross_eval_mu_01(gs_fdta(*set_name), retval);
+    gs_cross_eval_mu_01(gs_fdta_checked(*set_name), retval);
 }
 
 void gs_calc_ma(gs_varset_type *gv, gs_UNSIGNED k)
 {
-    gs_UNSIGNED m, idx_i, idx_j;
+    gs_UNSIGNED m;
+    size_t idx_i, idx_j;
     int a, b, c, d, e, count;
 
     gs_UNSIGNED i = (gv->crs_S[k]).p1;
@@ -14670,11 +15328,11 @@ void gs_calc_ma(gs_varset_type *gv, gs_UNSIGNED k)
 
     for (m = 0; m < gv->NoMar; m++)
     {
-        idx_i = m * gv->NoInd + i;
+        idx_i = (size_t)m * gv->NoInd + i;
         a = st_allele_get(gv, idx_i, 0);
         b = st_allele_get(gv, idx_i, 1);
 
-        idx_j = m * gv->NoInd + j;
+        idx_j = (size_t)m * gv->NoInd + j;
         c = st_allele_get(gv, idx_j, 0);
         d = st_allele_get(gv, idx_j, 1);
 
@@ -14709,7 +15367,8 @@ void gs_cross_eval_ma_01(gs_varset_type *gv, int *retval)
     gs_UNSIGNED k;
 
 #ifdef MT
-#pragma omp parallel for
+#pragma omp parallel for \
+    num_threads(st_num_threads()) if (st_num_threads() > 1)
 #endif
 
     for (k = 0; k < gv->NCrs; k++)
@@ -14724,12 +15383,13 @@ void gs_cross_eval_ma_01(gs_varset_type *gv, int *retval)
 
 void gs_cross_eval_ma_01_GV(int *retval, char **set_name)
 {
-    gs_cross_eval_ma_01(gs_fdta(*set_name), retval);
+    gs_cross_eval_ma_01(gs_fdta_checked(*set_name), retval);
 }
 
 void gs_calc_mi(gs_varset_type *gv, gs_UNSIGNED k)
 {
-    gs_UNSIGNED m, idx_i, idx_j;
+    gs_UNSIGNED m;
+    size_t idx_i, idx_j;
     int a, b, c, d, e, count;
 
     gs_UNSIGNED i = (gv->crs_S[k]).p1;
@@ -14741,11 +15401,11 @@ void gs_calc_mi(gs_varset_type *gv, gs_UNSIGNED k)
 
     for (m = 0; m < gv->NoMar; m++)
     {
-        idx_i = m * gv->NoInd + i;
+        idx_i = (size_t)m * gv->NoInd + i;
         a = st_allele_get(gv, idx_i, 0);
         b = st_allele_get(gv, idx_i, 1);
 
-        idx_j = m * gv->NoInd + j;
+        idx_j = (size_t)m * gv->NoInd + j;
         c = st_allele_get(gv, idx_j, 0);
         d = st_allele_get(gv, idx_j, 1);
 
@@ -14780,7 +15440,8 @@ void gs_cross_eval_mi_01(gs_varset_type *gv, int *retval)
     gs_UNSIGNED k;
 
 #ifdef MT
-#pragma omp parallel for
+#pragma omp parallel for \
+    num_threads(st_num_threads()) if (st_num_threads() > 1)
 #endif
 
     for (k = 0; k < gv->NCrs; k++)
@@ -14795,7 +15456,7 @@ void gs_cross_eval_mi_01(gs_varset_type *gv, int *retval)
 
 void gs_cross_eval_mi_01_GV(int *retval, char **set_name)
 {
-    gs_cross_eval_mi_01(gs_fdta(*set_name), retval);
+    gs_cross_eval_mi_01(gs_fdta_checked(*set_name), retval);
 }
 
 void gs_cross_eval_gd_01(gs_varset_type *gv, char **dist, int *retval)
@@ -14830,7 +15491,8 @@ void gs_cross_eval_gd_01(gs_varset_type *gv, char **dist, int *retval)
     if (0 == strcmp("mrd", *dist))
     {
 #ifdef MT
-#pragma omp parallel for
+#pragma omp parallel for \
+    num_threads(st_num_threads()) if (st_num_threads() > 1)
 #endif
 
         for (k = 0; k < gv->NCrs; k++)
@@ -14839,7 +15501,8 @@ void gs_cross_eval_gd_01(gs_varset_type *gv, char **dist, int *retval)
     else if (0 == strcmp("rd", *dist))
     {
 #ifdef MT
-#pragma omp parallel for
+#pragma omp parallel for \
+    num_threads(st_num_threads()) if (st_num_threads() > 1)
 #endif
 
         for (k = 0; k < gv->NCrs; k++)
@@ -14848,7 +15511,8 @@ void gs_cross_eval_gd_01(gs_varset_type *gv, char **dist, int *retval)
     else
     {
 #ifdef MT
-#pragma omp parallel for
+#pragma omp parallel for \
+    num_threads(st_num_threads()) if (st_num_threads() > 1)
 #endif
 
         for (k = 0; k < gv->NCrs; k++)
@@ -14862,16 +15526,23 @@ void gs_cross_eval_gd_01(gs_varset_type *gv, char **dist, int *retval)
 
 void gs_cross_eval_gd_01_GV(char **dist, int *retval, char **set_name)
 {
-    gs_cross_eval_gd_01(gs_fdta(*set_name), dist, retval);
+    gs_cross_eval_gd_01(gs_fdta_checked(*set_name), dist, retval);
 }
 
-void gs_calc_genv_01(gs_varset_type *gv)
+int gs_calc_genv_01(gs_varset_type *gv)
 
 {
-    gs_UNSIGNED ii, jj, idx;
+    size_t ii, jj, idx;
     int a, b, e, count;
 
-    gv->genv = realloc(gv->genv, gv->NoMar * gv->NoInd * sizeof(gs_FLOAT));
+    {
+        void *resized;
+        if (!gs_native_resize(gv->genv, gv->NoMar, gv->NoInd, sizeof(gs_FLOAT), &resized))
+        {
+            return 0;
+        }
+        gv->genv = resized;
+    }
 
     for (ii = 0; ii < gv->NoMar; ii++)
     {
@@ -14879,18 +15550,20 @@ void gs_calc_genv_01(gs_varset_type *gv)
 
         for (jj = 0; jj < gv->NoInd; jj++)
         {
-            idx = ii * gv->NoInd + jj;
+            idx = (size_t)ii * gv->NoInd + jj;
             a = st_allele_get(gv, idx, 0);
             b = st_allele_get(gv, idx, 1);
             count = (int)(e == a) + (int)(e == b);
             gv->genv[idx] = (gs_FLOAT)count * (gs_FLOAT)(gv->u[1 + ii]) / 2;
         }
     }
+    return 1;
 }
 
 void gs_calc_va_linked(gs_varset_type *gv, gs_UNSIGNED k)
 {
-    gs_UNSIGNED c, ii, jj, m, idx, idx_i, idx_j;
+    gs_UNSIGNED c, ii, jj, m;
+    size_t idx, idx_i, idx_j;
 
     gs_UNSIGNED i = (gv->crs_S[k]).p1;
     gs_UNSIGNED j = (gv->crs_S[k]).p2;
@@ -14906,18 +15579,18 @@ void gs_calc_va_linked(gs_varset_type *gv, gs_UNSIGNED k)
         for (ii = 0; ii < gv->chrom[c].NLocC; ii++)
             for (jj = 0; jj < gv->chrom[c].NLocC; jj++)
             {
-                idx = ii * gv->chrom[c].NLocC + jj;
+                idx = (size_t)ii * gv->chrom[c].NLocC + jj;
                 q = (gv->chrom[c].q)[idx];
 
                 m = ii + gv->chrom[c].first_loc_i;
-                idx_i = m * gv->NoInd + i;
-                idx_j = m * gv->NoInd + j;
+                idx_i = (size_t)m * gv->NoInd + i;
+                idx_j = (size_t)m * gv->NoInd + j;
                 ggu = gv->genv[idx_i];
                 hhu = gv->genv[idx_j];
 
                 m = jj + gv->chrom[c].first_loc_i;
-                idx_i = m * gv->NoInd + i;
-                idx_j = m * gv->NoInd + j;
+                idx_i = (size_t)m * gv->NoInd + i;
+                idx_j = (size_t)m * gv->NoInd + j;
                 ggv = gv->genv[idx_i];
                 hhv = gv->genv[idx_j];
 
@@ -14929,13 +15602,27 @@ void gs_calc_va_linked(gs_varset_type *gv, gs_UNSIGNED k)
     *va = *va * 4;
 }
 
-void gs_calc_genv_02(gs_varset_type *gv)
+int gs_calc_genv_02(gs_varset_type *gv)
 {
-    gs_UNSIGNED ii, jj, idx;
+    size_t ii, jj, idx;
     int a, b, e, count1, count2;
 
-    gv->genv1 = realloc(gv->genv1, gv->NoMar * gv->NoInd * sizeof(gs_FLOAT));
-    gv->genv2 = realloc(gv->genv2, gv->NoMar * gv->NoInd * sizeof(gs_FLOAT));
+    {
+        void *resized;
+        if (!gs_native_resize(gv->genv1, gv->NoMar, gv->NoInd, sizeof(gs_FLOAT), &resized))
+        {
+            return 0;
+        }
+        gv->genv1 = resized;
+    }
+    {
+        void *resized;
+        if (!gs_native_resize(gv->genv2, gv->NoMar, gv->NoInd, sizeof(gs_FLOAT), &resized))
+        {
+            return 0;
+        }
+        gv->genv2 = resized;
+    }
 
     for (ii = 0; ii < gv->NoMar; ii++)
     {
@@ -14943,7 +15630,7 @@ void gs_calc_genv_02(gs_varset_type *gv)
 
         for (jj = 0; jj < gv->NoInd; jj++)
         {
-            idx = ii * gv->NoInd + jj;
+            idx = (size_t)ii * gv->NoInd + jj;
             a = st_allele_get(gv, idx, 0);
             b = st_allele_get(gv, idx, 1);
             count1 = (int)(e == a);
@@ -14952,11 +15639,13 @@ void gs_calc_genv_02(gs_varset_type *gv)
             gv->genv2[idx] = (gs_FLOAT)count2 * (gs_FLOAT)(gv->u[1 + ii]);
         }
     }
+    return 1;
 }
 
 void gs_calc_va_crs(gs_varset_type *gv, gs_UNSIGNED k)
 {
-    gs_UNSIGNED c, ii, jj, m, idx, idx_i, idx_j;
+    gs_UNSIGNED c, ii, jj, m;
+    size_t idx, idx_i, idx_j;
 
     gs_UNSIGNED i = (gv->crs_S[k]).p1;
     gs_UNSIGNED j = (gv->crs_S[k]).p2;
@@ -14972,18 +15661,18 @@ void gs_calc_va_crs(gs_varset_type *gv, gs_UNSIGNED k)
         for (ii = 0; ii < gv->chrom[c].NLocC; ii++)
             for (jj = 0; jj < gv->chrom[c].NLocC; jj++)
             {
-                idx = ii * gv->chrom[c].NLocC + jj;
+                idx = (size_t)ii * gv->chrom[c].NLocC + jj;
                 q = (gv->chrom[c].q)[idx];
 
                 m = ii + gv->chrom[c].first_loc_i;
-                idx_i = m * gv->NoInd + i;
-                idx_j = m * gv->NoInd + j;
+                idx_i = (size_t)m * gv->NoInd + i;
+                idx_j = (size_t)m * gv->NoInd + j;
                 ggu = gv->genv1[idx_i];
                 hhu = gv->genv2[idx_i];
 
                 m = jj + gv->chrom[c].first_loc_i;
-                idx_i = m * gv->NoInd + i;
-                idx_j = m * gv->NoInd + j;
+                idx_i = (size_t)m * gv->NoInd + i;
+                idx_j = (size_t)m * gv->NoInd + j;
                 ggv = gv->genv1[idx_i];
                 hhv = gv->genv2[idx_i];
 
@@ -14991,14 +15680,14 @@ void gs_calc_va_crs(gs_varset_type *gv, gs_UNSIGNED k)
                        (ggu * ggv + hhu * hhv - ggu * hhv - hhu * ggv);
 
                 m = ii + gv->chrom[c].first_loc_i;
-                idx_i = m * gv->NoInd + i;
-                idx_j = m * gv->NoInd + j;
+                idx_i = (size_t)m * gv->NoInd + i;
+                idx_j = (size_t)m * gv->NoInd + j;
                 ggu = gv->genv1[idx_j];
                 hhu = gv->genv2[idx_j];
 
                 m = jj + gv->chrom[c].first_loc_i;
-                idx_i = m * gv->NoInd + i;
-                idx_j = m * gv->NoInd + j;
+                idx_i = (size_t)m * gv->NoInd + i;
+                idx_j = (size_t)m * gv->NoInd + j;
                 ggv = gv->genv1[idx_j];
                 hhv = gv->genv2[idx_j];
 
@@ -15010,7 +15699,8 @@ void gs_calc_va_crs(gs_varset_type *gv, gs_UNSIGNED k)
 
 void gs_calc_va(gs_varset_type *gv, gs_UNSIGNED k)
 {
-    gs_UNSIGNED m, idx_i, idx_j;
+    gs_UNSIGNED m;
+    size_t idx_i, idx_j;
     int a, b, c, d, e, count;
 
     gs_UNSIGNED i = (gv->crs_S[k]).p1;
@@ -15025,11 +15715,11 @@ void gs_calc_va(gs_varset_type *gv, gs_UNSIGNED k)
 
     for (m = 0; m < gv->NoMar; m++)
     {
-        idx_i = m * gv->NoInd + i;
+        idx_i = (size_t)m * gv->NoInd + i;
         a = st_allele_get(gv, idx_i, 0);
         b = st_allele_get(gv, idx_i, 1);
 
-        idx_j = m * gv->NoInd + j;
+        idx_j = (size_t)m * gv->NoInd + j;
         c = st_allele_get(gv, idx_j, 0);
         d = st_allele_get(gv, idx_j, 1);
 
@@ -15086,7 +15776,8 @@ void gs_cross_eval_va_01(gs_varset_type *gv, char **pop_type, int *t,
     if (0 == strcmp("unlinked", *pop_type))
     {
 #ifdef MT
-#pragma omp parallel for
+#pragma omp parallel for \
+    num_threads(st_num_threads()) if (st_num_threads() > 1)
 #endif
 
         for (k = 0; k < gv->NCrs; k++)
@@ -15119,10 +15810,12 @@ void gs_cross_eval_va_01(gs_varset_type *gv, char **pop_type, int *t,
             return;
         }
 
-        gs_calc_genv_01(gv);
+        if (!gs_calc_genv_01(gv))
+            ERR_M;
 
 #ifdef MT
-#pragma omp parallel for
+#pragma omp parallel for \
+    num_threads(st_num_threads()) if (st_num_threads() > 1)
 #endif
 
         for (k = 0; k < gv->NCrs; k++)
@@ -15155,10 +15848,12 @@ void gs_cross_eval_va_01(gs_varset_type *gv, char **pop_type, int *t,
             return;
         }
 
-        gs_calc_genv_02(gv);
+        if (!gs_calc_genv_02(gv))
+            ERR_M;
 
 #ifdef MT
-#pragma omp parallel for
+#pragma omp parallel for \
+    num_threads(st_num_threads()) if (st_num_threads() > 1)
 #endif
 
         for (k = 0; k < gv->NCrs; k++)
@@ -15183,7 +15878,7 @@ void gs_cross_eval_va_01(gs_varset_type *gv, char **pop_type, int *t,
 void gs_cross_eval_va_01_GV(char **pop_type, int *t, char **map_function,
                             int *retval, char **set_name)
 {
-    gs_cross_eval_va_01(gs_fdta(*set_name), pop_type, t, map_function, retval);
+    gs_cross_eval_va_01(gs_fdta_checked(*set_name), pop_type, t, map_function, retval);
 }
 
 void gs_calc_es(gs_varset_type *gv, gs_UNSIGNED k, double *i)
@@ -15220,11 +15915,12 @@ void gs_cross_eval_es_01(gs_varset_type *gv, double *i, int *retval)
             *retval = -2;
             return;
         }
-    snprintf(gv->msg, sizeof(gv->msg),
+    st_text_log(gv->msg, sizeof(gv->msg),
              "Standardized selection differential %5.2f", *i);
     gs_info(gv, 0, gv->msg);
 #ifdef MT
-#pragma omp parallel for
+#pragma omp parallel for \
+    num_threads(st_num_threads()) if (st_num_threads() > 1)
 #endif
     for (gs_UNSIGNED k = 0; k < gv->NCrs; k++)
         gs_calc_es(gv, k, i);
@@ -15234,7 +15930,7 @@ void gs_cross_eval_es_01(gs_varset_type *gv, double *i, int *retval)
 
 void gs_cross_eval_es_01_GV(double *i, int *retval, char **set_name)
 {
-    gs_cross_eval_es_01(gs_fdta(*set_name), i, retval);
+    gs_cross_eval_es_01(gs_fdta_checked(*set_name), i, retval);
 }
 
 static int st_cross_cmp_parents(const gs_cross_type *a, const gs_cross_type *b)
@@ -15362,7 +16058,7 @@ void gs_cross_info_01(gs_varset_type *gv, int *bestn, char **sortby,
 void gs_cross_info_01_GV(int *bestn, char **sortby, char **out_filename,
                          int *retval, char **set_name)
 {
-    gs_cross_info_01(gs_fdta(*set_name), bestn, sortby, out_filename, retval);
+    gs_cross_info_01(gs_fdta_checked(*set_name), bestn, sortby, out_filename, retval);
 }
 
 extern void ps_get_simpop(char **pop_name, gs_UNSIGNED *NoInd,
@@ -15442,7 +16138,7 @@ void st_get_simpop(gs_varset_type *dst, char **pop_name, int *bg, int *retval)
 
 void st_get_simpop_GV(char **pop_name, int *bg, int *retval, char **set_name)
 {
-    st_get_simpop(gs_fdta(*set_name), pop_name, bg, retval);
+    st_get_simpop(gs_fdta_checked(*set_name), pop_name, bg, retval);
 }
 
 extern void ps_get_simpop2(char **pop_name, gs_UNSIGNED *NoInd,
@@ -15519,27 +16215,38 @@ void st_get_simpop2(gs_varset_type *dst, char **pop_name, int *bg, int *retval)
 
 void st_get_simpop2_GV(char **pop_name, int *bg, int *retval, char **set_name)
 {
-    st_get_simpop2(gs_fdta(*set_name), pop_name, bg, retval);
+    st_get_simpop2(gs_fdta_checked(*set_name), pop_name, bg, retval);
 }
 
 void il_get_population_size(gs_varset_type *gv, int *NoLines)
 {
+    if (gv->NoInd > INT_MAX)
+        error("Population size exceeds the integer result range");
     *NoLines = (int)gv->NoInd;
 }
 
 void il_get_population_size_GV(int *NoLines, char **set_name)
 {
-    il_get_population_size(gs_fdta(*set_name), NoLines);
+    il_get_population_size(gs_fdta_checked(*set_name), NoLines);
 }
 
-void il_calc_segment_length(gs_varset_type *gv)
+int il_calc_segment_length(gs_varset_type *gv)
 {
     gs_UNSIGNED l, c, m;
     gs_UNSIGNED i1, i2, i3;
     gs_FLOAT p1, p2, p3;
 
-    gv->dimu = gv->NLoc;
-    gv->u = realloc(gv->u, gv->dimu * sizeof(double));
+    gs_UNSIGNED dimension = gv->NLoc;
+    {
+        void *resized;
+        if (!gs_native_resize(gv->u, dimension, 1, sizeof(double), &resized))
+        {
+            gs_info(gv, -2, "Memory allocation error");
+            return 0;
+        }
+        gv->u = resized;
+    }
+    gv->dimu = dimension;
 
     for (c = 0, l = 0; c < gv->NChrom; c++)
     {
@@ -15569,6 +16276,7 @@ void il_calc_segment_length(gs_varset_type *gv)
         gv->u[l] = (p2 - p1) / 2;
         l++;
     }
+    return 1;
 }
 
 void il_mark_loci(gs_varset_type *gv, int *chrom, double *lower, double *upper,
@@ -15607,6 +16315,8 @@ double il_calc_tot(gs_varset_type *gv)
 {
     gs_UNSIGNED l, m;
 
+    if (gv->NChrom > INT_MAX)
+        error("Chromosome count exceeds the integer range");
     int cc, s_c, e_c;
     s_c = 0;
     e_c = (int)gv->NChrom;
@@ -15630,8 +16340,10 @@ void il_eval_lines(gs_varset_type *gv, int *allele, int *chrom, double *lower,
                    double *upper, int *exclude, double *abs, double *tot,
                    double *nseg, double *lseg, int *retval)
 {
-    gs_UNSIGNED i, l, m, idx;
-    gs_UNSIGNED l1, l2, idx1, idx2;
+    gs_UNSIGNED i, l, m;
+    size_t idx;
+    gs_UNSIGNED l1, l2;
+    size_t idx1, idx2;
 
     int cc, s_c, e_c;
 
@@ -15657,6 +16369,12 @@ void il_eval_lines(gs_varset_type *gv, int *allele, int *chrom, double *lower,
     }
 
     s_c = 0;
+    if (gv->NChrom > INT_MAX)
+    {
+        gs_info(gv, -2, "Chromosome count exceeds the integer range");
+        *retval = -2;
+        return;
+    }
     e_c = (int)gv->NChrom;
 
     if ((*chrom < 0) || (*chrom > (int)gv->NChrom))
@@ -15669,7 +16387,11 @@ void il_eval_lines(gs_varset_type *gv, int *allele, int *chrom, double *lower,
     for (i = 0; i < gv->NoInd; i++)
     {
 
-        il_calc_segment_length(gv);
+        if (!il_calc_segment_length(gv))
+        {
+            *retval = -2;
+            return;
+        }
 
         il_mark_loci(gv, &(chrom[i]), &(lower[i]), &(upper[i]), exclude);
 
@@ -15683,7 +16405,7 @@ void il_eval_lines(gs_varset_type *gv, int *allele, int *chrom, double *lower,
             {
                 l = gv->chrom[cc].first_loc_i + m;
 
-                idx = l * gv->NoInd + i;
+                idx = (size_t)l * gv->NoInd + i;
                 abs[i] += (st_allele_get(gv, idx, 0) == *allele) * gv->u[l] +
                           (st_allele_get(gv, idx, 1) == *allele) * gv->u[l];
             }
@@ -15694,7 +16416,7 @@ void il_eval_lines(gs_varset_type *gv, int *allele, int *chrom, double *lower,
         {
             m = 0;
             l2 = gv->chrom[cc].first_loc_i + m;
-            idx2 = l2 * gv->NoInd + i;
+            idx2 = (size_t)l2 * gv->NoInd + i;
             if (0 != gv->u[l2])
             {
                 if (*allele == st_allele_get(gv, idx2, 0))
@@ -15708,8 +16430,8 @@ void il_eval_lines(gs_varset_type *gv, int *allele, int *chrom, double *lower,
                 l2 = gv->chrom[cc].first_loc_i + m;
                 l1 = l2 - 1;
 
-                idx1 = l1 * gv->NoInd + i;
-                idx2 = l2 * gv->NoInd + i;
+                idx1 = (size_t)l1 * gv->NoInd + i;
+                idx2 = (size_t)l2 * gv->NoInd + i;
 
                 if ((0 != gv->u[l1]) && ((0 != gv->u[l2])))
                 {
@@ -15743,14 +16465,15 @@ void il_eval_lines_GV(int *allele, int *chrom, double *lower, double *upper,
                       int *exclude, double *abs, double *tot, double *nseg,
                       double *lseg, int *retval, char **set_name)
 {
-    il_eval_lines(gs_fdta(*set_name), allele, chrom, lower, upper, exclude, abs,
+    il_eval_lines(gs_fdta_checked(*set_name), allele, chrom, lower, upper, exclude, abs,
                   tot, nseg, lseg, retval);
 }
 
 void il_eval_library(gs_varset_type *gv, double *cov, double *dep,
                      double *seglib, int *allele, int *retval)
 {
-    gs_UNSIGNED i, j, m, cc, l1, l2, idx, idx1, idx2, cnt;
+    gs_UNSIGNED i, j, m, cc, l1, l2, cnt;
+    size_t idx, idx1, idx2;
     double tot;
 
     if ((*allele < 1) || (*allele > GS_ALLELE_MAX))
@@ -15767,7 +16490,11 @@ void il_eval_library(gs_varset_type *gv, double *cov, double *dep,
         return;
     }
 
-    il_calc_segment_length(gv);
+    if (!il_calc_segment_length(gv))
+    {
+        *retval = -2;
+        return;
+    }
 
     tot = 0;
     *cov = 0;
@@ -15776,7 +16503,7 @@ void il_eval_library(gs_varset_type *gv, double *cov, double *dep,
         tot += gv->u[i];
         for (j = 0; j < gv->NoInd; j++)
         {
-            idx = i * gv->NoInd + j;
+            idx = (size_t)i * gv->NoInd + j;
             if ((*allele == st_allele_get(gv, idx, 0)) ||
                 (*allele == st_allele_get(gv, idx, 1)))
             {
@@ -15797,7 +16524,7 @@ void il_eval_library(gs_varset_type *gv, double *cov, double *dep,
 
         for (j = 0; j < gv->NoInd; j++)
         {
-            idx = i * gv->NoInd + j;
+            idx = (size_t)i * gv->NoInd + j;
             if ((*allele == st_allele_get(gv, idx, 0)) ||
                 (*allele == st_allele_get(gv, idx, 1)))
             {
@@ -15829,8 +16556,8 @@ void il_eval_library(gs_varset_type *gv, double *cov, double *dep,
                 l2 = gv->chrom[cc].first_loc_i + m;
                 l1 = l2 - 1;
 
-                idx1 = l1 * gv->NoInd + i;
-                idx2 = l2 * gv->NoInd + i;
+                idx1 = (size_t)l1 * gv->NoInd + i;
+                idx2 = (size_t)l2 * gv->NoInd + i;
 
                 if ((st_allele_get(gv, idx1, 0) !=
                      st_allele_get(gv, idx2, 0)) ||
@@ -15845,7 +16572,27 @@ void il_eval_library(gs_varset_type *gv, double *cov, double *dep,
 void il_eval_library_GV(double *cov, double *dep, double *seglib, int *allele,
                         int *retval, char **set_name)
 {
-    il_eval_library(gs_fdta(*set_name), cov, dep, seglib, allele, retval);
+    il_eval_library(gs_fdta_checked(*set_name), cov, dep, seglib, allele, retval);
+}
+
+static int gs_gi_invert_lu(gs_varset_type *data, size_t n)
+{
+    void *mark = st_work_mark();
+    int *pivot = st_work_alloc(n, sizeof(*pivot));
+    for (size_t i = 0; i < n; i++)
+    {
+        if (!data->u0[i] || data->u0[i] > n)
+        {
+            st_work_reset(mark);
+            return -2;
+        }
+        pivot[i] = (int)data->u0[i];
+    }
+    int status = dgetri_rm((int)n, data->t9, (int)n, pivot);
+    if (!status)
+        memcpy(data->GI, data->t9, n * n * sizeof(*data->GI));
+    st_work_reset(mark);
+    return status;
 }
 
 void gs_build_GI_01(gs_varset_type *gv, int *retval)
@@ -15859,9 +16606,31 @@ void gs_build_GI_01(gs_varset_type *gv, int *retval)
     const gs_UNSIGNED n = gv->NoInd;
     const gs_UNSIGNED m = gv->NoMar;
 
-    gv->t9 = realloc(gv->t9, (size_t)n * (size_t)n * sizeof(double));
-    gv->GI = realloc(gv->GI, (size_t)n * (size_t)n * sizeof(double));
-    gv->u0 = realloc(gv->u0, (size_t)n * sizeof(gs_UNSIGNED));
+    if (!n || !m || n > INT_MAX || m > INT_MAX || !gv->Z)
+    {
+        gs_info(gv, -2, "Invalid dimensions or missing marker design matrix");
+        *retval = -2;
+        return;
+    }
+
+    {
+        void *resized;
+        if (!gs_native_resize(gv->t9, (size_t)n, (size_t)n, sizeof(double), &resized))
+            ERR_M;
+        gv->t9 = resized;
+    }
+    {
+        void *resized;
+        if (!gs_native_resize(gv->GI, (size_t)n, (size_t)n, sizeof(double), &resized))
+            ERR_M;
+        gv->GI = resized;
+    }
+    {
+        void *resized;
+        if (!gs_native_resize(gv->u0, (size_t)n, 1, sizeof(gs_UNSIGNED), &resized))
+            ERR_M;
+        gv->u0 = resized;
+    }
     if ((NULL == gv->t9) || (NULL == gv->GI) || (NULL == gv->u0))
         ERR_M;
 
@@ -15890,6 +16659,11 @@ void gs_build_GI_01(gs_varset_type *gv, int *retval)
 
     memcpy(gv->t9, gv->GI, (size_t)n * (size_t)n * sizeof(double));
     st_dgetrf(gv->t9, n, gv->u0, &d);
+    if (d < 0)
+    {
+        *retval = -2;
+        return;
+    }
 
     for (ii = 0, det = 1.0; ii < n; ++ii)
     {
@@ -15902,25 +16676,25 @@ void gs_build_GI_01(gs_varset_type *gv, int *retval)
 
     if (det != 0.0)
     {
-        st_dgetri(gv->t9, n, gv->u0, gv->GI);
-        *retval = 0;
+        *retval = gs_gi_invert_lu(gv, n) ? -2 : 0;
         return;
     }
 
     gs_info(gv, -1, "ZZ' has not full rank, using approximation)");
 
-    double *w = (double *)malloc((size_t)n * sizeof(double));
-    double *z = (double *)malloc((size_t)n * (size_t)n * sizeof(double));
-    if (!w || !z)
-    {
-        free(z);
-        free(w);
-        *retval = -1;
-        return;
-    }
+    void *mark = st_work_mark();
+    double *w = st_work_alloc((size_t)n, sizeof(*w));
+    double *z = st_work_alloc((size_t)n, (size_t)n * sizeof(*z));
 
     memcpy(gv->t9, gv->GI, (size_t)n * (size_t)n * sizeof(double));
-    st_dsyevr_v(gv->t9, w, z, n);
+    int vectors = 0;
+    if (dsyevr_vecs_rm((int)n, gv->t9, (int)n, w, z, (int)n, &vectors) ||
+        vectors != (int)n)
+    {
+        st_work_reset(mark);
+        *retval = -2;
+        return;
+    }
 
     for (jj = 0; jj < n; ++jj)
     {
@@ -15935,8 +16709,7 @@ void gs_build_GI_01(gs_varset_type *gv, int *retval)
 
     st_dgemm("N", "T", n, n, n, n, gv->t9, z, gv->GI);
 
-    free(z);
-    free(w);
+    st_work_reset(mark);
 
     *retval = 0;
     return;
@@ -15947,8 +16720,26 @@ void gs_build_GI_02(gs_varset_type *gv, int *retval)
 
     double small = 1e-5;
 
-    gv->t9 = realloc(gv->t9, gv->NoInd * gv->NoInd * sizeof(double));
-    gv->GI = realloc(gv->GI, gv->NoInd * gv->NoInd * sizeof(double));
+    if (!gv->NoInd || !gv->NoMar || gv->NoInd > INT_MAX ||
+        gv->NoMar > INT_MAX || !gv->Z)
+    {
+        gs_info(gv, -2, "Invalid dimensions or missing marker design matrix");
+        *retval = -2;
+        return;
+    }
+
+    {
+        void *resized;
+        if (!gs_native_resize(gv->t9, gv->NoInd, gv->NoInd, sizeof(double), &resized))
+            ERR_M;
+        gv->t9 = resized;
+    }
+    {
+        void *resized;
+        if (!gs_native_resize(gv->GI, gv->NoInd, gv->NoInd, sizeof(double), &resized))
+            ERR_M;
+        gv->GI = resized;
+    }
     if ((NULL == gv->t9) || (NULL == gv->GI))
         ERR_M;
 
@@ -15958,25 +16749,36 @@ void gs_build_GI_02(gs_varset_type *gv, int *retval)
     double d;
     gs_UNSIGNED ii, jj;
     double det = 0;
-    gv->u0 = realloc(gv->u0, gv->NoInd * sizeof(gs_UNSIGNED));
+    {
+        void *resized;
+        if (!gs_native_resize(gv->u0, gv->NoInd, 1, sizeof(gs_UNSIGNED), &resized))
+            ERR_M;
+        gv->u0 = resized;
+    }
 
     st_dgetrf(gv->t9, gv->NoInd, gv->u0, &d);
+    if (d < 0)
+    {
+        *retval = -2;
+        return;
+    }
 
     for (ii = 0, det = 1; ii < gv->NoInd; ii++)
-        if (fabs(gv->t9[ii * gv->NoInd + ii]) < 1e-10)
+        if (fabs(gv->t9[(size_t)ii * gv->NoInd + ii]) < 1e-10)
             det = 0.0;
 
     if (0.0 == det)
     {
         gs_info(gv, -1, "ZZ' has not full rank, using approximation)");
 
-        double *w = malloc(gv->NoInd * sizeof(double));
-        double *z = malloc(gv->NoInd * gv->NoInd * sizeof(double));
-
-        double *t6 = malloc(gv->NoInd * gv->NoInd * sizeof(double));
-        double *t7 = malloc(gv->NoInd * gv->NoInd * sizeof(double));
-        double *t8 = malloc(gv->NoInd * gv->NoInd * sizeof(double));
-        double *t9 = malloc(gv->NoInd * gv->NoInd * sizeof(double));
+        void *mark = st_work_mark();
+        size_t cells = (size_t)gv->NoInd * gv->NoInd;
+        double *w = st_work_alloc(gv->NoInd, sizeof(*w));
+        double *z = st_work_alloc(cells, sizeof(*z));
+        double *t6 = st_work_alloc(cells, sizeof(*t6));
+        double *t7 = st_work_alloc(cells, sizeof(*t7));
+        double *t8 = st_work_alloc(cells, sizeof(*t8));
+        double *t9 = st_work_alloc(cells, sizeof(*t9));
 
         st_dgemm("N", "T", gv->NoInd, gv->NoMar, gv->NoInd, gv->NoMar, gv->Z,
                  gv->Z, t9);
@@ -15984,16 +16786,25 @@ void gs_build_GI_02(gs_varset_type *gv, int *retval)
         while (0.0 == det)
 
         {
+            R_CheckUserInterrupt();
 
-            memcpy(gv->t9, t9, gv->NoInd * gv->NoInd * sizeof(double));
-            st_dsyevr_v(gv->t9, w, z, gv->NoInd);
+            memcpy(gv->t9, t9, (size_t)gv->NoInd * gv->NoInd * sizeof(double));
+            int vectors = 0;
+            if (dsyevr_vecs_rm((int)gv->NoInd, gv->t9, (int)gv->NoInd,
+                               w, z, (int)gv->NoInd, &vectors) ||
+                vectors != (int)gv->NoInd)
+            {
+                st_work_reset(mark);
+                *retval = -2;
+                return;
+            }
 
             for (ii = 0; ii < gv->NoInd; ii++)
                 for (jj = 0; jj < gv->NoInd; jj++)
-                    t6[ii * gv->NoInd + jj] = 0;
+                    t6[(size_t)ii * gv->NoInd + jj] = 0;
 
             for (ii = 0; ii < gv->NoInd; ii++)
-                t6[ii * gv->NoInd + ii] = (w[ii] < small) ? small : w[ii];
+                t6[(size_t)ii * gv->NoInd + ii] = (w[ii] < small) ? small : w[ii];
 
             st_dgemm("N", "N", gv->NoInd, gv->NoInd, gv->NoInd, gv->NoInd, z,
                      t6, t7);
@@ -16003,29 +16814,29 @@ void gs_build_GI_02(gs_varset_type *gv, int *retval)
 
             for (ii = 0; ii < gv->NoInd; ii++)
                 for (jj = 0; jj < gv->NoInd; jj++)
-                    t9[ii * gv->NoInd + jj] =
-                        t9[ii * gv->NoInd + jj] -
-                        (t9[ii * gv->NoInd + jj] - t8[ii * gv->NoInd + jj]);
+                    t9[(size_t)ii * gv->NoInd + jj] =
+                        t9[(size_t)ii * gv->NoInd + jj] -
+                        (t9[(size_t)ii * gv->NoInd + jj] -
+                         t8[(size_t)ii * gv->NoInd + jj]);
 
-            memcpy(gv->t9, t9, gv->NoInd * gv->NoInd * sizeof(double));
+            memcpy(gv->t9, t9, (size_t)gv->NoInd * gv->NoInd * sizeof(double));
             st_dgetrf(gv->t9, gv->NoInd, gv->u0, &d);
+            if (d < 0)
+            {
+                st_work_reset(mark);
+                *retval = -2;
+                return;
+            }
 
             for (ii = 0, det = 1; ii < gv->NoInd; ii++)
-                if (fabs(gv->t9[ii * gv->NoInd + ii]) < 1e-10)
+                if (fabs(gv->t9[(size_t)ii * gv->NoInd + ii]) < 1e-10)
                     det = 0.0;
         }
 
-        free(w);
-        free(z);
-        free(t6);
-        free(t7);
-        free(t8);
-        free(t9);
+        st_work_reset(mark);
     }
 
-    st_dgetri(gv->t9, gv->NoInd, gv->u0, gv->GI);
-
-    *retval = 0;
+    *retval = gs_gi_invert_lu(gv, gv->NoInd) ? -2 : 0;
     return;
 }
 
@@ -16036,6 +16847,15 @@ static void check_len_rowmajor(SEXP x, R_xlen_t need, const char *name)
     if (XLENGTH(x) < need)
         error("%s too short: need %lld, got %lld", name, (long long)need,
               (long long)XLENGTH(x));
+}
+
+static void gs_gi_workspace_destroy(void *data)
+{
+    gs_varset_type *owner = data;
+    free(owner->Z);
+    free(owner->t9);
+    free(owner->GI);
+    free(owner->u0);
 }
 
 SEXP call_gs_build_GI_01_R(SEXP Z_rm_, SEXP NoInd_, SEXP NoMar_)
@@ -16053,40 +16873,35 @@ SEXP call_gs_build_GI_01_R(SEXP Z_rm_, SEXP NoInd_, SEXP NoMar_)
     R_xlen_t lenZ = (R_xlen_t)NoInd * (R_xlen_t)NoMar;
     check_len_rowmajor(Z_rm_, lenZ, "Z_rm");
 
-    gs_varset_type gv;
-    memset(&gv, 0, sizeof(gv));
+    gs_varset_type *workspace = st_work_alloc(1, sizeof(*workspace));
+    memset(workspace, 0, sizeof(*workspace));
+    st_work_adopt(workspace, gs_gi_workspace_destroy);
 
-    gv.NoInd = (gs_UNSIGNED)NoInd;
-    gv.NoMar = (gs_UNSIGNED)NoMar;
+    workspace->NoInd = (gs_UNSIGNED)NoInd;
+    workspace->NoMar = (gs_UNSIGNED)NoMar;
 
-    gv.Z = (double *)malloc((size_t)lenZ * sizeof(double));
-    if (!gv.Z)
+    if ((uint64_t)lenZ > SIZE_MAX / sizeof(double))
         error("Out of memory allocating gv.Z");
-    memcpy(gv.Z, REAL(Z_rm_), (size_t)lenZ * sizeof(double));
+    workspace->Z = (double *)malloc((size_t)lenZ * sizeof(double));
+    if (!workspace->Z)
+        error("Out of memory allocating gv.Z");
+    memcpy(workspace->Z, REAL(Z_rm_), (size_t)lenZ * sizeof(double));
 
-    gv.t9 = NULL;
-    gv.GI = NULL;
-    gv.u0 = NULL;
+    workspace->t9 = NULL;
+    workspace->GI = NULL;
+    workspace->u0 = NULL;
 
     int retval = -999;
-    gs_build_GI_01(&gv, &retval);
+    gs_build_GI_01(workspace, &retval);
     if (retval != 0)
     {
-        free(gv.Z);
-        free(gv.t9);
-        free(gv.GI);
-        free(gv.u0);
+
         error("gs_build_GI_01 failed (retval=%d)", retval);
     }
 
     R_xlen_t lenGI = (R_xlen_t)NoInd * (R_xlen_t)NoInd;
     SEXP out = PROTECT(allocVector(REALSXP, lenGI));
-    memcpy(REAL(out), gv.GI, (size_t)lenGI * sizeof(double));
-
-    free(gv.Z);
-    free(gv.t9);
-    free(gv.GI);
-    free(gv.u0);
+    memcpy(REAL(out), workspace->GI, (size_t)lenGI * sizeof(double));
 
     UNPROTECT(1);
     return out;
@@ -16107,40 +16922,35 @@ SEXP call_gs_build_GI_02_R(SEXP Z_rm_, SEXP NoInd_, SEXP NoMar_)
     R_xlen_t lenZ = (R_xlen_t)NoInd * (R_xlen_t)NoMar;
     check_len_rowmajor(Z_rm_, lenZ, "Z_rm");
 
-    gs_varset_type gv;
-    memset(&gv, 0, sizeof(gv));
+    gs_varset_type *workspace = st_work_alloc(1, sizeof(*workspace));
+    memset(workspace, 0, sizeof(*workspace));
+    st_work_adopt(workspace, gs_gi_workspace_destroy);
 
-    gv.NoInd = (gs_UNSIGNED)NoInd;
-    gv.NoMar = (gs_UNSIGNED)NoMar;
+    workspace->NoInd = (gs_UNSIGNED)NoInd;
+    workspace->NoMar = (gs_UNSIGNED)NoMar;
 
-    gv.Z = (double *)malloc((size_t)lenZ * sizeof(double));
-    if (!gv.Z)
+    if ((uint64_t)lenZ > SIZE_MAX / sizeof(double))
         error("Out of memory allocating gv.Z");
-    memcpy(gv.Z, REAL(Z_rm_), (size_t)lenZ * sizeof(double));
+    workspace->Z = (double *)malloc((size_t)lenZ * sizeof(double));
+    if (!workspace->Z)
+        error("Out of memory allocating gv.Z");
+    memcpy(workspace->Z, REAL(Z_rm_), (size_t)lenZ * sizeof(double));
 
-    gv.t9 = NULL;
-    gv.GI = NULL;
-    gv.u0 = NULL;
+    workspace->t9 = NULL;
+    workspace->GI = NULL;
+    workspace->u0 = NULL;
 
     int retval = -999;
-    gs_build_GI_02(&gv, &retval);
+    gs_build_GI_02(workspace, &retval);
     if (retval != 0)
     {
-        free(gv.Z);
-        free(gv.t9);
-        free(gv.GI);
-        free(gv.u0);
+
         error("gs_build_GI_02 failed (retval=%d)", retval);
     }
 
     R_xlen_t lenGI = (R_xlen_t)NoInd * (R_xlen_t)NoInd;
     SEXP out = PROTECT(allocVector(REALSXP, lenGI));
-    memcpy(REAL(out), gv.GI, (size_t)lenGI * sizeof(double));
-
-    free(gv.Z);
-    free(gv.t9);
-    free(gv.GI);
-    free(gv.u0);
+    memcpy(REAL(out), workspace->GI, (size_t)lenGI * sizeof(double));
 
     UNPROTECT(1);
     return out;
@@ -16194,16 +17004,16 @@ static int gs_rr_boundary_01(gs_varset_type *gv, const double *weight,
     }
     else
     {
-        double *A = calloc(d * d, sizeof(double));
-        double *G = malloc(n * n * sizeof(double));
-        double *rhs = calloc(d, sizeof(double));
-        double *sol = malloc(d * sizeof(double));
+        void *mark = st_work_mark();
+        double *A = st_work_alloc(d * d, sizeof(double));
+        double *G = st_work_alloc(n * n, sizeof(double));
+        double *rhs = st_work_alloc(d, sizeof(double));
+        double *sol = st_work_alloc(d, sizeof(double));
+        memset(A, 0, d * d * sizeof(double));
+        memset(rhs, 0, d * sizeof(double));
         if (!A || !G || !rhs || !sol)
         {
-            free(A);
-            free(G);
-            free(rhs);
-            free(sol);
+            st_work_reset(mark);
             gs_info(gv, -2,
                     "Memory allocation error in boundary variance fitting");
             *retval = -2;
@@ -16217,10 +17027,7 @@ static int gs_rr_boundary_01(gs_varset_type *gv, const double *weight,
             {
                 if (!R_FINITE(weight[j]) || weight[j] < 0)
                 {
-                    free(A);
-                    free(G);
-                    free(rhs);
-                    free(sol);
+                    st_work_reset(mark);
                     gs_info(
                         gv, -2,
                         "Invalid marker weights for boundary variance fitting");
@@ -16232,10 +17039,7 @@ static int gs_rr_boundary_01(gs_varset_type *gv, const double *weight,
             }
             if (!(scale > 0))
             {
-                free(A);
-                free(G);
-                free(rhs);
-                free(sol);
+                st_work_reset(mark);
                 gs_info(
                     gv, -2,
                     "No positive marker weights for boundary variance fitting");
@@ -16274,10 +17078,7 @@ static int gs_rr_boundary_01(gs_varset_type *gv, const double *weight,
                 if (!R_FINITE(gv->u[j]))
                     status = -2;
         }
-        free(A);
-        free(G);
-        free(rhs);
-        free(sol);
+        st_work_reset(mark);
         if (status == -2)
         {
             gs_info(gv, -2,
@@ -16294,7 +17095,9 @@ void gs_mmet_coeff_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
                       int *retval)
 {
 
-    gs_UNSIGNED i, j, idx_A;
+    gs_UNSIGNED i, j;
+
+    size_t idx_A;
     FILE *outfp;
 
     if (NULL == gv->y)
@@ -16320,28 +17123,36 @@ void gs_mmet_coeff_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
         return;
     }
 
-    gv->dimA = 1 + gv->NoInd;
-    gv->A = realloc(gv->A, gv->dimA * gv->dimA * sizeof(double));
+    if (gv->NoInd == (gs_UNSIGNED)-1 || gv->NoInd >= SIZE_MAX)
+        ERR_M;
+    gs_UNSIGNED dimension = 1 + gv->NoInd;
+    {
+        void *resized;
+        if (!gs_native_resize(gv->A, dimension, dimension, sizeof(double), &resized))
+            ERR_M;
+        gv->A = resized;
+    }
+    gv->dimA = dimension;
     if (NULL == gv->A)
         ERR_M;
 
     for (i = 0; i < gv->dimA; i++)
         for (j = 0; j < gv->dimA; j++)
-            gv->A[i * gv->dimA + j] = 0;
+            gv->A[(size_t)i * gv->dimA + j] = 0;
 
     gv->A[0] = (double)gv->NoInd;
 
     for (j = 0; j < gv->NoInd; j++)
     {
         gv->A[0 * gv->dimA + (1 + j)] = 1;
-        gv->A[(j + 1) * gv->dimA + 0] = 1;
+        gv->A[(size_t)(j + 1) * gv->dimA + 0] = 1;
     }
 
     if (!R_FINITE(gv->ladi[0]) && gv->ladi[0] > 0)
     {
         for (i = 0; i < gv->dimA; i++)
             for (j = 0; j < gv->dimA; j++)
-                gv->A[i * gv->dimA + j] =
+                gv->A[(size_t)i * gv->dimA + j] =
                     (i == j) ? (i == 0 ? gv->NoInd : 1) : 0;
     }
     else
@@ -16356,11 +17167,11 @@ void gs_mmet_coeff_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
 
         for (i = 0; i < gv->NoInd; i++)
             for (j = 0; j < gv->NoInd; j++)
-                gv->A[(1 + i) * gv->dimA + (1 + j)] =
-                    gv->GI[i * gv->NoInd + j] * gv->ladi[0];
+                gv->A[(size_t)(1 + i) * gv->dimA + (1 + j)] =
+                    gv->GI[(size_t)i * gv->NoInd + j] * gv->ladi[0];
 
         for (i = 0; i < gv->NoInd; i++)
-            gv->A[(1 + i) * gv->dimA + (1 + i)] += 1;
+            gv->A[(size_t)(1 + i) * gv->dimA + (1 + i)] += 1;
     }
 
     if (1 == *auxfiles)
@@ -16372,7 +17183,7 @@ void gs_mmet_coeff_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
         {
             for (j = 0; j < gv->dimA; j++)
             {
-                idx_A = i * gv->dimA + j;
+                idx_A = (size_t)i * gv->dimA + j;
                 fprintf(outfp, "%f ", gv->A[idx_A]);
             }
             fprintf(outfp, "\n");
@@ -16388,14 +17199,16 @@ void gs_mmet_coeff_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
 void gs_mmet_coeff_01_GV(char **out_filename, int *auxfiles, int *retval,
                          char **set_name)
 {
-    gs_mmet_coeff_01(gs_fdta(*set_name), out_filename, auxfiles, retval);
+    gs_mmet_coeff_01(gs_fdta_checked(*set_name), out_filename, auxfiles, retval);
 }
 
 void gs_mmet_coeff_02(gs_varset_type *gv, char **out_filename, int *auxfiles,
                       int *retval)
 {
 
-    gs_UNSIGNED i, j, idx_A;
+    gs_UNSIGNED i, j;
+
+    size_t idx_A;
     FILE *outfp;
 
     if (NULL == gv->y)
@@ -16421,28 +17234,36 @@ void gs_mmet_coeff_02(gs_varset_type *gv, char **out_filename, int *auxfiles,
         return;
     }
 
-    gv->dimA = 1 + gv->NoInd;
-    gv->A = realloc(gv->A, gv->dimA * gv->dimA * sizeof(double));
+    if (gv->NoInd == (gs_UNSIGNED)-1 || gv->NoInd >= SIZE_MAX)
+        ERR_M;
+    gs_UNSIGNED dimension = 1 + gv->NoInd;
+    {
+        void *resized;
+        if (!gs_native_resize(gv->A, dimension, dimension, sizeof(double), &resized))
+            ERR_M;
+        gv->A = resized;
+    }
+    gv->dimA = dimension;
     if (NULL == gv->A)
         ERR_M;
 
     for (i = 0; i < gv->dimA; i++)
         for (j = 0; j < gv->dimA; j++)
-            gv->A[i * gv->dimA + j] = 0;
+            gv->A[(size_t)i * gv->dimA + j] = 0;
 
     gv->A[0] = (double)gv->NoInd;
 
     for (j = 0; j < gv->NoInd; j++)
     {
         gv->A[0 * gv->dimA + (1 + j)] = 1;
-        gv->A[(j + 1) * gv->dimA + 0] = 1;
+        gv->A[(size_t)(j + 1) * gv->dimA + 0] = 1;
     }
 
     if (!R_FINITE(gv->ladi[0]) && gv->ladi[0] > 0)
     {
         for (i = 0; i < gv->dimA; i++)
             for (j = 0; j < gv->dimA; j++)
-                gv->A[i * gv->dimA + j] =
+                gv->A[(size_t)i * gv->dimA + j] =
                     (i == j) ? (i == 0 ? gv->NoInd : 1) : 0;
     }
     else
@@ -16450,11 +17271,11 @@ void gs_mmet_coeff_02(gs_varset_type *gv, char **out_filename, int *auxfiles,
 
         for (i = 0; i < gv->NoInd; i++)
             for (j = 0; j < gv->NoInd; j++)
-                gv->A[(1 + i) * gv->dimA + (1 + j)] =
-                    gv->ladi[0] * gv->GI[i * gv->NoInd + j];
+                gv->A[(size_t)(1 + i) * gv->dimA + (1 + j)] =
+                    gv->ladi[0] * gv->GI[(size_t)i * gv->NoInd + j];
 
         for (i = 0; i < gv->NoInd; i++)
-            gv->A[(1 + i) * gv->dimA + (1 + i)] += 1;
+            gv->A[(size_t)(1 + i) * gv->dimA + (1 + i)] += 1;
     }
 
     if (1 == *auxfiles)
@@ -16466,7 +17287,7 @@ void gs_mmet_coeff_02(gs_varset_type *gv, char **out_filename, int *auxfiles,
         {
             for (j = 0; j < gv->dimA; j++)
             {
-                idx_A = i * gv->dimA + j;
+                idx_A = (size_t)i * gv->dimA + j;
                 fprintf(outfp, "%f ", gv->A[idx_A]);
             }
             fprintf(outfp, "\n");
@@ -16482,7 +17303,7 @@ void gs_mmet_coeff_02(gs_varset_type *gv, char **out_filename, int *auxfiles,
 void gs_mmet_coeff_02_GV(char **out_filename, int *auxfiles, int *retval,
                          char **set_name)
 {
-    gs_mmet_coeff_02(gs_fdta(*set_name), out_filename, auxfiles, retval);
+    gs_mmet_coeff_02(gs_fdta_checked(*set_name), out_filename, auxfiles, retval);
 }
 
 void gs_mmet_rhs_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
@@ -16507,8 +17328,15 @@ void gs_mmet_rhs_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
         return;
     }
 
+    if (gv->NoInd == (gs_UNSIGNED)-1 || gv->NoInd >= SIZE_MAX)
+        ERR_M;
     dim_b = 1 + gv->NoInd;
-    gv->b = realloc(gv->b, dim_b * sizeof(double));
+    {
+        void *resized;
+        if (!gs_native_resize(gv->b, dim_b, 1, sizeof(double), &resized))
+            ERR_M;
+        gv->b = resized;
+    }
     if (NULL == gv->b)
         ERR_M;
 
@@ -16540,7 +17368,7 @@ void gs_mmet_rhs_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
 void gs_mmet_rhs_01_GV(char **out_filename, int *auxfiles, int *retval,
                        char **set_name)
 {
-    gs_mmet_rhs_01(gs_fdta(*set_name), out_filename, auxfiles, retval);
+    gs_mmet_rhs_01(gs_fdta_checked(*set_name), out_filename, auxfiles, retval);
 }
 
 void gs_mmet_solve_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
@@ -16572,7 +17400,12 @@ void gs_mmet_solve_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
     if (!boundary)
     {
 
-        gv->a = realloc(gv->a, (1 + gv->NoInd) * sizeof(double));
+        {
+            void *resized;
+            if (!gs_native_resize(gv->a, ((size_t)gv->NoInd + 1), 1, sizeof(double), &resized))
+                ERR_M;
+            gv->a = resized;
+        }
         if (NULL == gv->a)
             ERR_M;
 
@@ -16583,13 +17416,25 @@ void gs_mmet_solve_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
             return;
         }
 
-        gv->dimu = 1 + gv->NoMar;
-        gv->u = realloc(gv->u, gv->dimu * sizeof(double));
+        if (gv->NoMar == (gs_UNSIGNED)-1 || gv->NoMar >= SIZE_MAX)
+            ERR_M;
+        gs_UNSIGNED dimension = 1 + gv->NoMar;
+        {
+            void *resized;
+            if (!gs_native_resize(gv->u, dimension, 1, sizeof(double), &resized))
+                ERR_M;
+            gv->u = resized;
+        }
+        gv->dimu = dimension;
         if (NULL == gv->u)
             ERR_M;
 
         double *tmp1;
-        tmp1 = malloc(gv->NoInd * gv->NoMar * sizeof(double));
+        if (gv->NoInd &&
+            (gv->NoMar > SIZE_MAX / gv->NoInd ||
+             (size_t)gv->NoInd * gv->NoMar > SIZE_MAX / sizeof(double)))
+            ERR_M;
+        tmp1 = malloc((size_t)gv->NoInd * gv->NoMar * sizeof(double));
         if (NULL == tmp1)
             ERR_M;
 
@@ -16627,7 +17472,7 @@ void gs_mmet_solve_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
 void gs_mmet_solve_01_GV(char **out_filename, int *auxfiles, int *retval,
                          char **set_name)
 {
-    gs_mmet_solve_01(gs_fdta(*set_name), out_filename, auxfiles, retval);
+    gs_mmet_solve_01(gs_fdta_checked(*set_name), out_filename, auxfiles, retval);
 }
 
 void gs_lambda_rrblup_01(gs_varset_type *gv, int *maxiter, double *precision,
@@ -16944,8 +17789,31 @@ void gs_esteff_rr_01_GV(char **methode, int *maxiter, double *precision,
                         double *hsq, double *alpha, char **out_filename,
                         int *auxfiles, int *retval, char **set_name)
 {
-    gs_esteff_rr_01(gs_fdta(*set_name), methode, maxiter, precision, hsq, alpha,
+    gs_esteff_rr_01(gs_fdta_checked(*set_name), methode, maxiter, precision, hsq, alpha,
                     out_filename, auxfiles, retval);
+}
+
+typedef struct
+{
+    gs_varset_type *data;
+    int public_level, engine_level, data_level, active;
+} gs_validation_info;
+
+static void gs_validation_info_restore(gs_validation_info *state)
+{
+    if (state->active)
+    {
+        st_info_level = state->public_level;
+        INFOLEVEL = state->engine_level;
+        state->data->info_level = state->data_level;
+        state->active = 0;
+    }
+}
+
+static void gs_validation_info_destroy(void *pointer)
+{
+    gs_validation_info_restore(pointer);
+    free(pointer);
 }
 
 void gs_cross_validation_02(gs_varset_type *gv, char **methode,
@@ -16954,9 +17822,6 @@ void gs_cross_validation_02(gs_varset_type *gv, char **methode,
                             char **out_filename_r, char **out_filename_u,
                             int *auxfiles, int *retval)
 {
-    int ntr = 1;
-    int prev_info_level;
-    int no_info[1] = {-2};
     int CVNoRuns;
     int parallel_error = 0;
     int fit_status = 0;
@@ -17047,60 +17912,50 @@ void gs_cross_validation_02(gs_varset_type *gv, char **methode,
         return;
     }
 
-    CVcor = malloc((size_t)CVNoRuns * sizeof(*CVcor));
-    CVest = malloc(cv_count * sizeof(*CVest));
-
-    if ((NULL == CVcor) || (NULL == CVest))
-    {
-        free(CVcor);
-        free(CVest);
-        gs_info(gv, -2, "Memory allocation error");
-        return;
-    }
+    void *mark = st_work_mark();
+    CVcor = st_work_alloc((size_t)CVNoRuns, sizeof(*CVcor));
+    CVest = st_work_alloc(cv_count, sizeof(*CVest));
 
     for (int c = 0; c < CVNoRuns; c++)
         CVcor[c] = 0;
 
-    ntr = 1;
-    (void)ntr;
+    gs_validation_info *state = malloc(sizeof(*state));
+    if (!state)
+        error("Cannot allocate cross-validation state");
+    state->data = gv;
+    state->public_level = st_info_level;
+    state->engine_level = INFOLEVEL;
+    state->data_level = gv->info_level;
+    state->active = 0;
+    st_work_adopt(state, gs_validation_info_destroy);
+    state->active = 1;
+    st_info_level = INFOLEVEL = gv->info_level = -2;
 
-    st_get_info_level(&prev_info_level);
-    st_set_info_level(no_info);
-
-#ifdef MT
-#pragma omp parallel num_threads(ntr) if (ntr > 1)                             \
-    reduction(| : parallel_error) reduction(max : fit_status)
-#endif
     {
         int Srv;
         int *Sretval = &Srv;
 
-        gs_varset_type ES;
-        gs_varset_type *es = &ES;
-
-        gs_varset_type VS;
-        gs_varset_type *vs = &VS;
-
-        gs_UNSIGNED i;
-        double sy, syy, sx, sxx, sxy, k;
+        gs_varset_type *es = gs_tmp_owned_from(gv);
+        gs_varset_type *vs = gs_tmp_owned_from(gv);
 
         gs_init(es);
         gs_init(vs);
 
+        gs_UNSIGNED i;
+        double sy, syy, sx, sxx, sxy, k;
+
         es->info_level = -2;
         vs->info_level = -2;
 
-#ifdef MT
-        omp_set_schedule(omp_sched_static, 0);
-#pragma omp for schedule(runtime)
-#endif
         for (int r = 0; r < CVNoRuns; r++)
         {
+            R_CheckUserInterrupt();
             int success_rep = 0;
             int no_unsucc_rep = 0;
 
             while ((0 == success_rep) && (no_unsucc_rep < 1000))
             {
+                R_CheckUserInterrupt();
                 *Sretval = 0;
 
                 gs_build_esvs_01(gv, es, vs, n_estimation, nixp, nixp, nixp,
@@ -17182,10 +18037,9 @@ void gs_cross_validation_02(gs_varset_type *gv, char **methode,
 
     if (parallel_error)
     {
-        st_set_info_level(&prev_info_level);
-        free(CVcor);
-        free(CVest);
-        gs_info(gv, -2, "Cross validation failed in parallel calculation");
+        gs_validation_info_restore(state);
+        st_work_reset(mark);
+        gs_info(gv, -2, "Cross validation calculation failed");
         return;
     }
 
@@ -17200,9 +18054,8 @@ void gs_cross_validation_02(gs_varset_type *gv, char **methode,
 
         if (-2 == *Sretval)
         {
-            st_set_info_level(&prev_info_level);
-            free(CVcor);
-            free(CVest);
+            gs_validation_info_restore(state);
+            st_work_reset(mark);
             *retval = -2;
             return;
         }
@@ -17212,9 +18065,8 @@ void gs_cross_validation_02(gs_varset_type *gv, char **methode,
 
     if ((NULL == gv->u) || ((size_t)gv->dimu != cv_cols))
     {
-        st_set_info_level(&prev_info_level);
-        free(CVcor);
-        free(CVest);
+        gs_validation_info_restore(state);
+        st_work_reset(mark);
         gs_info(gv, -2, "Inconsistent number of effects in cross validation");
         return;
     }
@@ -17229,7 +18081,7 @@ void gs_cross_validation_02(gs_varset_type *gv, char **methode,
         gv->u[i] = (double)(sum / (double)CVNoRuns);
     }
 
-    st_set_info_level(&prev_info_level);
+    gs_validation_info_restore(state);
 
     if (1 == *auxfiles)
     {
@@ -17238,8 +18090,7 @@ void gs_cross_validation_02(gs_varset_type *gv, char **methode,
         fp = fopen(*out_filename_r, "w");
         if (NULL == fp)
         {
-            free(CVcor);
-            free(CVest);
+            st_work_reset(mark);
             gs_info(gv, -2, "File open error");
             return;
         }
@@ -17252,8 +18103,7 @@ void gs_cross_validation_02(gs_varset_type *gv, char **methode,
         fp = fopen(*out_filename_u, "w");
         if (NULL == fp)
         {
-            free(CVcor);
-            free(CVest);
+            st_work_reset(mark);
             gs_info(gv, -2, "File open error");
             return;
         }
@@ -17264,8 +18114,7 @@ void gs_cross_validation_02(gs_varset_type *gv, char **methode,
         fclose(fp);
     }
 
-    free(CVcor);
-    free(CVest);
+    st_work_reset(mark);
 
     *retval = fit_status;
 }
@@ -17276,7 +18125,7 @@ void gs_cross_validation_02_GV(char **scheme, int *n_estimation, int *n_runs,
                                char **out_filename_u, int *auxfiles,
                                int *retval, char **set_name)
 {
-    gs_cross_validation_02(gs_fdta(*set_name), scheme, n_estimation, n_runs,
+    gs_cross_validation_02(gs_fdta_checked(*set_name), scheme, n_estimation, n_runs,
                            hsq, alpha, maxiter, precision, out_filename_r,
                            out_filename_u, auxfiles, retval);
 }
@@ -17742,7 +18591,8 @@ void gs_calc_ld_01(gs_varset_type *gv, char **ld_measure, char **out_filename,
                    int *auxfiles, int *retval)
 
 {
-    gs_UNSIGNED c, i, j, idx;
+    gs_UNSIGNED c, i, j;
+    size_t idx;
     gs_UNSIGNED ii, jj;
     gs_mappoint_type **p;
     int Srv = 0;
@@ -17818,23 +18668,26 @@ void gs_calc_ld_01(gs_varset_type *gv, char **ld_measure, char **out_filename,
 
     for (c = 0; c < gv->NChrom; c++)
     {
-        gv->chrom[c].ld =
-            realloc(gv->chrom[c].ld,
-                    gv->chrom[c].NLocC * gv->chrom[c].NLocC * sizeof(gs_FLOAT));
+        void *resized;
+        if (!gs_native_resize(gv->chrom[c].ld, gv->chrom[c].NLocC,
+                              gv->chrom[c].NLocC, sizeof(gs_FLOAT), &resized))
+            ERR_M;
+        gv->chrom[c].ld = resized;
     }
 
     for (c = 0; c < gv->NChrom; c++)
     {
         p = gv->chrom[c].first_loc;
 #ifdef MT
-#pragma omp parallel for private(i, j, ii, jj, idx)
+#pragma omp parallel for private(i, j, ii, jj, idx)                            \
+    num_threads(st_num_threads()) if (st_num_threads() > 1)
 #endif
         for (i = 0; i < (gv->chrom[c].NLocC - 1); i++)
             for (j = i + 1; j < gv->chrom[c].NLocC; j++)
             {
                 ii = (p[i])->nr;
                 jj = (p[j])->nr;
-                idx = i * gv->chrom[c].NLocC + j;
+                idx = (size_t)i * gv->chrom[c].NLocC + j;
                 (gv->chrom[c].ld)[idx] = gs_ld(gv, ii, jj);
             }
     }
@@ -17853,12 +18706,12 @@ void gs_calc_ld_01(gs_varset_type *gv, char **ld_measure, char **out_filename,
                 for (j = i + 1; j < gv->chrom[c].NLocC; j++)
                 {
 
-                    idx = i * gv->chrom[c].NLocC + j;
+                    idx = (size_t)i * gv->chrom[c].NLocC + j;
 
                     loc_lft = gv->chrom[c].first_loc_i + i;
                     loc_rgt = gv->chrom[c].first_loc_i + j;
 
-                    snprintf(gv->msg, sizeof gv->msg, "%lu %lu %lu %s %s %f \n",
+                    st_text_log(gv->msg, sizeof gv->msg, "%lu %lu %lu %s %s %f \n",
                              1UL + (unsigned long)c, 1UL + (unsigned long)i,
                              1UL + (unsigned long)j, gv->map[loc_lft]->name,
                              gv->map[loc_rgt]->name,
@@ -17878,7 +18731,7 @@ void gs_calc_ld_01(gs_varset_type *gv, char **ld_measure, char **out_filename,
 void gs_calc_ld_01_GV(char **ld_measure, char **out_filename, int *auxfiles,
                       int *retval, char **set_name)
 {
-    gs_calc_ld_01(gs_fdta(*set_name), ld_measure, out_filename, auxfiles,
+    gs_calc_ld_01(gs_fdta_checked(*set_name), ld_measure, out_filename, auxfiles,
                   retval);
 }
 
@@ -17890,7 +18743,7 @@ void gs_set_hblocks_01(gs_varset_type *gv, int *n_hap, int *blk,
 
     if (0 == gv->NLoc)
     {
-        snprintf(gv->msg, sizeof(gv->msg), "No linkage map has been loaded");
+        st_text_log(gv->msg, sizeof(gv->msg), "No linkage map has been loaded");
         gs_info(gv, -2, gv->msg);
         *retval = -2;
         return;
@@ -17898,7 +18751,7 @@ void gs_set_hblocks_01(gs_varset_type *gv, int *n_hap, int *blk,
 
     if ((gs_UNSIGNED)(*n_hap) != gv->NLoc)
     {
-        snprintf(gv->msg, sizeof(gv->msg),
+        st_text_log(gv->msg, sizeof(gv->msg),
                  "Incorrect number of markers: %lu - %lu",
                  (gs_UNSIGNED)(*n_hap), gv->NLoc);
 
@@ -17909,9 +18762,24 @@ void gs_set_hblocks_01(gs_varset_type *gv, int *n_hap, int *blk,
 
     gs_UNSIGNED i, l, fib;
 
-    gv->h_u = realloc(gv->h_u, gv->NLoc * sizeof(gs_UNSIGNED));
-    gv->h_o = realloc(gv->h_o, gv->NLoc * sizeof(gs_UNSIGNED));
-    gv->h_n = realloc(gv->h_n, gv->NLoc * sizeof(gs_UNSIGNED));
+    {
+        void *resized;
+        if (!gs_native_resize(gv->h_u, gv->NLoc, 1, sizeof(gs_UNSIGNED), &resized))
+            ERR_M;
+        gv->h_u = resized;
+    }
+    {
+        void *resized;
+        if (!gs_native_resize(gv->h_o, gv->NLoc, 1, sizeof(gs_UNSIGNED), &resized))
+            ERR_M;
+        gv->h_o = resized;
+    }
+    {
+        void *resized;
+        if (!gs_native_resize(gv->h_n, gv->NLoc, 1, sizeof(gs_UNSIGNED), &resized))
+            ERR_M;
+        gv->h_n = resized;
+    }
     if ((NULL == gv->h_u) || (NULL == gv->h_o) || (gv->h_n == 0))
         ERR_M;
 
@@ -17965,8 +18833,21 @@ void gs_set_hblocks_01(gs_varset_type *gv, int *n_hap, int *blk,
         for (l = 0; l < gv->NHap; l++)
         {
             char *lne = (char *)malloc(gs_MAXLNE * sizeof(char));
-            snprintf(lne, gs_MAXLNE, "%i %f %s %s ", gv->Hap_S[l].chrom,
-                     gv->Hap_S[l].pos, gv->Hap_S[l].name, gv->Hap_S[l].class);
+            if (!lne)
+            {
+                fclose(outfp);
+                ERR_M;
+            }
+            int written = snprintf(lne, gs_MAXLNE, "%i %f %s %s ", gv->Hap_S[l].chrom,
+                                   gv->Hap_S[l].pos, gv->Hap_S[l].name, gv->Hap_S[l].class);
+            if (written < 0 || (size_t)written >= gs_MAXLNE)
+            {
+                free(lne);
+                fclose(outfp);
+                gs_info(gv, -2, "Haplotype record exceeds its output buffer");
+                *retval = -2;
+                return;
+            }
 
             for (i = gv->h_u[l]; i <= gv->h_o[l]; i++)
             {
@@ -17974,7 +18855,17 @@ void gs_set_hblocks_01(gs_varset_type *gv, int *n_hap, int *blk,
                 {
                     size_t a = strlen(lne);
                     size_t b = strlen(gv->MarName[gv->mdl[i]]);
-                    lne = realloc(lne, 2 + a + b);
+                    void *resized;
+                    if (a > SIZE_MAX - 2 || b > SIZE_MAX - 2 - a ||
+                        !gs_native_resize(NULL, 2 + a + b, 1, 1, &resized))
+                    {
+                        free(lne);
+                        fclose(outfp);
+                        ERR_M;
+                    }
+                    memcpy(resized, lne, a + 1);
+                    free(lne);
+                    lne = resized;
                     strcat(lne, gv->MarName[gv->mdl[i]]);
                     strcat(lne, ";");
                 }
@@ -17992,7 +18883,7 @@ void gs_set_hblocks_01_GV(int *n_hap, int *hap_list, char **hap_symbol,
                           char **out_filename, int *auxfiles, int *retval,
                           char **set_name)
 {
-    gs_set_hblocks_01(gs_fdta(*set_name), n_hap, hap_list, hap_symbol,
+    gs_set_hblocks_01(gs_fdta_checked(*set_name), n_hap, hap_list, hap_symbol,
                       out_filename, auxfiles, retval);
 }
 
@@ -18005,7 +18896,6 @@ void gs_cross_eval_gd_fct_01(gs_varset_type *gv, char **dist, int *split,
         *retval = -2;
         return;
     }
-
 
     if ((0 == gv->NoInd) || (0 == gv->NoMar))
     {
@@ -18038,7 +18928,12 @@ void gs_cross_eval_gd_fct_01(gs_varset_type *gv, char **dist, int *split,
     for (k = 0; k < gv->NCrs; k++)
         gv->crs[k]->gd = NA_REAL;
 
-    gs_UNSIGNED *fact = malloc(sp * (gv->NoInd - sp) * sizeof(gs_UNSIGNED));
+    size_t pairs;
+    if (gs_size_mul((size_t)sp, (size_t)(gv->NoInd - sp), &pairs))
+        ERR_M;
+    gs_UNSIGNED *fact = gs_malloc_array(pairs, sizeof(*fact));
+    if (!fact)
+        ERR_M;
 
     k = 0;
     l = 0;
@@ -18056,28 +18951,31 @@ void gs_cross_eval_gd_fct_01(gs_varset_type *gv, char **dist, int *split,
     if (0 == strcmp("mrd", *dist))
     {
 #ifdef MT
-#pragma omp parallel for
+#pragma omp parallel for \
+    num_threads(st_num_threads()) if (st_num_threads() > 1)
 #endif
 
-        for (gs_UNSIGNED l = 0; l < (sp * (gv->NoInd - sp)); l++)
+        for (size_t l = 0; l < pairs; l++)
             gs_calc_mrd(gv, fact[l]);
     }
     else if (0 == strcmp("rd", *dist))
     {
 #ifdef MT
-#pragma omp parallel for
+#pragma omp parallel for \
+    num_threads(st_num_threads()) if (st_num_threads() > 1)
 #endif
 
-        for (gs_UNSIGNED l = 0; l < (sp * (gv->NoInd - sp)); l++)
+        for (size_t l = 0; l < pairs; l++)
             gs_calc_rd(gv, fact[l]);
     }
     else
     {
 #ifdef MT
-#pragma omp parallel for
+#pragma omp parallel for \
+    num_threads(st_num_threads()) if (st_num_threads() > 1)
 #endif
 
-        for (gs_UNSIGNED l = 0; l < (sp * (gv->NoInd - sp)); l++)
+        for (size_t l = 0; l < pairs; l++)
             gs_calc_euc(gv, fact[l]);
     }
 
@@ -18090,14 +18988,15 @@ void gs_cross_eval_gd_fct_01(gs_varset_type *gv, char **dist, int *split,
 void gs_cross_eval_gd_fct_01_GV(char **dist, int *split, int *retval,
                                 char **set_name)
 {
-    gs_cross_eval_gd_fct_01(gs_fdta(*set_name), dist, split, retval);
+    gs_cross_eval_gd_fct_01(gs_fdta_checked(*set_name), dist, split, retval);
 }
 
 void gs_recode_ref_02(gs_varset_type *gv, int *r1, int *r2, int *descending,
                       int *retval)
 
 {
-    gs_UNSIGNED i, j, idx, idx_R1, idx_R2;
+    gs_UNSIGNED i, j;
+    size_t idx, idx_R1, idx_R2;
     int a, b, c, d, x, y;
 
     if ((*r1 < 1) || (*r2 < 1) || ((gs_UNSIGNED)*r1 > gv->NoInd) ||
@@ -18108,27 +19007,34 @@ void gs_recode_ref_02(gs_varset_type *gv, int *r1, int *r2, int *descending,
         return;
     }
 
-    GS_ALLELE_TYPE *Ref1 = malloc(gv->NoMar * gv->NoInd * sizeof(*Ref1));
-    GS_ALLELE_TYPE *Ref2 = malloc(gv->NoMar * gv->NoInd * sizeof(*Ref2));
-    if ((NULL == Ref1) || (NULL == Ref2))
+    size_t count;
+    if (gs_size_mul((size_t)gv->NoMar, (size_t)gv->NoInd, &count))
         ERR_M;
+    GS_ALLELE_TYPE *Ref1 = gs_malloc_array(count, sizeof(*Ref1));
+    GS_ALLELE_TYPE *Ref2 = gs_malloc_array(count, sizeof(*Ref2));
+    if ((NULL == Ref1) || (NULL == Ref2))
+    {
+        free(Ref1);
+        free(Ref2);
+        ERR_M;
+    }
 
     gs_UNSIGNED R1 = (gs_UNSIGNED)*r1 - 1;
     gs_UNSIGNED R2 = (gs_UNSIGNED)*r2 - 1;
 
     for (i = 0; i < gv->NoMar; i++)
     {
-        idx_R1 = i * gv->NoInd + R1;
+        idx_R1 = (size_t)i * gv->NoInd + R1;
         a = st_allele_get(gv, idx_R1, 0);
         b = st_allele_get(gv, idx_R1, 1);
 
-        idx_R2 = i * gv->NoInd + R2;
+        idx_R2 = (size_t)i * gv->NoInd + R2;
         x = st_allele_get(gv, idx_R2, 0);
         y = st_allele_get(gv, idx_R2, 1);
 
         for (j = 0; j < gv->NoInd; j++)
         {
-            idx = i * gv->NoInd + j;
+            idx = (size_t)i * gv->NoInd + j;
             c = st_allele_get(gv, idx, 0);
             d = st_allele_get(gv, idx, 1);
 
@@ -18216,7 +19122,7 @@ void gs_recode_ref_02(gs_varset_type *gv, int *r1, int *r2, int *descending,
 void gs_recode_ref_02_GV(int *r1, int *r2, int *descending, int *retval,
                          char **set_name)
 {
-    gs_recode_ref_02(gs_fdta(*set_name), r1, r2, descending, retval);
+    gs_recode_ref_02(gs_fdta_checked(*set_name), r1, r2, descending, retval);
 }
 
 extern int st_mxd_mv_scalar(int n, const double *y, int p, const double *X,
@@ -18251,7 +19157,7 @@ void st_mxd(int *n, double *y, int *cX, double *X, int *kk, double **Z,
 SEXP st_get_Z(SEXP dataSet)
 {
     char *set_name = (char *)CHAR(STRING_ELT(dataSet, 0));
-    gs_varset_type *gv = gs_fdta(set_name);
+    gs_varset_type *gv = gs_fdta_checked(set_name);
 
     if ((0 == gv->NoInd) || (0 == gv->NoMar))
     {
@@ -18271,6 +19177,8 @@ SEXP st_get_Z(SEXP dataSet)
     SEXP ZZ;
     R_len_t n, m;
 
+    if (gv->NoInd > INT_MAX || gv->NoMar > INT_MAX)
+        error("Matrix dimensions exceed R dimension limits");
     n = (R_len_t)gv->NoInd;
     m = (R_len_t)gv->NoMar;
 
@@ -18318,7 +19226,7 @@ SEXP st_get_Z_named(SEXP dataSet, SEXP names)
         UNPROTECT(1);
         return R_NilValue;
     }
-    gs_varset_type *gv = gs_fdta((char *)CHAR(STRING_ELT(dataSet, 0)));
+    gs_varset_type *gv = gs_fdta_checked((char *)CHAR(STRING_ELT(dataSet, 0)));
     if (gv->IndName == NULL)
     {
         gs_info(gv, -2, "No individual identifiers available");
@@ -18342,7 +19250,7 @@ SEXP st_get_Z_named(SEXP dataSet, SEXP names)
 SEXP st_get_V(SEXP dataSet)
 {
     char *set_name = (char *)CHAR(STRING_ELT(dataSet, 0));
-    gs_varset_type *gv = gs_fdta(set_name);
+    gs_varset_type *gv = gs_fdta_checked(set_name);
 
     if ((0 == gv->NoInd) || (0 == gv->NoMar))
     {
@@ -18372,6 +19280,8 @@ SEXP st_get_V(SEXP dataSet)
 
     R_len_t n;
 
+    if (gv->NoInd > INT_MAX)
+        error("Matrix dimensions exceed R dimension limits");
     n = (R_len_t)gv->NoInd;
 
     PROTECT(VV = allocMatrix(REALSXP, n, n));
@@ -18389,7 +19299,7 @@ SEXP st_get_V(SEXP dataSet)
 SEXP st_get_y(SEXP dataSet)
 {
     char *set_name = (char *)CHAR(STRING_ELT(dataSet, 0));
-    gs_varset_type *gv = gs_fdta(set_name);
+    gs_varset_type *gv = gs_fdta_checked(set_name);
 
     if (NULL == gv->y)
     {
@@ -18404,7 +19314,10 @@ SEXP st_get_y(SEXP dataSet)
     }
 
     SEXP yy;
-    R_len_t n = (R_len_t)gv->NoInd;
+    if ((uintmax_t)gv->NoInd > (uintmax_t)R_XLEN_T_MAX ||
+        gv->NoInd > SIZE_MAX / sizeof(double))
+        error("Performance length exceeds R vector limits");
+    R_xlen_t n = (R_xlen_t)gv->NoInd;
 
     PROTECT(yy = allocVector(REALSXP, n));
 
@@ -18430,7 +19343,7 @@ static SEXP st_get_y_named_values(SEXP dataSet, int names)
         UNPROTECT(1);
         return R_NilValue;
     }
-    gs_varset_type *gv = gs_fdta((char *)CHAR(STRING_ELT(dataSet, 0)));
+    gs_varset_type *gv = gs_fdta_checked((char *)CHAR(STRING_ELT(dataSet, 0)));
     if (gv->IndName == NULL)
     {
         gs_info(gv, -2, "No individual identifiers available");
@@ -18506,8 +19419,13 @@ SEXP st_lmm_marker_data(SEXP dataSet)
 
 SEXP st_get_im(SEXP i, SEXP m, SEXP dataSet)
 {
+    if (TYPEOF(i) != INTSXP || XLENGTH(i) != 1 ||
+        TYPEOF(m) != INTSXP || XLENGTH(m) != 1 ||
+        TYPEOF(dataSet) != STRSXP || XLENGTH(dataSet) != 1 ||
+        STRING_ELT(dataSet, 0) == NA_STRING)
+        error("Integer scalar outputs and one data set name are required");
     char *set_name = (char *)CHAR(STRING_ELT(dataSet, 0));
-    gs_varset_type *gv = gs_fdta(set_name);
+    gs_varset_type *gv = gs_fdta_checked(set_name);
 
     if ((0 == gv->NoInd) || (0 == gv->NoMar))
     {
@@ -18518,6 +19436,8 @@ SEXP st_get_im(SEXP i, SEXP m, SEXP dataSet)
     int *ii = INTEGER(i);
     int *mm = INTEGER(m);
 
+    if (gv->NoInd > INT_MAX || gv->NoMar > INT_MAX)
+        error("Data dimensions exceed the integer result range");
     *ii = (int)gv->NoInd;
     *mm = (int)gv->NoMar;
 
@@ -18542,7 +19462,12 @@ void gs_lambda_rrblup_01(gs_varset_type *gv, int *maxiter, double *precision,
         return;
     }
 
-    gv->ladi = realloc(gv->ladi, gv->NoMar * sizeof(double));
+    {
+        void *resized;
+        if (!gs_native_resize(gv->ladi, gv->NoMar, 1, sizeof(double), &resized))
+            ERR_M;
+        gv->ladi = resized;
+    }
     if (NULL == gv->ladi)
         ERR_M;
 
@@ -18571,7 +19496,7 @@ void gs_lambda_rrblup_01_GV(int *maxiter, double *precision, double *hsq,
                             char **out_filename, int *auxfiles, int *retval,
                             char **set_name)
 {
-    gs_lambda_rrblup_01(gs_fdta(*set_name), maxiter, precision, hsq,
+    gs_lambda_rrblup_01(gs_fdta_checked(*set_name), maxiter, precision, hsq,
                         out_filename, auxfiles, retval);
 }
 
@@ -18580,6 +19505,7 @@ void gs_vc_rrblup_01(gs_varset_type *gv, int *maxiter, double *precision,
                      int *retval)
 {
 
+    void *mark = st_work_mark();
     char msg[gs_MAXSTR];
     int fit_status = 0;
 
@@ -18587,6 +19513,7 @@ void gs_vc_rrblup_01(gs_varset_type *gv, int *maxiter, double *precision,
     {
         gs_info(gv, -2, "No Z matrix available");
         *retval = -2;
+        st_work_reset(mark);
         return;
     }
 
@@ -18594,32 +19521,26 @@ void gs_vc_rrblup_01(gs_varset_type *gv, int *maxiter, double *precision,
     {
         gs_info(gv, -2, "No performance data available");
         *retval = -2;
+        st_work_reset(mark);
         return;
     }
 
+    if (gv->NoInd < 2 || gv->NoInd > INT_MAX || !gv->NoMar ||
+        gv->NoMar >= INT_MAX || gv->NoInd > SIZE_MAX / sizeof(double) / gv->NoInd)
+    {
+        gs_info(gv, -2, "Variance-component dimensions exceed solver limits");
+        *retval = -2;
+        st_work_reset(mark);
+        return;
+    }
     int k = 1;
     int n[1] = {(int)gv->NoInd};
     int cX[1] = {1};
 
-    double *y = malloc(gv->NoInd * sizeof(double));
-    double *X = malloc(gv->NoInd * sizeof(double));
-    double **V = calloc(k, sizeof(double *));
-    if (V)
-        V[0] = malloc((size_t)gv->NoInd * gv->NoInd * sizeof(double));
-    if (!y || !X || !V || !V[0])
-    {
-        free(y);
-        free(X);
-        if (V)
-        {
-            free(V[0]);
-            free(V);
-        }
-        gs_info(gv, -2,
-                "Memory allocation error in variance-component fitting");
-        *retval = -2;
-        return;
-    }
+    double *y = st_work_alloc(gv->NoInd, sizeof(double));
+    double *X = st_work_alloc(gv->NoInd, sizeof(double));
+    double **V = st_work_alloc(k, sizeof(double *));
+    V[0] = st_work_alloc((size_t)gv->NoInd * gv->NoInd, sizeof(double));
 
     st_dgemm("N", "T", gv->NoInd, gv->NoMar, gv->NoInd, gv->NoMar, gv->Z, gv->Z,
              V[0]);
@@ -18646,7 +19567,7 @@ void gs_vc_rrblup_01(gs_varset_type *gv, int *maxiter, double *precision,
 
     if (0 < *maxiter)
     {
-        snprintf(msg, sizeof(msg),
+        st_text_log(msg, sizeof(msg),
                  "Start values from hsq = %4.2f: var(m) = %f, var(e) = %5f",
                  *hsq, varcmp[0], varcmp[1]);
         gs_info(gv, 2, msg);
@@ -18656,16 +19577,13 @@ void gs_vc_rrblup_01(gs_varset_type *gv, int *maxiter, double *precision,
         fit_status = *retval;
         if (*retval < 0)
         {
-            free(y);
-            free(X);
-            free(V[0]);
-            free(V);
             *retval = -2;
+            st_work_reset(mark);
             return;
         }
     }
 
-    snprintf(msg, sizeof(msg), "Variance components: var(m) = %f, var(e) = %5f",
+    st_text_log(msg, sizeof(msg), "Variance components: var(m) = %f, var(e) = %5f",
              varcmp[0], varcmp[1]);
 
     gs_info(gv, 2, msg);
@@ -18674,13 +19592,11 @@ void gs_vc_rrblup_01(gs_varset_type *gv, int *maxiter, double *precision,
         realloc(gv->sigma, ((size_t)1 + gv->NoMar) * sizeof(double));
     if (!sigma)
     {
-        free(y);
-        free(X);
-        free(V[0]);
-        free(V);
+
         gs_info(gv, -2,
                 "Memory allocation error in variance-component fitting");
         *retval = -2;
+        st_work_reset(mark);
         return;
     }
     gv->sigma = sigma;
@@ -18689,11 +19605,6 @@ void gs_vc_rrblup_01(gs_varset_type *gv, int *maxiter, double *precision,
 
     for (gs_UNSIGNED i = 1; i < (1 + gv->NoMar); i++)
         gv->sigma[i] = varcmp[0];
-
-    free(y);
-    free(X);
-    free(V[0]);
-    free(V);
 
     if (1 == *auxfiles)
     {
@@ -18708,6 +19619,7 @@ void gs_vc_rrblup_01(gs_varset_type *gv, int *maxiter, double *precision,
         fclose(outfp);
     }
     *retval = fit_status;
+    st_work_reset(mark);
     return;
 }
 
@@ -18715,7 +19627,7 @@ void gs_vc_rrblup_01_GV(int *maxiter, double *precision, double *hsq,
                         char **out_filename, int *auxfiles, int *retval,
                         char **set_name)
 {
-    gs_vc_rrblup_01(gs_fdta(*set_name), maxiter, precision, hsq, out_filename,
+    gs_vc_rrblup_01(gs_fdta_checked(*set_name), maxiter, precision, hsq, out_filename,
                     auxfiles, retval);
 }
 
@@ -18725,7 +19637,9 @@ void gs_single_marker_aov_01(gs_varset_type *gv, double *alpha,
 
     (void)alpha;
 
-    gs_UNSIGNED i, m, idx_Z;
+    gs_UNSIGNED i, m;
+
+    size_t idx_Z;
     FILE *outfp;
 
     if (NULL == gv->Z)
@@ -18749,7 +19663,7 @@ void gs_single_marker_aov_01(gs_varset_type *gv, double *alpha,
     for (i = 0; i < gv->NoInd; i++)
         for (m = 0; m < gv->NoMar; m++)
         {
-            idx_Z = i * gv->NoMar + m;
+            idx_Z = (size_t)i * gv->NoMar + m;
             zz = gv->Z[idx_Z];
             if ((0 != zz) && (1 != zz) && (2 != zz))
             {
@@ -18765,11 +19679,36 @@ void gs_single_marker_aov_01(gs_varset_type *gv, double *alpha,
         return;
     }
 
-    gv->SMp = realloc(gv->SMp, gv->NoMar * sizeof(double));
-    gv->SMF = realloc(gv->SMF, gv->NoMar * sizeof(double));
-    gv->SMsqm = realloc(gv->SMsqm, gv->NoMar * sizeof(double));
-    gv->SMsqe = realloc(gv->SMsqe, gv->NoMar * sizeof(double));
-    gv->SMvar = realloc(gv->SMvar, gv->NoMar * sizeof(double));
+    {
+        void *resized;
+        if (!gs_native_resize(gv->SMp, gv->NoMar, 1, sizeof(double), &resized))
+            ERR_M;
+        gv->SMp = resized;
+    }
+    {
+        void *resized;
+        if (!gs_native_resize(gv->SMF, gv->NoMar, 1, sizeof(double), &resized))
+            ERR_M;
+        gv->SMF = resized;
+    }
+    {
+        void *resized;
+        if (!gs_native_resize(gv->SMsqm, gv->NoMar, 1, sizeof(double), &resized))
+            ERR_M;
+        gv->SMsqm = resized;
+    }
+    {
+        void *resized;
+        if (!gs_native_resize(gv->SMsqe, gv->NoMar, 1, sizeof(double), &resized))
+            ERR_M;
+        gv->SMsqe = resized;
+    }
+    {
+        void *resized;
+        if (!gs_native_resize(gv->SMvar, gv->NoMar, 1, sizeof(double), &resized))
+            ERR_M;
+        gv->SMvar = resized;
+    }
     if ((NULL == gv->SMp) || (NULL == gv->SMF) || (NULL == gv->SMsqm) ||
         (NULL == gv->SMsqe) || (NULL == gv->SMvar))
         ERR_M;
@@ -18800,7 +19739,7 @@ void gs_single_marker_aov_01(gs_varset_type *gv, double *alpha,
 
         for (i = 0; i < gv->NoInd; i++)
         {
-            idx_Z = i * gv->NoMar + m;
+            idx_Z = (size_t)i * gv->NoMar + m;
             if (0 == gv->Z[idx_Z])
             {
                 ny0++;
@@ -18877,7 +19816,7 @@ void gs_single_marker_aov_01(gs_varset_type *gv, double *alpha,
 void gs_single_marker_aov_01_GV(double *alpha, char **out_filename,
                                 int *auxfiles, int *retval, char **set_name)
 {
-    gs_single_marker_aov_01(gs_fdta(*set_name), alpha, out_filename, auxfiles,
+    gs_single_marker_aov_01(gs_fdta_checked(*set_name), alpha, out_filename, auxfiles,
                             retval);
 }
 
@@ -18930,7 +19869,7 @@ void gs_lambda_rmla_02_GV(double *alpha, int *maxiter, double *precision,
                           double *hsq, char **out_filename, int *auxfiles,
                           int *retval, char **set_name)
 {
-    gs_lambda_rmla_02(gs_fdta(*set_name), alpha, maxiter, precision, hsq,
+    gs_lambda_rmla_02(gs_fdta_checked(*set_name), alpha, maxiter, precision, hsq,
                       out_filename, auxfiles, retval);
 }
 
@@ -18954,7 +19893,12 @@ void gs_w_aov_01(gs_varset_type *gv, double *alpha, char **out_filename,
     for (m = 0; m < gv->NoMar; m++)
         Svar += gv->SMvar[m];
 
-    gv->ladi = realloc(gv->ladi, gv->NoMar * sizeof(double));
+    {
+        void *resized;
+        if (!gs_native_resize(gv->ladi, gv->NoMar, 1, sizeof(double), &resized))
+            ERR_M;
+        gv->ladi = resized;
+    }
     if (NULL == gv->ladi)
         ERR_M;
 
@@ -18979,7 +19923,7 @@ void gs_w_aov_01(gs_varset_type *gv, double *alpha, char **out_filename,
 void gs_w_aov_01_GV(double *alpha, char **out_filename, int *auxfiles,
                     int *retval, char **set_name)
 {
-    gs_w_aov_01(gs_fdta(*set_name), alpha, out_filename, auxfiles, retval);
+    gs_w_aov_01(gs_fdta_checked(*set_name), alpha, out_filename, auxfiles, retval);
 }
 
 void gs_w_I_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
@@ -18989,7 +19933,12 @@ void gs_w_I_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
     gs_UNSIGNED m;
     FILE *outfp;
 
-    gv->ladi = realloc(gv->ladi, gv->NoMar * sizeof(double));
+    {
+        void *resized;
+        if (!gs_native_resize(gv->ladi, gv->NoMar, 1, sizeof(double), &resized))
+            ERR_M;
+        gv->ladi = resized;
+    }
     if (NULL == gv->ladi)
         ERR_M;
 
@@ -19014,7 +19963,7 @@ void gs_w_I_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
 void gs_w_I_01_GV(char **out_filename, int *auxfiles, int *retval,
                   char **set_name)
 {
-    gs_w_I_01(gs_fdta(*set_name), out_filename, auxfiles, retval);
+    gs_w_I_01(gs_fdta_checked(*set_name), out_filename, auxfiles, retval);
 }
 
 void gs_lambda_const_02(gs_varset_type *gv, double *hsq, char **out_filename,
@@ -19029,7 +19978,12 @@ void gs_lambda_const_02(gs_varset_type *gv, double *hsq, char **out_filename,
         return;
     }
 
-    gv->ladi = realloc(gv->ladi, gv->NoMar * sizeof(double));
+    {
+        void *resized;
+        if (!gs_native_resize(gv->ladi, gv->NoMar, 1, sizeof(double), &resized))
+            ERR_M;
+        gv->ladi = resized;
+    }
     if (NULL == gv->ladi)
         ERR_M;
 
@@ -19059,7 +20013,7 @@ void gs_lambda_const_02(gs_varset_type *gv, double *hsq, char **out_filename,
 void gs_lambda_const_02_GV(double *hsq, char **out_filename, int *auxfiles,
                            int *retval, char **set_name)
 {
-    gs_lambda_const_02(gs_fdta(*set_name), hsq, out_filename, auxfiles, retval);
+    gs_lambda_const_02(gs_fdta_checked(*set_name), hsq, out_filename, auxfiles, retval);
 }
 
 void gs_lambda_aov_01(gs_varset_type *gv, double *hsq, double *alpha,
@@ -19077,7 +20031,12 @@ void gs_lambda_aov_01(gs_varset_type *gv, double *hsq, double *alpha,
         return;
     }
 
-    gv->ladi = realloc(gv->ladi, gv->NoMar * sizeof(double));
+    {
+        void *resized;
+        if (!gs_native_resize(gv->ladi, gv->NoMar, 1, sizeof(double), &resized))
+            ERR_M;
+        gv->ladi = resized;
+    }
     if (NULL == gv->ladi)
         ERR_M;
 
@@ -19108,14 +20067,15 @@ void gs_lambda_aov_01(gs_varset_type *gv, double *hsq, double *alpha,
 void gs_lambda_aov_01_GV(double *hsq, double *alpha, char **out_filename,
                          int *auxfiles, int *retval, char **set_name)
 {
-    gs_lambda_aov_01(gs_fdta(*set_name), hsq, alpha, out_filename, auxfiles,
+    gs_lambda_aov_01(gs_fdta_checked(*set_name), hsq, alpha, out_filename, auxfiles,
                      retval);
 }
 
 void gs_single_marker_reg_01(gs_varset_type *gv, char **out_filename,
                              int *auxfiles, int *retval)
 {
-    gs_UNSIGNED i, m, idx_Z;
+    gs_UNSIGNED i, m;
+    size_t idx_Z;
     FILE *outfp;
 
     if (NULL == gv->Z)
@@ -19134,10 +20094,30 @@ void gs_single_marker_reg_01(gs_varset_type *gv, char **out_filename,
         return;
     }
 
-    gv->SMp = realloc(gv->SMp, gv->NoMar * sizeof(double));
-    gv->SMF = realloc(gv->SMF, gv->NoMar * sizeof(double));
-    gv->SMsqm = realloc(gv->SMsqm, gv->NoMar * sizeof(double));
-    gv->SMsqe = realloc(gv->SMsqe, gv->NoMar * sizeof(double));
+    {
+        void *resized;
+        if (!gs_native_resize(gv->SMp, gv->NoMar, 1, sizeof(double), &resized))
+            ERR_M;
+        gv->SMp = resized;
+    }
+    {
+        void *resized;
+        if (!gs_native_resize(gv->SMF, gv->NoMar, 1, sizeof(double), &resized))
+            ERR_M;
+        gv->SMF = resized;
+    }
+    {
+        void *resized;
+        if (!gs_native_resize(gv->SMsqm, gv->NoMar, 1, sizeof(double), &resized))
+            ERR_M;
+        gv->SMsqm = resized;
+    }
+    {
+        void *resized;
+        if (!gs_native_resize(gv->SMsqe, gv->NoMar, 1, sizeof(double), &resized))
+            ERR_M;
+        gv->SMsqe = resized;
+    }
     if ((NULL == gv->SMp) || (NULL == gv->SMF) || (NULL == gv->SMsqm) ||
         (NULL == gv->SMsqe))
         ERR_M;
@@ -19163,7 +20143,7 @@ void gs_single_marker_reg_01(gs_varset_type *gv, char **out_filename,
         sxy = 0;
         for (i = 0; i < gv->NoInd; i++)
         {
-            idx_Z = i * gv->NoMar + m;
+            idx_Z = (size_t)i * gv->NoMar + m;
             sx += gv->Z[idx_Z];
             sxx += gv->Z[idx_Z] * gv->Z[idx_Z];
             sxy += gv->Z[idx_Z] * gv->y[i];
@@ -19174,7 +20154,7 @@ void gs_single_marker_reg_01(gs_varset_type *gv, char **out_filename,
         SQM = b * (sxy - sx * sy / k);
         SQE = SQT - SQM;
         F = SQM / (SQE / (k - 2));
-        p = pf(F, 1, (int)gv->NoInd, 0, 0);
+        p = pf(F, 1, (double)gv->NoInd, 0, 0);
 
         gv->SMsqm[m] = SQM;
         gv->SMsqe[m] = SQE;
@@ -19203,7 +20183,7 @@ void gs_single_marker_reg_01(gs_varset_type *gv, char **out_filename,
 void gs_single_marker_reg_01_GV(char **out_filename, int *auxfiles, int *retval,
                                 char **set_name)
 {
-    gs_single_marker_reg_01(gs_fdta(*set_name), out_filename, auxfiles, retval);
+    gs_single_marker_reg_01(gs_fdta_checked(*set_name), out_filename, auxfiles, retval);
 }
 
 void gs_lambda_reg_01(gs_varset_type *gv, double *hsq, char **out_filename,
@@ -19221,7 +20201,12 @@ void gs_lambda_reg_01(gs_varset_type *gv, double *hsq, char **out_filename,
         return;
     }
 
-    gv->ladi = realloc(gv->ladi, gv->NoMar * sizeof(double));
+    {
+        void *resized;
+        if (!gs_native_resize(gv->ladi, gv->NoMar, 1, sizeof(double), &resized))
+            ERR_M;
+        gv->ladi = resized;
+    }
     if (NULL == gv->ladi)
         ERR_M;
 
@@ -19250,15 +20235,18 @@ void gs_lambda_reg_01(gs_varset_type *gv, double *hsq, char **out_filename,
 void gs_lambda_reg_01_GV(double *hsq, char **out_filename, int *auxfiles,
                          int *retval, char **set_name)
 {
-    gs_lambda_reg_01(gs_fdta(*set_name), hsq, out_filename, auxfiles, retval);
+    gs_lambda_reg_01(gs_fdta_checked(*set_name), hsq, out_filename, auxfiles, retval);
 }
 
 void gs_mme_coeff_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
                      int *retval)
 {
 
-    gs_UNSIGNED i, j, idx_A;
+    void *mark = st_work_mark();
+    size_t i, j, idx_A;
     FILE *outfp;
+    double *one_vec = NULL, *tmp1 = NULL, *tmp2 = NULL, *replacement;
+    size_t dimension, cells;
 
     if (NULL == gv->y)
     {
@@ -19283,29 +20271,38 @@ void gs_mme_coeff_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
         return;
     }
 
-    gv->dimA = 1 + gv->NoMar;
-    gv->A = realloc(gv->A, gv->dimA * gv->dimA * sizeof(double));
-    if (NULL == gv->A)
-        ERR_M;
+    if (!gv->NoInd || gv->NoInd > INT_MAX || !gv->NoMar ||
+        gv->NoMar >= INT_MAX || gv->NoMar >= SIZE_MAX ||
+        gv->NoMar == (gs_UNSIGNED)-1)
+        goto memory_failure;
+    dimension = (size_t)gv->NoMar + 1;
+    if (dimension > SIZE_MAX / dimension ||
+        dimension * dimension > SIZE_MAX / sizeof(double) ||
+        gv->NoInd > SIZE_MAX / sizeof(double))
+        goto memory_failure;
+    cells = dimension * dimension;
+    replacement = realloc(gv->A, cells * sizeof(double));
+    if (!replacement)
+        goto memory_failure;
+    gv->A = replacement;
+    gv->dimA = (gs_UNSIGNED)dimension;
 
     for (i = 0; i < gv->dimA; i++)
         for (j = 0; j < gv->dimA; j++)
-            gv->A[i * gv->dimA + j] = 0;
+            gv->A[(size_t)i * gv->dimA + j] = 0;
 
-    double *one_vec;
 
-    one_vec = malloc(gv->NoInd * sizeof(double));
+    one_vec = st_work_alloc(gv->NoInd, sizeof(double));
     if (NULL == one_vec)
-        ERR_M;
+        goto memory_failure;
     for (i = 0; i < gv->NoInd; i++)
         one_vec[i] = 1;
 
     gv->A[0] = (double)gv->NoInd;
 
-    double *tmp1;
-    tmp1 = malloc(gv->NoMar * sizeof(double));
+    tmp1 = st_work_alloc(gv->NoMar, sizeof(double));
     if (NULL == tmp1)
-        ERR_M;
+        goto memory_failure;
 
     st_dgemm("T", "N", gv->NoInd, 1, gv->NoInd, gv->NoMar, one_vec, gv->Z,
              tmp1);
@@ -19313,13 +20310,12 @@ void gs_mme_coeff_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
     for (j = 0; j < gv->NoMar; j++)
     {
         gv->A[0 * gv->dimA + (1 + j)] = tmp1[j];
-        gv->A[(j + 1) * gv->dimA + 0] = tmp1[j];
+        gv->A[(size_t)(j + 1) * gv->dimA + 0] = tmp1[j];
     }
 
-    double *tmp2;
-    tmp2 = malloc(gv->NoMar * gv->NoMar * sizeof(double));
+    tmp2 = st_work_alloc((size_t)gv->NoMar * gv->NoMar, sizeof(double));
     if (NULL == tmp2)
-        ERR_M;
+        goto memory_failure;
 
     st_dgemm("T", "N", gv->NoInd, gv->NoMar, gv->NoInd, gv->NoMar, gv->Z, gv->Z,
              tmp2);
@@ -19327,18 +20323,19 @@ void gs_mme_coeff_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
     for (i = 0; i < gv->NoMar; i++)
         for (j = 0; j < gv->NoMar; j++)
         {
-            gv->A[(1 + i) * gv->dimA + (1 + j)] = tmp2[i * gv->NoMar + j];
+            gv->A[(size_t)(1 + i) * gv->dimA + (1 + j)] = tmp2[(size_t)i * gv->NoMar + j];
         }
 
     if (1)
     {
-        gv->As = realloc(gv->As, gv->dimA * gv->dimA * sizeof(double));
-        if (NULL == gv->As)
-            ERR_M;
+        replacement = realloc(gv->As, cells * sizeof(double));
+        if (!replacement)
+            goto memory_failure;
+        gv->As = replacement;
         for (i = 0; i < gv->dimA; i++)
             for (j = 0; j < gv->dimA; j++)
             {
-                gv->As[i * gv->dimA + j] = gv->A[i * gv->dimA + j];
+                gv->As[(size_t)i * gv->dimA + j] = gv->A[(size_t)i * gv->dimA + j];
             }
     }
 
@@ -19347,16 +20344,15 @@ void gs_mme_coeff_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
         if (!R_FINITE(gv->ladi[i - 1]) && gv->ladi[i - 1] > 0)
         {
             for (j = 0; j < gv->dimA; j++)
-                gv->A[i * gv->dimA + j] = gv->A[j * gv->dimA + i] = 0;
-            gv->A[i * gv->dimA + i] = 1;
+                gv->A[(size_t)i * gv->dimA + j] = gv->A[(size_t)j * gv->dimA + i] = 0;
+            gv->A[(size_t)i * gv->dimA + i] = 1;
         }
         else
-            gv->A[i * gv->dimA + i] += gv->ladi[i - 1];
+            gv->A[(size_t)i * gv->dimA + i] += gv->ladi[i - 1];
     }
 
-    free(one_vec);
-    free(tmp1);
-    free(tmp2);
+    st_work_reset(mark);
+    one_vec = tmp1 = tmp2 = NULL;
 
     if (1 == *auxfiles)
     {
@@ -19367,7 +20363,7 @@ void gs_mme_coeff_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
         {
             for (j = 0; j < gv->dimA; j++)
             {
-                idx_A = i * gv->dimA + j;
+                idx_A = (size_t)i * gv->dimA + j;
                 fprintf(outfp, "%f ", gv->A[idx_A]);
             }
             fprintf(outfp, "\n");
@@ -19378,19 +20374,23 @@ void gs_mme_coeff_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
 
     *retval = 0;
     return;
+memory_failure:
+    st_work_reset(mark);
+    gs_info(gv, -2, "Memory allocation error");
+    *retval = -2;
 }
 
 void gs_mme_coeff_01_GV(char **out_filename, int *auxfiles, int *retval,
                         char **set_name)
 {
-    gs_mme_coeff_01(gs_fdta(*set_name), out_filename, auxfiles, retval);
+    gs_mme_coeff_01(gs_fdta_checked(*set_name), out_filename, auxfiles, retval);
 }
 
 void gs_mme_restcoeff_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
                          int *retval)
 {
 
-    gs_UNSIGNED i, j, idx_A;
+    size_t i, j, idx_A;
     FILE *outfp;
 
     int Srv;
@@ -19416,16 +20416,21 @@ void gs_mme_restcoeff_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
     else
     {
 
-        gv->dimA = 1 + gv->NoMar;
-        gv->A = realloc(gv->A, gv->dimA * gv->dimA * sizeof(double));
-        if (NULL == gv->A)
+        if (gv->NoMar >= SIZE_MAX || gv->NoMar == (gs_UNSIGNED)-1)
             ERR_M;
+        size_t dimension = (size_t)gv->NoMar + 1;
+        void *replacement;
+        if (!gs_native_resize(gv->A, dimension, dimension, sizeof(*gv->A),
+                              &replacement))
+            ERR_M;
+        gv->A = replacement;
+        gv->dimA = (gs_UNSIGNED)dimension;
 
         memcpy(gv->A, gv->As,
                (size_t)gv->dimA * (size_t)gv->dimA * sizeof(double));
 
         for (i = 1; i < gv->dimA; i++)
-            gv->A[i * gv->dimA + i] += gv->ladi[i - 1];
+            gv->A[(size_t)i * gv->dimA + i] += gv->ladi[i - 1];
     }
 
     if (1 == *auxfiles)
@@ -19437,7 +20442,7 @@ void gs_mme_restcoeff_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
         {
             for (j = 0; j < gv->dimA; j++)
             {
-                idx_A = i * gv->dimA + j;
+                idx_A = (size_t)i * gv->dimA + j;
                 fprintf(outfp, "%f ", gv->A[idx_A]);
             }
             fprintf(outfp, "\n");
@@ -19458,8 +20463,10 @@ void gs_mme_restcoeff_01_GV(char **out_filename, int *auxfiles, int *retval)
 void gs_mme_rhs_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
                    int *retval)
 {
-    gs_UNSIGNED i, j, dim_b;
+    size_t i, j, dim_b;
     FILE *outfp;
+    double *one_vec = NULL, *tmp = NULL, *tmp2 = NULL;
+    void *replacement;
 
     if (NULL == gv->y)
     {
@@ -19477,33 +20484,34 @@ void gs_mme_rhs_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
         return;
     }
 
-    dim_b = 1 + gv->NoMar;
-    gv->b = realloc(gv->b, dim_b * sizeof(double));
-    if (NULL == gv->b)
-        ERR_M;
+    if (gv->NoMar >= SIZE_MAX || gv->NoMar == (gs_UNSIGNED)-1)
+        goto memory_failure;
+    dim_b = (size_t)gv->NoMar + 1;
+    if (!gs_native_resize(gv->b, dim_b, 1, sizeof(*gv->b), &replacement))
+        goto memory_failure;
+    gv->b = replacement;
     for (i = 0; i < dim_b; i++)
         gv->b[i] = 0;
 
-    double *one_vec;
-    one_vec = malloc(gv->NoInd * sizeof(double));
-    if (NULL == one_vec)
-        ERR_M;
+    if (!gs_native_resize(NULL, (size_t)gv->NoInd, 1, sizeof(*one_vec),
+                          &replacement))
+        goto memory_failure;
+    one_vec = replacement;
     for (i = 0; i < gv->NoInd; i++)
         one_vec[i] = 1;
 
-    double *tmp;
-    tmp = malloc(1 * sizeof(double));
-    if (NULL == tmp)
-        ERR_M;
+    if (!gs_native_resize(NULL, 1, 1, sizeof(*tmp), &replacement))
+        goto memory_failure;
+    tmp = replacement;
 
     st_dgemm("T", "N", gv->NoInd, 1, gv->NoInd, 1, one_vec, gv->y, tmp);
 
     gv->b[0] = tmp[0];
 
-    double *tmp2;
-    tmp2 = malloc(gv->NoMar * sizeof(double));
-    if (NULL == tmp2)
-        ERR_M;
+    if (!gs_native_resize(NULL, (size_t)gv->NoMar, 1, sizeof(*tmp2),
+                          &replacement))
+        goto memory_failure;
+    tmp2 = replacement;
 
     st_dgemm("T", "N", gv->NoInd, gv->NoMar, gv->NoInd, 1, gv->Z, gv->y, tmp2);
 
@@ -19514,9 +20522,9 @@ void gs_mme_rhs_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
 
     if (1)
     {
-        gv->bs = realloc(gv->bs, dim_b * sizeof(double));
-        if (NULL == gv->bs)
-            ERR_M;
+        if (!gs_native_resize(gv->bs, dim_b, 1, sizeof(*gv->bs), &replacement))
+            goto memory_failure;
+        gv->bs = replacement;
         for (j = 0; j < dim_b; j++)
             gv->bs[j] = gv->b[j];
     }
@@ -19524,6 +20532,7 @@ void gs_mme_rhs_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
     free(one_vec);
     free(tmp);
     free(tmp2);
+    one_vec = tmp = tmp2 = NULL;
 
     if (1 == *auxfiles)
     {
@@ -19539,12 +20548,18 @@ void gs_mme_rhs_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
 
     *retval = 0;
     return;
+memory_failure:
+    free(one_vec);
+    free(tmp);
+    free(tmp2);
+    gs_info(gv, -2, "Memory allocation error");
+    *retval = -2;
 }
 
 void gs_mme_rhs_01_GV(char **out_filename, int *auxfiles, int *retval,
                       char **set_name)
 {
-    gs_mme_rhs_01(gs_fdta(*set_name), out_filename, auxfiles, retval);
+    gs_mme_rhs_01(gs_fdta_checked(*set_name), out_filename, auxfiles, retval);
 }
 
 void gs_mme_restrhs_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
@@ -19556,6 +20571,8 @@ void gs_mme_restrhs_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
     int Srv;
     int *Sretval = &Srv;
 
+    if (gv->NoMar == (gs_UNSIGNED)-1 || gv->NoMar >= SIZE_MAX)
+        ERR_M;
     dim_b = 1 + gv->NoMar;
 
     if (NULL == gv->bs)
@@ -19569,11 +20586,16 @@ void gs_mme_restrhs_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
     }
     else
     {
-        gv->b = realloc(gv->b, dim_b * sizeof(double));
+        {
+            void *resized;
+            if (!gs_native_resize(gv->b, dim_b, 1, sizeof(double), &resized))
+                ERR_M;
+            gv->b = resized;
+        }
         if (NULL == gv->b)
             ERR_M;
 
-        memcpy(gv->b, gv->bs, (size_t)dim_b);
+        memcpy(gv->b, gv->bs, (size_t)dim_b * sizeof(double));
     }
 
     if (1 == *auxfiles)
@@ -19620,12 +20642,25 @@ void gs_mme_solve_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
         return;
     }
 
-    gv->dimu = 1 + gv->NoMar;
-    gv->u = realloc(gv->u, gv->dimu * sizeof(double));
+    if (gv->NoMar == (gs_UNSIGNED)-1 || gv->NoMar >= SIZE_MAX)
+        ERR_M;
+    gs_UNSIGNED dimension = 1 + gv->NoMar;
+    {
+        void *resized;
+        if (!gs_native_resize(gv->u, dimension, 1, sizeof(double), &resized))
+            ERR_M;
+        gv->u = resized;
+    }
+    gv->dimu = dimension;
     if (NULL == gv->u)
         ERR_M;
 
-    int boundary = gs_rr_boundary_01(gv, NULL, retval);
+    int zero_penalty = gv->ladi && gv->NoMar;
+    for (gs_UNSIGNED m = 0; zero_penalty && m < gv->NoMar; m++)
+        if (gv->ladi[m] != 0)
+            zero_penalty = 0;
+    int boundary = zero_penalty && gv->NoInd > dimension
+                       ? 0 : gs_rr_boundary_01(gv, NULL, retval);
     if (boundary < 0)
         return;
     if (!boundary)
@@ -19661,7 +20696,7 @@ void gs_mme_solve_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
 void gs_mme_solve_01_GV(char **out_filename, int *auxfiles, int *retval,
                         char **set_name)
 {
-    gs_mme_solve_01(gs_fdta(*set_name), out_filename, auxfiles, retval);
+    gs_mme_solve_01(gs_fdta_checked(*set_name), out_filename, auxfiles, retval);
 }
 
 void gs_esteff_rrwr_01(gs_varset_type *gv, double *hsq, char **out_filename,
@@ -19712,7 +20747,7 @@ void gs_esteff_rrwr_01(gs_varset_type *gv, double *hsq, char **out_filename,
 void gs_esteff_rrwr_01_GV(double *hsq, char **out_filename, int *auxfiles,
                           int *retval, char **set_name)
 {
-    gs_esteff_rrwr_01(gs_fdta(*set_name), hsq, out_filename, auxfiles, retval);
+    gs_esteff_rrwr_01(gs_fdta_checked(*set_name), hsq, out_filename, auxfiles, retval);
 }
 
 void gs_esteff_rrwa_01(gs_varset_type *gv, double *hsq, double *alpha,
@@ -19763,7 +20798,7 @@ void gs_esteff_rrwa_01(gs_varset_type *gv, double *hsq, double *alpha,
 void gs_esteff_rrwa_01_GV(double *hsq, double *alpha, char **out_filename,
                           int *auxfiles, int *retval, char **set_name)
 {
-    gs_esteff_rrwa_01(gs_fdta(*set_name), hsq, alpha, out_filename, auxfiles,
+    gs_esteff_rrwa_01(gs_fdta_checked(*set_name), hsq, alpha, out_filename, auxfiles,
                       retval);
 }
 
@@ -19815,7 +20850,7 @@ void gs_esteff_rrwe_01(gs_varset_type *gv, double *lambda, char **out_filename,
 void gs_esteff_rrwe_01_GV(double *lambda, char **out_filename, int *auxfiles,
                           int *retval, char **set_name)
 {
-    gs_esteff_rrwe_01(gs_fdta(*set_name), lambda, out_filename, auxfiles,
+    gs_esteff_rrwe_01(gs_fdta_checked(*set_name), lambda, out_filename, auxfiles,
                       retval);
 }
 
@@ -19867,7 +20902,7 @@ void gs_esteff_rrwe_02(gs_varset_type *gv, double *hsq, char **out_filename,
 void gs_esteff_rrwe_02_GV(double *hsq, char **out_filename, int *auxfiles,
                           int *retval, char **set_name)
 {
-    gs_esteff_rrwe_02(gs_fdta(*set_name), hsq, out_filename, auxfiles, retval);
+    gs_esteff_rrwe_02(gs_fdta_checked(*set_name), hsq, out_filename, auxfiles, retval);
 }
 
 void gs_lambda_emstep_01(gs_varset_type *gv, int *constvar, char **out_filename,
@@ -19899,42 +20934,83 @@ void gs_lambda_emstep_01(gs_varset_type *gv, int *constvar, char **out_filename,
         return;
     }
 
-    gv->dimu = 1 + gv->NoMar;
-    gv->u = realloc(gv->u, gv->dimu * sizeof(double));
+    if (gv->NoMar == (gs_UNSIGNED)-1 || gv->NoMar >= SIZE_MAX)
+        ERR_M;
+    gs_UNSIGNED dimension = 1 + gv->NoMar;
+    {
+        void *resized;
+        if (!gs_native_resize(gv->u, dimension, 1, sizeof(double), &resized))
+            ERR_M;
+        gv->u = resized;
+    }
+    gv->dimu = dimension;
     if (NULL == gv->u)
         ERR_M;
 
     for (i = 0; i < gv->dimu; i++)
         gv->u[i] = gv->b[i];
 
-    gv->t0 = realloc(gv->t0, gv->dimA * sizeof(double));
+    {
+        void *resized;
+        if (!gs_native_resize(gv->t0, gv->dimA, 1, sizeof(double), &resized))
+            ERR_M;
+        gv->t0 = resized;
+    }
 
     {
         double d;
 
-        gv->u0 = realloc(gv->u0, gv->dimA * sizeof(gs_UNSIGNED));
+        {
+            void *resized;
+            if (!gs_native_resize(gv->u0, gv->dimA, 1, sizeof(gs_UNSIGNED), &resized))
+                ERR_M;
+            gv->u0 = resized;
+        }
 
         st_dgetrf(gv->A, gv->dimA, gv->u0, &d);
 
         st_dgetrs(gv->A, gv->dimA, gv->u0, gv->u);
 
-        gv->t4 = realloc(gv->t4, gv->dimA * gv->dimA * sizeof(double));
+        {
+            void *resized;
+            if (!gs_native_resize(gv->t4, gv->dimA, gv->dimA, sizeof(double), &resized))
+                ERR_M;
+            gv->t4 = resized;
+        }
 
         st_dgetri(gv->A, gv->dimA, gv->u0, gv->t4);
 
         for (j = 0; j < gv->dimA; j++)
-            gv->t0[j] = gv->t4[gv->dimA * j + j];
+            gv->t0[j] = gv->t4[(size_t)gv->dimA * j + j];
     }
 
-    gv->sigma = realloc(gv->sigma, gv->dimA * sizeof(double));
+    {
+        void *resized;
+        if (!gs_native_resize(gv->sigma, gv->dimA, 1, sizeof(double), &resized))
+            ERR_M;
+        gv->sigma = resized;
+    }
     if (NULL == gv->sigma)
         ERR_M;
 
-    gv->t1 = realloc(gv->t1, sizeof(double));
-    gv->t2 = realloc(gv->t2, ((gv->NoInd > gv->NoMar) ? gv->NoInd : gv->NoMar) *
-                                 sizeof(double));
-    gv->t3 = realloc(gv->t3, ((gv->NoInd > gv->NoMar) ? gv->NoInd : gv->NoMar) *
-                                 sizeof(double));
+    {
+        void *resized;
+        if (!gs_native_resize(gv->t1, 1, 1, sizeof(double), &resized))
+            ERR_M;
+        gv->t1 = resized;
+    }
+    {
+        void *resized;
+        if (!gs_native_resize(gv->t2, ((gv->NoInd > gv->NoMar) ? gv->NoInd : gv->NoMar), 1, sizeof(double), &resized))
+            ERR_M;
+        gv->t2 = resized;
+    }
+    {
+        void *resized;
+        if (!gs_native_resize(gv->t3, ((gv->NoInd > gv->NoMar) ? gv->NoInd : gv->NoMar), 1, sizeof(double), &resized))
+            ERR_M;
+        gv->t3 = resized;
+    }
 
     for (i = 0; i < gv->NoInd; i++)
         gv->t2[i] = 1;
@@ -20002,7 +21078,7 @@ void gs_lambda_emstep_01_GV(int *constvar, char **out_filename, int *auxfiles,
                             int *retval, char **set_name)
 
 {
-    gs_lambda_emstep_01(gs_fdta(*set_name), constvar, out_filename, auxfiles,
+    gs_lambda_emstep_01(gs_fdta_checked(*set_name), constvar, out_filename, auxfiles,
                         retval);
 }
 
@@ -20010,6 +21086,7 @@ void gs_lambda_rml_01(gs_varset_type *gv, int *maxiter, double *precision,
                       int *constvar, int *init_lambda, double *hsq,
                       char **out_filename, int *auxfiles, int *retval)
 {
+    void *mark = st_work_mark();
     gs_UNSIGNED m;
     int i;
     double qu, maxqu = 0;
@@ -20020,17 +21097,25 @@ void gs_lambda_rml_01(gs_varset_type *gv, int *maxiter, double *precision,
     {
         gs_info(gv, -2, "No Z matrix available");
         *retval = -2;
+        st_work_reset(mark);
         return;
     }
 
-    double *vc_save = malloc((1 + gv->NoMar) * sizeof(double));
+    if (gv->NoMar == gs_UNSIGNED_MAX || gv->NoMar >= SIZE_MAX / sizeof(double))
+        ERR_M;
+    double *vc_save = st_work_alloc((size_t)gv->NoMar + 1, sizeof(double));
     if (NULL == vc_save)
         ERR_M;
 
     for (m = 0; m < 1 + gv->NoMar; m++)
         vc_save[m] = 0;
 
-    gv->ladi = realloc(gv->ladi, gv->NoMar * sizeof(double));
+    {
+        void *resized;
+        if (!gs_native_resize(gv->ladi, gv->NoMar, 1, sizeof(double), &resized))
+            ERR_M;
+        gv->ladi = resized;
+    }
     if (NULL == gv->ladi)
         ERR_M;
 
@@ -20046,6 +21131,7 @@ void gs_lambda_rml_01(gs_varset_type *gv, int *maxiter, double *precision,
     if (-2 == *Sretval)
     {
         *retval = -2;
+        st_work_reset(mark);
         return;
     }
 
@@ -20053,11 +21139,13 @@ void gs_lambda_rml_01(gs_varset_type *gv, int *maxiter, double *precision,
     if (-2 == *Sretval)
     {
         *retval = -2;
+        st_work_reset(mark);
         return;
     }
 
     for (i = 0; i < *maxiter; i++)
     {
+        R_CheckUserInterrupt();
         if (i > 0)
             for (m = 0; m < 1 + gv->NoMar; m++)
                 vc_save[m] = gv->sigma[m];
@@ -20066,6 +21154,7 @@ void gs_lambda_rml_01(gs_varset_type *gv, int *maxiter, double *precision,
         if (-2 == *Sretval)
         {
             *retval = -2;
+            st_work_reset(mark);
             return;
         }
 
@@ -20080,20 +21169,20 @@ void gs_lambda_rml_01(gs_varset_type *gv, int *maxiter, double *precision,
             break;
     }
 
-    snprintf(gv->msg, sizeof(gv->msg),
+    st_text_log(gv->msg, sizeof(gv->msg),
              "Number of iterations: %i, precision: %f", i, maxqu);
 
     gs_info(gv, 1, gv->msg);
     if (1 == *constvar)
     {
-        snprintf(gv->msg, sizeof(gv->msg),
+        st_text_log(gv->msg, sizeof(gv->msg),
                  "Variance components: var(m) = %f, var(e) = %5f", gv->sigma[1],
                  gv->sigma[0]);
 
         gs_info(gv, 1, gv->msg);
     }
 
-    free(vc_save);
+    st_work_reset(mark);
 
     if (1 == *auxfiles)
     {
@@ -20157,7 +21246,7 @@ void gs_lambda_rmlv_01_GV(int *maxiter, double *precision, double *hsq,
                           char **out_filename, int *auxfiles, int *retval,
                           char **set_name)
 {
-    gs_lambda_rmlv_01(gs_fdta(*set_name), maxiter, precision, hsq, out_filename,
+    gs_lambda_rmlv_01(gs_fdta_checked(*set_name), maxiter, precision, hsq, out_filename,
                       auxfiles, retval);
 }
 
@@ -20165,7 +21254,7 @@ void gs_lambda_rmlc_01_GV(int *maxiter, double *precision, double *hsq,
                           char **out_filename, int *auxfiles, int *retval,
                           char **set_name)
 {
-    gs_lambda_rmlc_01(gs_fdta(*set_name), maxiter, precision, hsq, out_filename,
+    gs_lambda_rmlc_01(gs_fdta_checked(*set_name), maxiter, precision, hsq, out_filename,
                       auxfiles, retval);
 }
 
@@ -20221,7 +21310,7 @@ void gs_lambda_rmlr_01_GV(int *maxiter, double *precision, double *hsq,
                           char **out_filename, int *auxfiles, int *retval,
                           char **set_name)
 {
-    gs_lambda_rmlr_01(gs_fdta(*set_name), maxiter, precision, hsq, out_filename,
+    gs_lambda_rmlr_01(gs_fdta_checked(*set_name), maxiter, precision, hsq, out_filename,
                       auxfiles, retval);
 }
 
@@ -20277,7 +21366,7 @@ void gs_lambda_rmla_01_GV(double *alpha, int *maxiter, double *precision,
                           double *hsq, char **out_filename, int *auxfiles,
                           int *retval, char **set_name)
 {
-    gs_lambda_rmla_01(gs_fdta(*set_name), alpha, maxiter, precision, hsq,
+    gs_lambda_rmla_01(gs_fdta_checked(*set_name), alpha, maxiter, precision, hsq,
                       out_filename, auxfiles, retval);
 }
 
@@ -20363,7 +21452,7 @@ static int gs_lsq_rank_ready(gs_varset_type *x)
     double values[3] = {x->AA, x->aa, x->aA};
     for (int j = 0; j < 3; j++)
     {
-        snprintf(formatted, sizeof(formatted), "%.6f", values[j]);
+        st_text_write(formatted, sizeof(formatted), "%.6f", values[j]);
         values[j] = strtod(formatted, NULL);
     }
     for (int j = 0; j < p; j++)
@@ -20382,7 +21471,7 @@ static int gs_lsq_rank_ready(gs_varset_type *x)
     st_work_reset(mark);
     if (rank < p - 1)
     {
-        snprintf(x->msg, sizeof(x->msg),
+        st_text_log(x->msg, sizeof(x->msg),
                  "Design matrix is not of full rank (%i < %i)", rank, p - 1);
         gs_info(x, -2, x->msg);
         return 0;
@@ -20393,7 +21482,7 @@ static int gs_lsq_rank_ready(gs_varset_type *x)
 void gs_esteff_lsq_01_GV(char **out_filename, int *auxfiles, int *retval,
                          char **set_name)
 {
-    gs_varset_type *x = gs_fdta(*set_name);
+    gs_varset_type *x = gs_fdta_checked(*set_name);
     if (!gs_lsq_rank_ready(x))
     {
         *retval = -2;
@@ -20406,31 +21495,49 @@ void gs_lm_ftest_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
                     int *retval)
 
 {
+    void *mark = st_work_mark();
     int Srv;
     int *Sretval = &Srv;
     gs_UNSIGNED i, j;
     FILE *outfp;
+    double *Q_val = NULL, *F_val = NULL, *k = NULL, *ixpx = NULL,
+           *kixtx = NULL, *replacement;
+    if (!gv->y || !gv->Z || !gv->u || !gv->NoMar || gv->NoMar >= INT_MAX ||
+        gv->NoInd > INT_MAX || gv->NoInd <= gv->NoMar + 1 ||
+        gv->dimu != gv->NoMar + 1 || gv->dimA != gv->dimu)
+    {
+        gs_info(gv, -2, "F tests require a fitted design with residual degrees of freedom");
+        *retval = -2;
+        return;
+    }
+    if (gv->dimu > SIZE_MAX / sizeof(double) ||
+        (gv->dimu && gv->dimu > SIZE_MAX / gv->dimu / sizeof(double)) ||
+        gv->dimA > SIZE_MAX / sizeof(double))
+        goto memory_failure;
 
-    double *Q_val = malloc(gv->dimu * sizeof(double));
-    double *F_val = malloc(gv->dimu * sizeof(double));
-    gv->p = realloc(gv->p, gv->dimu * sizeof(double));
-    if (NULL == Q_val || NULL == F_val || NULL == gv->p)
-        ERR_M;
+    Q_val = st_work_alloc(gv->dimu, sizeof(double));
+    F_val = st_work_alloc(gv->dimu, sizeof(double));
+    replacement = realloc(gv->p, gv->dimu * sizeof(double));
+    if (!replacement)
+        goto memory_failure;
+    gv->p = replacement;
+    if (!Q_val || !F_val)
+        goto memory_failure;
 
-    double *k = malloc(gv->dimu * sizeof(double));
+    k = st_work_alloc(gv->dimu, sizeof(double));
     if (NULL == k)
-        ERR_M;
+        goto memory_failure;
 
     gs_mme_restcoeff_01(gv, nixp, neinp, Sretval);
     if (-2 == *Sretval)
     {
         *retval = -2;
-        return;
+        goto cleanup;
     }
 
-    double *ixpx = malloc(gv->dimu * gv->dimu * sizeof(double));
+    ixpx = st_work_alloc((size_t)gv->dimu * gv->dimu, sizeof(double));
     if (NULL == ixpx)
-        ERR_M;
+        goto memory_failure;
 
     st_dgetri_inv(gv->A, ixpx, gv->dimA);
 
@@ -20441,19 +21548,28 @@ void gs_lm_ftest_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
     if (-2 == *Sretval)
     {
         *retval = -2;
-        return;
+        goto cleanup;
     }
 
     gs_UNSIGNED dfe;
-    double kb, kxxk, yy, bxy, sse;
-    double *kixtx = malloc(gv->dimA * sizeof(double));
+    double kb, kxxk, sse;
+    kixtx = st_work_alloc(gv->dimA, sizeof(double));
+    if (!kixtx)
+        goto memory_failure;
 
-    st_dgemm("T", "N", gv->NoInd, 1, gv->NoInd, 1, gv->y, gv->y, &yy);
-    st_dgemm("T", "N", gv->dimu, 1, gv->dimu, 1, gv->u, gv->b, &bxy);
-    sse = yy - bxy;
+    long double residual_sum = 0;
+    for (size_t row = 0; row < gv->NoInd; row++)
+    {
+        long double residual = (long double)gv->y[row] - gv->u[0];
+        for (size_t column = 0; column < gv->NoMar; column++)
+            residual -= (long double)gv->Z[row * gv->NoMar + column] *
+                        gv->u[column + 1];
+        residual_sum += residual * residual;
+    }
+    sse = (double)residual_sum;
     dfe = gv->NoInd - (gv->NoMar + 1);
 
-    snprintf(gv->msg, sizeof(gv->msg), "SSE = %9f, DFE = %lu", sse, dfe);
+    st_text_log(gv->msg, sizeof(gv->msg), "SSE = %9f, DFE = %lu", sse, dfe);
     gs_info(gv, 1, gv->msg);
 
     for (i = 0; i < gv->dimu; i++)
@@ -20476,9 +21592,13 @@ void gs_lm_ftest_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
         char sig[5];
 
         if ((outfp = fopen(*out_filename, "w")) == NULL)
-            ERR_F;
+        {
+            gs_info(gv, -2, "File open error");
+            *retval = -2;
+            goto cleanup;
+        }
 
-        fprintf(outfp, "effect ssh f pvalue sig\n");
+        fprintf(outfp, "effect ssh F p sig\n");
         for (i = 0; i < gv->dimu; i++)
         {
             if (gv->p[i] < 0.001)
@@ -20499,14 +21619,13 @@ void gs_lm_ftest_01(gs_varset_type *gv, char **out_filename, int *auxfiles,
         fclose(outfp);
     }
 
-    free(Q_val);
-    free(F_val);
-    free(k);
-    free(ixpx);
-    free(kixtx);
-
     *retval = 0;
-    return;
+    goto cleanup;
+memory_failure:
+    gs_info(gv, -2, "Memory allocation error");
+    *retval = -2;
+cleanup:
+    st_work_reset(mark);
 }
 
 void gs_esteff_rmlc_01(gs_varset_type *gv, int *maxiter, double *precision,
@@ -20559,7 +21678,7 @@ void gs_esteff_rmlc_01_GV(int *maxiter, double *precision, double *hsq,
                           char **out_filename, int *auxfiles, int *retval,
                           char **set_name)
 {
-    gs_esteff_rmlc_01(gs_fdta(*set_name), maxiter, precision, hsq, out_filename,
+    gs_esteff_rmlc_01(gs_fdta_checked(*set_name), maxiter, precision, hsq, out_filename,
                       auxfiles, retval);
 }
 
@@ -20613,7 +21732,7 @@ void gs_esteff_rmlv_01_GV(int *maxiter, double *precision, double *hsq,
                           char **out_filename, int *auxfiles, int *retval,
                           char **set_name)
 {
-    gs_esteff_rmlv_01(gs_fdta(*set_name), maxiter, precision, hsq, out_filename,
+    gs_esteff_rmlv_01(gs_fdta_checked(*set_name), maxiter, precision, hsq, out_filename,
                       auxfiles, retval);
 }
 
@@ -20621,16 +21740,13 @@ void gs_permtest_01(gs_varset_type *gv, char *scheme, int *nperm, int *maxiter,
                     double *precision, double *hsq, char **out_filename,
                     int *auxfiles, int *retval)
 {
-    int ntr = 1;
     int parallel_error = 0;
-    int sh_info_level;
     size_t dimu;
     size_t eff_count;
 
     double *eff_st = NULL;
     double *p_seq = NULL;
     double *p_leq = NULL;
-    gs_varset_type **thread_es = NULL;
 
     *retval = -2;
 
@@ -20686,121 +21802,39 @@ void gs_permtest_01(gs_varset_type *gv, char *scheme, int *nperm, int *maxiter,
         return;
     }
 
-    eff_st = calloc(eff_count, sizeof(*eff_st));
+    void *mark = st_work_mark();
+    eff_st = st_work_alloc(eff_count, sizeof(*eff_st));
+    memset(eff_st, 0, eff_count * sizeof(*eff_st));
     if (NULL == eff_st)
     {
         gs_info(gv, -2, "Memory allocation error");
         return;
     }
 
-    ntr = 1;
-
-    if ((size_t)ntr > ((size_t)-1) / sizeof(*thread_es))
-    {
-        free(eff_st);
-        gs_info(gv, -2, "Memory allocation error");
+    gs_varset_type *es = gs_tmp_owned_from(gv);
+    gs_init(es);
+    es->info_level = -2;
+    int copy_status = 0;
+    gs_copy_marker_data_01(es, gv, &copy_status);
+    if (copy_status < 0 ||
+        (st_allele_bits(es) != 16 && st_allele_pack_try(es, 16)))
         return;
-    }
-
-    thread_es = malloc((size_t)ntr * sizeof(*thread_es));
-    if (NULL == thread_es)
+    int *p = st_work_alloc((size_t)gv->NoInd, sizeof(*p));
     {
-        free(eff_st);
-        gs_info(gv, -2, "Memory allocation error");
-        return;
-    }
-
-    gs_get_info_level(sh, &sh_info_level);
-    gs_set_info_level(sh, imz);
-
-    for (int t = 0; t < ntr; t++)
-    {
-        int Srv = 0;
-        int *Sretval = &Srv;
-        char esname[24];
-
-        snprintf(esname, sizeof(esname), "dta_t%03i", t);
-        thread_es[t] = gs_fdta(esname);
-
-        if (NULL == thread_es[t])
-        {
-            gs_set_info_level(sh, &sh_info_level);
-            free(thread_es);
-            free(eff_st);
-            gs_info(gv, -2, "Memory allocation error");
-            return;
-        }
-
-        thread_es[t]->info_level = -2;
-
-        gs_copy_marker_data_01(thread_es[t], gv, Sretval);
-
-        if (-2 == *Sretval || (st_allele_bits(thread_es[t]) != 16 &&
-                               st_allele_pack_try(thread_es[t], 16)))
-        {
-            gs_set_info_level(sh, &sh_info_level);
-            free(thread_es);
-            free(eff_st);
-            return;
-        }
-    }
-
-    gs_set_info_level(sh, &sh_info_level);
-
-#ifdef MT
-#pragma omp parallel num_threads(ntr) if (ntr > 1) reduction(| : parallel_error)
-#endif
-    {
-        gs_UNSIGNED i, j, idx1, idx2;
+        gs_UNSIGNED i, j;
+        size_t idx1, idx2;
         int Srv;
         int *Sretval = &Srv;
-        int t = omp_get_thread_num();
-        gs_varset_type *es = NULL;
-        int *p = NULL;
-        int local_error = 0;
 
-        if (t >= ntr)
-        {
-            local_error = 1;
-            parallel_error = 1;
-        }
-        else
-        {
-            es = thread_es[t];
-        }
-
-        if (gv->NoInd > (gs_UNSIGNED)(((size_t)-1) / sizeof(*p)))
-        {
-            local_error = 1;
-            parallel_error = 1;
-        }
-        else if (!local_error)
-        {
-            p = malloc((size_t)gv->NoInd * sizeof(*p));
-            if (NULL == p)
-            {
-                local_error = 1;
-                parallel_error = 1;
-            }
-        }
-
-#ifdef MT
-
-        omp_set_schedule(st_rng_is_seeded() ? omp_sched_static
-                                            : omp_sched_dynamic,
-                         st_rng_is_seeded() ? 0 : 1);
-#pragma omp for schedule(runtime)
-#endif
         for (int r = 0; r < *nperm; r++)
         {
+            R_CheckUserInterrupt();
             gs_UNSIGNED no_unsucc_rep = 0;
             int success_rep = 0;
 
-            if (local_error)
-                continue;
-
             while ((0 == success_rep) && (no_unsucc_rep < 1000))
             {
+                R_CheckUserInterrupt();
                 success_rep = 1;
 
                 for (i = 1; i < gv->dimu; i++)
@@ -20816,8 +21850,8 @@ void gs_permtest_01(gs_varset_type *gv, char *scheme, int *nperm, int *maxiter,
 
                     for (j = 0; j < gv->NoInd; j++)
                     {
-                        idx1 = (i - 1) * gv->NoInd + j;
-                        idx2 = (i - 1) * gv->NoInd + p[j];
+                        idx1 = (size_t)(i - 1) * gv->NoInd + j;
+                        idx2 = (size_t)(i - 1) * gv->NoInd + p[j];
                         es->allele_raw1[idx1] = st_allele_get(gv, idx2, 0);
                         es->allele_raw2[idx1] = st_allele_get(gv, idx2, 1);
                     }
@@ -20850,24 +21884,17 @@ void gs_permtest_01(gs_varset_type *gv, char *scheme, int *nperm, int *maxiter,
                 parallel_error = 1;
         }
 
-        free(p);
     }
-
-    for (int t = 0; t < ntr; t++)
-        if (ST_ALLELE_AUTO_PACK && st_allele_pack_try(thread_es[t], 0))
-            parallel_error = 1;
-    free(thread_es);
-    thread_es = NULL;
 
     if (parallel_error)
     {
-        free(eff_st);
-        gs_info(gv, -2, "Permutation test failed in parallel calculation");
+
+        gs_info(gv, -2, "Permutation test calculation failed");
         return;
     }
 
 #ifdef MT
-#pragma omp parallel for
+#pragma omp parallel for num_threads(st_num_threads()) if (st_num_threads() > 1)
 #endif
     for (gs_UNSIGNED i = 0; i < gv->dimu; i++)
         qsort(&(eff_st[(size_t)i * (size_t)*nperm]), (size_t)*nperm,
@@ -20875,19 +21902,17 @@ void gs_permtest_01(gs_varset_type *gv, char *scheme, int *nperm, int *maxiter,
 
     if (dimu > ((size_t)-1) / sizeof(double))
     {
-        free(eff_st);
+
         gs_info(gv, -2, "Permutation result size is too large");
         return;
     }
 
-    p_seq = malloc(dimu * sizeof(*p_seq));
-    p_leq = malloc(dimu * sizeof(*p_leq));
+    p_seq = st_work_alloc(dimu, sizeof(*p_seq));
+    p_leq = st_work_alloc(dimu, sizeof(*p_leq));
 
     if ((NULL == p_seq) || (NULL == p_leq))
     {
-        free(p_seq);
-        free(p_leq);
-        free(eff_st);
+
         gs_info(gv, -2, "Memory allocation error");
         return;
     }
@@ -20897,9 +21922,7 @@ void gs_permtest_01(gs_varset_type *gv, char *scheme, int *nperm, int *maxiter,
 
         if (NULL == tmp_p)
         {
-            free(p_seq);
-            free(p_leq);
-            free(eff_st);
+
             gs_info(gv, -2, "Memory allocation error");
             return;
         }
@@ -20908,7 +21931,7 @@ void gs_permtest_01(gs_varset_type *gv, char *scheme, int *nperm, int *maxiter,
     }
 
 #ifdef MT
-#pragma omp parallel for
+#pragma omp parallel for num_threads(st_num_threads()) if (st_num_threads() > 1)
 #endif
     for (gs_UNSIGNED i = 0; i < gv->dimu; i++)
     {
@@ -20939,14 +21962,12 @@ void gs_permtest_01(gs_varset_type *gv, char *scheme, int *nperm, int *maxiter,
         outfp = fopen(*out_filename, "w");
         if (NULL == outfp)
         {
-            free(p_seq);
-            free(p_leq);
-            free(eff_st);
+
             gs_info(gv, -2, "File open error");
             return;
         }
 
-        fprintf(outfp, "effect  p.seq p.leq pvalue sig\n");
+        fprintf(outfp, "effect  p.seq p.leq p sig\n");
         for (gs_UNSIGNED i = 0; i < gv->dimu; i++)
         {
             if (gv->p[i] < 0.001)
@@ -20967,10 +21988,7 @@ void gs_permtest_01(gs_varset_type *gv, char *scheme, int *nperm, int *maxiter,
         fclose(outfp);
     }
 
-    free(p_seq);
-    free(p_leq);
-    free(eff_st);
-
+    st_work_reset(mark);
     *retval = 0;
 }
 
@@ -21021,7 +22039,7 @@ void gs_testeff_lsq_01(gs_varset_type *gv, int *nperm, char **out_filename,
 void gs_testeff_lsq_01_GV(int *nperm, char **out_filename, int *auxfiles,
                           int *retval, char **set_name)
 {
-    gs_varset_type *x = gs_fdta(*set_name);
+    gs_varset_type *x = gs_fdta_checked(*set_name);
     if (!gs_lsq_rank_ready(x))
     {
         *retval = -2;
@@ -21061,7 +22079,7 @@ void gs_testeff_rmlc_01_GV(int *nperm, int *maxiter, double *precision,
                            double *hsq, char **out_filename, int *auxfiles,
                            int *retval, char **set_name)
 {
-    gs_testeff_rmlc_01(gs_fdta(*set_name), nperm, maxiter, precision, hsq,
+    gs_testeff_rmlc_01(gs_fdta_checked(*set_name), nperm, maxiter, precision, hsq,
                        out_filename, auxfiles, retval);
 }
 
@@ -21096,7 +22114,7 @@ void gs_testeff_rmlv_01_GV(int *nperm, int *maxiter, double *precision,
                            double *hsq, char **out_filename, int *auxfiles,
                            int *retval, char **set_name)
 {
-    gs_testeff_rmlv_01(gs_fdta(*set_name), nperm, maxiter, precision, hsq,
+    gs_testeff_rmlv_01(gs_fdta_checked(*set_name), nperm, maxiter, precision, hsq,
                        out_filename, auxfiles, retval);
 }
 
@@ -21150,7 +22168,7 @@ void gs_esteff_rmlr_01_GV(int *maxiter, double *precision, double *hsq,
                           char **out_filename, int *auxfiles, int *retval,
                           char **set_name)
 {
-    gs_esteff_rmlr_01(gs_fdta(*set_name), maxiter, precision, hsq, out_filename,
+    gs_esteff_rmlr_01(gs_fdta_checked(*set_name), maxiter, precision, hsq, out_filename,
                       auxfiles, retval);
 }
 
@@ -21204,7 +22222,7 @@ void gs_esteff_rmla_01_GV(double *alpha, int *maxiter, double *precision,
                           double *hsq, char **out_filename, int *auxfiles,
                           int *retval, char **set_name)
 {
-    gs_esteff_rmla_01(gs_fdta(*set_name), alpha, maxiter, precision, hsq,
+    gs_esteff_rmla_01(gs_fdta_checked(*set_name), alpha, maxiter, precision, hsq,
                       out_filename, auxfiles, retval);
 }
 
@@ -21238,7 +22256,12 @@ void gs_lambda_emstep_tc_01(gs_varset_type *gv, char **out_filename,
         return;
     }
 
-    gv->a = realloc(gv->a, gv->dimA * sizeof(double));
+    {
+        void *resized;
+        if (!gs_native_resize(gv->a, gv->dimA, 1, sizeof(double), &resized))
+            ERR_M;
+        gv->a = resized;
+    }
     if (NULL == gv->a)
         ERR_M;
 
@@ -21248,28 +22271,56 @@ void gs_lambda_emstep_tc_01(gs_varset_type *gv, char **out_filename,
     {
         double d;
 
-        gv->u0 = realloc(gv->u0, gv->dimA * sizeof(gs_UNSIGNED));
+        {
+            void *resized;
+            if (!gs_native_resize(gv->u0, gv->dimA, 1, sizeof(gs_UNSIGNED), &resized))
+                ERR_M;
+            gv->u0 = resized;
+        }
 
         st_dgetrf(gv->A, gv->dimA, gv->u0, &d);
 
         st_dgetrs(gv->A, gv->dimA, gv->u0, gv->a);
 
-        gv->t4 = realloc(gv->t4, gv->dimA * gv->dimA * sizeof(double));
+        {
+            void *resized;
+            if (!gs_native_resize(gv->t4, gv->dimA, gv->dimA, sizeof(double), &resized))
+                ERR_M;
+            gv->t4 = resized;
+        }
 
         st_dgetri(gv->A, gv->dimA, gv->u0, gv->t4);
     }
 
-    gv->sigma = realloc(gv->sigma, gv->NoMar * sizeof(double));
+    {
+        void *resized;
+        if (!gs_native_resize(gv->sigma, gv->NoMar < 2 ? 2 : gv->NoMar, 1, sizeof(double), &resized))
+            ERR_M;
+        gv->sigma = resized;
+    }
     if (NULL == gv->sigma)
         ERR_M;
 
-    gv->t1 = realloc(gv->t1, sizeof(double));
+    {
+        void *resized;
+        if (!gs_native_resize(gv->t1, 1, 1, sizeof(double), &resized))
+            ERR_M;
+        gv->t1 = resized;
+    }
 
-    gv->t2 = realloc(gv->t2, ((gv->NoInd > gv->NoMar) ? gv->NoInd : gv->NoMar) *
-                                 sizeof(double));
+    {
+        void *resized;
+        if (!gs_native_resize(gv->t2, ((gv->NoInd > gv->NoMar) ? gv->NoInd : gv->NoMar), 1, sizeof(double), &resized))
+            ERR_M;
+        gv->t2 = resized;
+    }
 
-    gv->t3 = realloc(gv->t3, ((gv->NoInd > gv->NoMar) ? gv->NoInd : gv->NoMar) *
-                                 sizeof(double));
+    {
+        void *resized;
+        if (!gs_native_resize(gv->t3, ((gv->NoInd > gv->NoMar) ? gv->NoInd : gv->NoMar), 1, sizeof(double), &resized))
+            ERR_M;
+        gv->t3 = resized;
+    }
 
     for (i = 0; i < gv->NoInd; i++)
         gv->t2[i] = 1;
@@ -21290,18 +22341,28 @@ void gs_lambda_emstep_tc_01(gs_varset_type *gv, char **out_filename,
 
     st_dgemm("N", "T", 1, gv->NoInd, 1, gv->NoInd, gv->t3, 1 + (gv->a), gv->t2);
 
-    gv->t5 = realloc(gv->t5, gv->NoInd * gv->NoInd * sizeof(double));
+    {
+        void *resized;
+        if (!gs_native_resize(gv->t5, gv->NoInd, gv->NoInd, sizeof(double), &resized))
+            ERR_M;
+        gv->t5 = resized;
+    }
     for (j = 1; j < gv->dimA; j++)
-        memcpy(&gv->t5[(j - 1) * gv->NoInd], &gv->t4[j * gv->dimA + 1],
+        memcpy(&gv->t5[(size_t)(j - 1) * gv->NoInd], &gv->t4[(size_t)j * gv->dimA + 1],
                (gv->NoInd) * sizeof(double));
 
-    gv->t6 = realloc(gv->t6, gv->NoInd * gv->NoInd * sizeof(double));
+    {
+        void *resized;
+        if (!gs_native_resize(gv->t6, gv->NoInd, gv->NoInd, sizeof(double), &resized))
+            ERR_M;
+        gv->t6 = resized;
+    }
     st_dgemm("N", "N", gv->NoInd, gv->NoInd, gv->NoInd, gv->NoInd, gv->GI,
              gv->t5, gv->t6);
 
     double tr = 0;
     for (i = 0; i < gv->NoInd; i++)
-        tr += gv->t6[gv->NoInd * i + i];
+        tr += gv->t6[(size_t)gv->NoInd * i + i];
 
     gv->sigma[1] = (gv->t2[0] + gv->sigma[0] * tr) / (double)gv->NoInd;
 
@@ -21332,7 +22393,7 @@ void gs_lambda_emstep_tc_01_GV(char **out_filename, int *auxfiles, int *retval,
                                char **set_name)
 
 {
-    gs_lambda_emstep_tc_01(gs_fdta(*set_name), out_filename, auxfiles, retval);
+    gs_lambda_emstep_tc_01(gs_fdta_checked(*set_name), out_filename, auxfiles, retval);
 }
 
 void gs_lambda_rmlct_01(gs_varset_type *gv, int *maxiter, double *precision,
@@ -21355,7 +22416,12 @@ void gs_lambda_rmlct_01(gs_varset_type *gv, int *maxiter, double *precision,
 
     double vc_save[2] = {0, 0};
 
-    gv->ladi = realloc(gv->ladi, gv->NoMar * sizeof(double));
+    {
+        void *resized;
+        if (!gs_native_resize(gv->ladi, gv->NoMar, 1, sizeof(double), &resized))
+            ERR_M;
+        gv->ladi = resized;
+    }
     if (NULL == gv->ladi)
         ERR_M;
     for (m = 0; m < gv->NoMar; m++)
@@ -21392,10 +22458,10 @@ void gs_lambda_rmlct_01(gs_varset_type *gv, int *maxiter, double *precision,
             break;
     }
 
-    snprintf(gv->msg, sizeof(gv->msg),
+    st_text_log(gv->msg, sizeof(gv->msg),
              "Number of EM iterations: %i, precision: %f", i, maxqu);
     gs_info(gv, 1, gv->msg);
-    snprintf(gv->msg, sizeof(gv->msg),
+    st_text_log(gv->msg, sizeof(gv->msg),
              "Variance components: var(m) = %f, var(e) = %5f", gv->sigma[1],
              gv->sigma[0]);
     gs_info(gv, 1, gv->msg);
@@ -21420,7 +22486,7 @@ void gs_lambda_rmlct_01_GV(int *maxiter, double *precision, double *hsq,
                            char **out_filename, int *auxfiles, int *retval,
                            char **set_name)
 {
-    gs_lambda_rmlct_01(gs_fdta(*set_name), maxiter, precision, hsq,
+    gs_lambda_rmlct_01(gs_fdta_checked(*set_name), maxiter, precision, hsq,
                        out_filename, auxfiles, retval);
 }
 
@@ -21476,7 +22542,7 @@ void gs_lambda_rmlat_01_GV(double *alpha, int *maxiter, double *precision,
                            double *hsq, char **out_filename, int *auxfiles,
                            int *retval, char **set_name)
 {
-    gs_lambda_rmlat_01(gs_fdta(*set_name), alpha, maxiter, precision, hsq,
+    gs_lambda_rmlat_01(gs_fdta_checked(*set_name), alpha, maxiter, precision, hsq,
                        out_filename, auxfiles, retval);
 }
 
@@ -21529,7 +22595,7 @@ void st_set_sim_gp_provide_data(int *n, double **chrlen, int *retval,
     *n = 0;
     *chrlen = NULL;
 
-    if (!st_sim_data_valid(gv))
+    if (!gv || !st_sim_data_valid(gv))
         return;
 
     for (lne = 0; lne < gv->NLoc; lne++)
@@ -21620,10 +22686,17 @@ void st_set_sim_mp_provide_data(gs_UNSIGNED *NLoc, gs_mappoint_type ***map,
 {
 
     gs_varset_type *gv = gs_fdta(*set_name);
+    if (!gv)
+    {
+        *NLoc = 0;
+        *map = NULL;
+        *retval = -2;
+        return;
+    }
 
     if (NULL == gv->map)
     {
-        snprintf(gv->msg, sizeof(gv->msg), "No map data available");
+        st_text_log(gv->msg, sizeof(gv->msg), "No map data available");
         gs_info(gv, -2, gv->msg);
         *retval = -2;
         return;
@@ -21673,6 +22746,8 @@ void st_set_sim_ef_provide_data(gs_UNSIGNED *NoEff, char (**EffNme)[gs_MAXNME],
     *CmpAll = NULL;
     *u = NULL;
 
+    if (!gv)
+        return;
     state = st_sim_effect_data_state(gv);
 
     if (state < 0)
@@ -21713,7 +22788,7 @@ void st_set_sim_pp_provide_data(gs_UNSIGNED *NoInd, gs_UNSIGNED *NoMar,
     *All1 = NULL;
     *All2 = NULL;
 
-    if (!st_sim_marker_data_valid(gv))
+    if (!gv || !st_sim_marker_data_valid(gv))
         return;
 
     *IndName = gv->IndName;
@@ -21753,14 +22828,19 @@ void gs_set_performance_data_01(gs_varset_type *gv, int *n, double *y,
         return;
     }
 
-    if (*n != (int)gv->NoInd)
+    if (gv->NoInd > INT_MAX || *n < 0 || *n != (int)gv->NoInd)
     {
         gs_info(gv, -2, "Incorrect numer of observations");
         *retval = -2;
         return;
     }
 
-    gv->y = realloc(gv->y, gv->NoInd * sizeof(double));
+    {
+        void *resized;
+        if (!gs_native_resize(gv->y, gv->NoInd, 1, sizeof(double), &resized))
+            ERR_M;
+        gv->y = resized;
+    }
     if (NULL == gv->y)
         ERR_M;
 
@@ -21773,7 +22853,7 @@ void gs_set_performance_data_01(gs_varset_type *gv, int *n, double *y,
 void gs_set_performance_data_01_GV(int *n, double *y, int *retval,
                                    char **set_name)
 {
-    gs_set_performance_data_01(gs_fdta(*set_name), n, y, retval);
+    gs_set_performance_data_01(gs_fdta_checked(*set_name), n, y, retval);
 }
 
 typedef enum
@@ -22558,7 +23638,7 @@ static void ste_define_blocks(ste_context *c)
     char *empty = "", *crit = (char *)criterion, *sym = (char *)symbol,
          *met = (char *)measure;
     c->tmp.info_level = c->base->info_level;
-    snprintf(c->tmp.name, sizeof(c->tmp.name), "enrichment work");
+    st_text_write(c->tmp.name, sizeof(c->tmp.name), "enrichment work");
     gs_copy_marker_data_01(&c->tmp, c->base, &rv);
     if (rv == -2)
         Rf_error("Cannot create temporary base data");
@@ -22623,7 +23703,7 @@ static SEXP ste_export_blocks(ste_context *c)
         INTEGER(VECTOR_ELT(ans, 0))[b] = p->chrom;
 
         char rounded[DBL_MAX_10_EXP + 32];
-        snprintf(rounded, sizeof(rounded), "%.6f", p->pos);
+        st_text_write(rounded, sizeof(rounded), "%.6f", p->pos);
         REAL(VECTOR_ELT(ans, 1))[b] = strtod(rounded, NULL);
         SET_STRING_ELT(VECTOR_ELT(ans, 2), b, Rf_mkChar(p->name));
         SET_STRING_ELT(VECTOR_ELT(ans, 3), b, Rf_mkChar(p->class));
@@ -22872,7 +23952,9 @@ static SEXP ste_calculate(ste_context *c, SEXP blocks)
     for (size_t b = 0; b < c->nblocks; b++)
         if (c->blocks[b].length > maxlen)
             maxlen = c->blocks[b].length;
-    size_t text_capacity = ste_product(maxlen, 4) + 1;
+    size_t text_capacity = ste_product(maxlen, 4);
+    if (text_capacity == SIZE_MAX) Rf_error("Allele text size overflow");
+    text_capacity++;
     char *text = ste_alloc(text_capacity, 1);
     size_t i = 0;
     for (ste_variant *v = c->first; v; v = v->next, i++)
@@ -22883,7 +23965,7 @@ static SEXP ste_calculate(ste_context *c, SEXP blocks)
         size_t used = 0, len = c->blocks[v->block].length;
         for (size_t j = 0; j < len; j++)
             used +=
-                (size_t)snprintf(text + used, text_capacity - used,
+                (size_t)st_text_write(text + used, text_capacity - used,
                                  j ? ";%u" : "%u", (unsigned)v->sequence[j]);
         SET_STRING_ELT(VECTOR_ELT(alleles, 1), i, Rf_mkChar(text));
         LOGICAL(VECTOR_ELT(alleles, 2))[i] = v->hidden;
@@ -23773,7 +24855,9 @@ static const char *st_legacy_adjust_method(SEXP value)
 static double st_legacy_export_precision(double value, int digits)
 {
     char text[DBL_MAX_10_EXP + 64];
-    snprintf(text, sizeof(text), "%.*f", digits, value);
+    if (digits < 0 || digits > 32) error("Invalid internal export precision");
+    int written = snprintf(text, sizeof(text), "%.*f", digits, value);
+    if (written < 0 || (size_t)written >= sizeof(text)) error("Internal precision formatting failed");
     return strtod(text, NULL);
 }
 
@@ -23911,7 +24995,7 @@ static SEXP st_legacy_mark_alleles(SEXP args)
             if (missing[i] || !(probability[i] < alpha))
                 continue;
             char label[gs_MAXNME + 32];
-            snprintf(label, sizeof(label), "%s.%i", effect->EffNme[index[i]],
+            st_text_write(label, sizeof(label), "%s.%i", effect->EffNme[index[i]],
                      effect->EffAll[index[i]]);
             size_t bytes = 0;
             for (int chars = 0; label[bytes] && chars < 7; chars++)
@@ -23957,7 +25041,7 @@ static SEXP st_legacy_mark_alleles(SEXP args)
             }
         }
     }
-    gs_varset_type *target = gs_fdta((char *)target_name);
+    gs_varset_type *target = gs_fdta_checked((char *)target_name);
     gs_varset_type *tmp = malloc(sizeof(*tmp));
     if (!tmp)
         error("Cannot allocate allele-replacement staging");
@@ -24018,7 +25102,7 @@ static SEXP st_legacy_il_summary(SEXP args)
 {
     const char *name =
         st_legacy_marker_string(getListElement(args, "source"), "data.set");
-    gs_varset_type *gv = gs_fdta((char *)name);
+    gs_varset_type *gv = gs_fdta_checked((char *)name);
     int donor = asInteger(getListElement(args, "donor"));
     int recipient = asInteger(getListElement(args, "recipient"));
     SEXP chromosome = getListElement(args, "chromosome");
@@ -24124,7 +25208,7 @@ static SEXP st_legacy_il_lines(SEXP args)
 {
     const char *name =
         st_legacy_marker_string(getListElement(args, "source"), "data.set");
-    gs_varset_type *gv = gs_fdta((char *)name);
+    gs_varset_type *gv = gs_fdta_checked((char *)name);
     int allele = asInteger(getListElement(args, "allele"));
     int exclude = asInteger(getListElement(args, "exclude"));
     SEXP chr_arg = getListElement(args, "chromosome");
@@ -24200,7 +25284,7 @@ static SEXP st_legacy_il_create(SEXP args)
         error("Library must contain at least one line");
     const char *name =
         st_legacy_marker_string(getListElement(args, "source"), "data.set");
-    gs_varset_type *destination = gs_fdta((char *)name),
+    gs_varset_type *destination = gs_fdta_checked((char *)name),
                    *tmp = malloc(sizeof(*tmp));
     if (!tmp)
         error("Cannot allocate introgression-library staging");
@@ -24219,7 +25303,7 @@ static SEXP st_legacy_il_create(SEXP args)
     for (int i = 0; i < individuals; i++)
     {
         char id[64];
-        snprintf(id, sizeof(id), "IL%d", i + 1);
+        st_text_write(id, sizeof(id), "IL%d", i + 1);
         if (st_identity_set(tmp, i, id, NULL))
             error("Cannot initialize introgression-line identity");
         if ((int)strlen(id) > tmp->MaxIL)
@@ -24229,9 +25313,9 @@ static SEXP st_legacy_il_create(SEXP args)
         for (int p = 0; p < length; p++, at++)
         {
             char class_name[64];
-            snprintf(tmp->MarName[at], sizeof(*tmp->MarName), "C%dMA%d", c + 1,
+            st_text_write(tmp->MarName[at], sizeof(*tmp->MarName), "C%dMA%d", c + 1,
                      p + 1);
-            snprintf(class_name, sizeof(class_name), "C%d", c + 1);
+            st_text_write(class_name, sizeof(class_name), "C%d", c + 1);
             if (gs_pool_add_string_size(&tmp->map_str_N, tmp->MarName[at]) ||
                 gs_pool_add_string_size(&tmp->map_str_N, class_name))
                 error("Introgression map names are too large");
@@ -24246,7 +25330,7 @@ static SEXP st_legacy_il_create(SEXP args)
         for (int p = 0; p < length; p++, at++)
         {
             char class_name[64];
-            snprintf(class_name, sizeof(class_name), "C%d", c + 1);
+            st_text_write(class_name, sizeof(class_name), "C%d", c + 1);
             gs_mappoint_type point = {0};
             point.name = tmp->MarName[at];
             point.class = class_name;
@@ -24502,20 +25586,26 @@ static SEXP st_legacy_select_phenotype(SEXP args)
                 name = CHAR(STRING_ELT(original_rows, from));
             else
             {
-                snprintf(number, sizeof(number), "%d",
+                st_text_write(number, sizeof(number), "%d",
                          source ? from + 1 : INTEGER(original_rows)[from]);
                 name = number;
             }
-            size_t size = strlen(name) + 32;
+            size_t prefix = strlen(name);
+            if (prefix > SIZE_MAX - 32) error("Phenotype row-name size overflow");
+            size_t size = prefix + 32;
             char *unique = st_work_alloc(size, 1);
-            snprintf(unique, size, "%s", name);
+            memcpy(unique, name, prefix + 1);
             for (int suffix = 0, duplicate = 1; duplicate;)
             {
                 duplicate = 0;
                 for (int j = 0; j < i; j++)
                     if (!strcmp(unique, CHAR(STRING_ELT(rownames, j))))
                     {
-                        snprintf(unique, size, "%s.%d", name, ++suffix);
+                        if (suffix == INT_MAX) error("Too many duplicate phenotype row names");
+                        char ending[32];
+                        int written = snprintf(ending, sizeof(ending), ".%d", ++suffix);
+                        if (written < 0 || (size_t)written >= sizeof(ending)) error("Phenotype suffix formatting failed");
+                        memcpy(unique + prefix, ending, (size_t)written + 1);
                         duplicate = 1;
                         break;
                     }
@@ -24542,7 +25632,7 @@ static SEXP st_legacy_pseff_text(SEXP column, int row, int labels)
     if (ISNA(value))
         return NA_STRING;
     char text[64];
-    snprintf(text, sizeof(text), "%.15g", value);
+    st_text_write(text, sizeof(text), "%.15g", value);
     return mkChar(text);
 }
 
@@ -24639,7 +25729,7 @@ void st_legacy_marker_presence(const char *dataset, int *rows, int *columns,
                                const char ***marker_names,
                                const char ***individual_names, double **values)
 {
-    gs_varset_type *source = gs_fdta((char *)dataset);
+    gs_varset_type *source = gs_fdta_checked((char *)dataset);
     if (!st_allele_present(source) || !source->NoInd || !source->NoMar)
         st_legacy_presence_error(source, "No marker data available");
     if (source->NoInd > INT_MAX || source->NoMar > INT_MAX ||
@@ -24883,7 +25973,7 @@ static SEXP st_buffer_result(const char *source, SEXP config)
     int check = st_buffer_flag(config, "check.names", 1);
     for (size_t c = 0; c < columns; c++)
     {
-        char default_name[40]; snprintf(default_name, sizeof(default_name), "V%zu", c + 1);
+        char default_name[40]; st_text_write(default_name, sizeof(default_name), "V%zu", c + 1);
         const char *label = header ? table.value[table.offset[0] + c] : default_name;
         labels[c] = st_buffer_name(label, check);
         if (check)
@@ -24899,7 +25989,7 @@ static SEXP st_buffer_result(const char *source, SEXP config)
                 {
                     size_t n = strlen(base) + 40;
                     labels[c] = st_work_alloc(n, 1);
-                    snprintf(labels[c], n, "%s.%d", base, ++suffix);
+                    st_text_write(labels[c], n, "%s.%d", base, ++suffix);
                 }
             } while (collision);
         }
@@ -25251,7 +26341,7 @@ static SEXP st_legacy_map_write(SEXP args)
             }
         }
     int status = 0;
-    gs_varset_type *source = gs_fdta(dataset);
+    gs_varset_type *source = gs_fdta_checked(dataset);
     gs_write_map_01(source, &path, &status);
     int np = 0;
     SEXP available = PROTECT(ScalarLogical(status != -2)); np++;
@@ -25349,7 +26439,7 @@ static SEXP st_legacy_buffer_call(SEXP args)
         if (at == NA_INTEGER || at < 1 || at > count || at-1 == status_at)
             error("Invalid output binding");
         at--;
-        char name[40]; snprintf(name,sizeof(name),"output-%zu",i);
+        char name[40]; st_text_write(name,sizeof(name),"output-%zu",i);
         paths[i] = st_io_memory(name);
         char **slot = st_work_alloc(1,sizeof(*slot)); *slot = (char *)paths[i]; value[at] = slot;
     }
@@ -25360,7 +26450,7 @@ static SEXP st_legacy_buffer_call(SEXP args)
         if (at == NA_INTEGER || at < 1 || at > count || at-1 == status_at)
             error("Invalid input binding");
         at--;
-        char name[40]; snprintf(name,sizeof(name),"input-%lld",(long long)i);
+        char name[40]; st_text_write(name,sizeof(name),"input-%lld",(long long)i);
         const char *path = st_io_memory(name);
         char **slot = st_work_alloc(1,sizeof(*slot)); *slot = (char *)path; value[at] = slot;
         st_io_stream *stream = st_io_open(path,"w");
@@ -25520,7 +26610,7 @@ static const char *st_allocate_id(SEXP value, int i)
     return translateCharUTF8(STRING_ELT(value, i));
 }
 
-static int st_allocate_find(const char *name, const char **ids, int n)
+static int st_allocate_find(const char *name, const char *const *ids, int n)
 {
     for (int i = 0; i < n; i++) if (!strcmp(name, ids[i])) return i;
     return -1;
@@ -25533,10 +26623,7892 @@ static double st_allocate_response(int retained, int produced, double scale)
     return out;
 }
 
+typedef struct
+{
+    int n, s, kind, quality;
+    double value, error;
+} st_allocate_normal_entry;
+
+typedef struct
+{
+    int n, s, kind, limit, lenw, quality;
+    int *iwork;
+    double *work, factor;
+    size_t cache_size;
+    st_allocate_normal_entry *cache;
+    double evaluations, failures;
+} st_allocate_normal_state;
+
+typedef struct
+{
+    int complete;
+    const char *reason, *algorithm;
+    double cells, estimated_transitions, transitions, response_upper;
+} st_allocate_normal_result;
+
+static double st_allocate_normal_ei(double x)
+{
+    double density = dnorm4(x, 0, 1, 0);
+    if (x >= 4)
+    {
+        double tail = 0;
+        for (int k = 100; k >= 1; k--) tail = k / (x + tail);
+        return density * (tail / (x + tail));
+    }
+    return density - x * pnorm5(x, 0, 1, 0, 0);
+}
+
+static void st_allocate_normal_integrand(double *x, int n, void *data)
+{
+    st_allocate_normal_state *state = data;
+    for (int i = 0; i < n; i++)
+    {
+        double u = x[i], out = 0;
+        if (u > 0 && u < 1)
+        {
+            if (!state->kind)
+            {
+                int s = state->s < state->n - state->s ? state->s : state->n - state->s;
+                double p = qbeta(u, s, state->n - s, 1, 0),
+                    z = qnorm5(p, 0, 1, 1, 0);
+                out = state->factor * dnorm4(z, 0, 1, 0);
+            }
+            else
+            {
+                double z;
+                if ((double)state->s <= ((double)state->n + 1) / 2)
+                    z = qnorm5(qbeta(u, state->s, (double)state->n - state->s + 1, 1, 0), 0, 1, 0, 0);
+                else
+                    z = qnorm5(qbeta(u, (double)state->n - state->s + 1, state->s, 0, 0), 0, 1, 1, 0);
+                out = state->factor * st_allocate_normal_ei(z);
+            }
+        }
+        x[i] = out;
+    }
+}
+
+static st_allocate_normal_state *st_allocate_normal_initialize(int nf, int extra)
+{
+    st_allocate_normal_state *state = st_work_alloc(1, sizeof(*state));
+    memset(state, 0, sizeof(*state));
+    state->limit = 512; state->lenw = state->limit * 4;
+    state->iwork = st_work_alloc(state->limit, sizeof(int));
+    state->work = st_work_alloc(state->lenw, sizeof(double));
+    double desired = fmin(4096, (double)nf + extra + 1);
+    state->cache_size = 16;
+    while (state->cache_size < 2 * desired) state->cache_size *= 2;
+    state->cache = st_work_alloc(state->cache_size, sizeof(*state->cache));
+    memset(state->cache, 0, state->cache_size * sizeof(*state->cache));
+    return state;
+}
+
+static double st_allocate_normal_estimate(st_allocate_normal_state *state, int n, int s,
+                                           int kind, int quality, double *error_estimate)
+{
+    if (!kind && n == s) { *error_estimate = 0; return 0; }
+    uint64_t key = ((uint64_t)(unsigned int)n << 32) ^ (unsigned int)s;
+    key ^= (uint64_t)(kind + 1) * UINT64_C(11400714819323198485);
+    key ^= key >> 30; key *= UINT64_C(13787848793156543929); key ^= key >> 27;
+    size_t first = (size_t)key & (state->cache_size - 1), slot = first;
+    st_allocate_normal_entry *entry = NULL;
+    for (size_t k = 0; k < state->cache_size && k < 64; k++)
+    {
+        st_allocate_normal_entry *candidate = state->cache + slot;
+        if (!candidate->n || (candidate->n == n && candidate->s == s && candidate->kind == kind))
+        { entry = candidate; break; }
+        slot = (slot + 1) & (state->cache_size - 1);
+    }
+    if (!entry) entry = state->cache + first;
+    if (entry->n == n && entry->s == s && entry->kind == kind && entry->quality >= quality)
+    { *error_estimate = entry->error; return entry->value; }
+    double value, uncertainty;
+    if (!kind && s > n - s)
+    {
+        double complement_error = 0, complement = st_allocate_normal_estimate(state, n, n - s,
+            0, quality, &complement_error);
+        long double fraction = (long double)(n - s) / s;
+        value = (double)(fraction * complement);
+        uncertainty = nextafter((double)(fraction * complement_error) + 16 * DBL_EPSILON * fabs(value), R_PosInf);
+    }
+    else if (!kind && n == 2 && s == 1)
+    {
+        value = 1 / sqrt(3.141592653589793238462643383279502884);
+        uncertainty = 8 * DBL_EPSILON * value;
+    }
+    else
+    {
+        state->n = n; state->s = s; state->kind = kind;
+        state->factor = (double)n / s;
+        double epsabs = quality ? 4e-14 : 3e-13,
+            epsrel = quality ? 2e-13 : 2e-12;
+        long double total = 0, total_error = 0;
+        int failed = 0;
+        for (int part = 0; part < 2; part++)
+        {
+            double a = part * 0.5, b = a + 0.5, result = 0, abserr = 0;
+            int neval = 0, ier = 0, last = 0;
+            Rdqags(st_allocate_normal_integrand, state, &a, &b, &epsabs, &epsrel,
+                &result, &abserr, &neval, &ier, &state->limit, &state->lenw, &last,
+                state->iwork, state->work);
+            state->evaluations += neval;
+            if (ier || !R_FINITE(result) || !R_FINITE(abserr) || result < 0 || abserr < 0)
+            {
+                double refined = 0, refined_error = 0;
+                int refined_failed = 0;
+                for (int sub = 0; sub < 4; sub++)
+                {
+                    double left = a + sub * 0.125, right = left + 0.125, v = 0, e = 0;
+                    neval = ier = last = 0;
+                    Rdqags(st_allocate_normal_integrand, state, &left, &right, &epsabs, &epsrel,
+                        &v, &e, &neval, &ier, &state->limit, &state->lenw, &last,
+                        state->iwork, state->work);
+                    state->evaluations += neval;
+                    if (ier || !R_FINITE(v) || !R_FINITE(e) || v < 0 || e < 0) refined_failed = 1;
+                    refined += v; refined_error += e;
+                }
+                if (!refined_failed || (!R_FINITE(result) || refined_error < abserr))
+                { result = refined; abserr = refined_error; ier = refined_failed; }
+                if (ier) failed = 1;
+            }
+            if (!R_FINITE(result) || !R_FINITE(abserr) || result < 0 || abserr < 0)
+                error("st.cross.allocate: finite-normal integration failed to produce a finite nonnegative estimate");
+            total += result; total_error += abserr;
+            R_CheckUserInterrupt();
+        }
+        double divisor = kind ? n : 1;
+        value = (double)(total / divisor);
+        uncertainty = nextafter((double)(total_error / divisor) + 64 * DBL_EPSILON * fabs(value), R_PosInf);
+        if (failed) state->failures++;
+    }
+    entry->n = n; entry->s = s; entry->kind = kind; entry->quality = quality;
+    entry->value = value; entry->error = uncertainty;
+    *error_estimate = uncertainty;
+    return value;
+}
+
+static double st_allocate_normal_scaled(st_allocate_normal_state *state, int n, int s,
+                                         int kind, int quality, double scale, double *error_estimate)
+{
+    if (scale == 0) { *error_estimate = 0; return 0; }
+    double uncertainty = 0, raw = st_allocate_normal_estimate(state, n, s, kind, quality, &uncertainty),
+        value = scale * raw;
+    if (!R_FINITE(value)) error("st.cross.allocate: a finite-normal family response is not finite");
+    *error_estimate = nextafter(fabs(scale) * uncertainty + 8 * DBL_EPSILON * fabs(value), R_PosInf);
+    return value;
+}
+
+static int st_allocate_normal_precedes(int first, int second, const double *gain)
+{
+    return gain[first] > gain[second] || (gain[first] == gain[second] && first < second);
+}
+
+static void st_allocate_normal_heap(int *heap, int n, int at, const double *gain)
+{
+    while (at < n)
+    {
+        int64_t left_index = (int64_t)at * 2 + 1;
+        if (left_index >= n) break;
+        int left = (int)left_index;
+        int best = left;
+        if (left + 1 < n && st_allocate_normal_precedes(heap[left + 1], heap[left], gain)) best++;
+        if (st_allocate_normal_precedes(heap[at], heap[best], gain)) break;
+        int swap = heap[at]; heap[at] = heap[best]; heap[best] = swap; at = best;
+    }
+}
+
+static st_allocate_normal_result st_allocate_normal_dp(st_allocate_normal_state *state,
+    int nf, int extra, const int *retained, const int *lower, const int *upper,
+    const double *scale, int *produced, double cells, double estimated_transitions)
+{
+    st_allocate_normal_result answer = {1, "complete.fixed.pair.dp", "dp", cells, estimated_transitions, 0, R_PosInf};
+    size_t stride = (size_t)extra + 1, utilities = 0;
+    if ((size_t)nf > SIZE_MAX / stride / sizeof(int))
+        error("st.cross.allocate: finite-normal traceback dimensions exceed the supported workspace size");
+    int *trace = st_work_alloc((size_t)nf * stride, sizeof(int)), *widths = st_work_alloc(nf, sizeof(int));
+    size_t *offset = st_work_alloc(nf, sizeof(size_t));
+    for (int e = 0; e < nf; e++)
+    {
+        widths[e] = upper[e] - lower[e]; if (widths[e] > extra) widths[e] = extra;
+        offset[e] = utilities; utilities += (size_t)widths[e] + 1;
+    }
+    double *utility = st_work_alloc(utilities, sizeof(double)), *uncertainty = st_work_alloc(utilities, sizeof(double)),
+        *previous = st_work_alloc(stride, sizeof(double)), *current = st_work_alloc(stride, sizeof(double)),
+        *up_previous = st_work_alloc(stride, sizeof(double)), *up_current = st_work_alloc(stride, sizeof(double));
+    for (int e = 0; e < nf; e++) for (int x = 0; x <= widths[e]; x++)
+    {
+        size_t at = offset[e] + x;
+        utility[at] = st_allocate_normal_scaled(state, lower[e] + x, retained[e], 0, 1, scale[e], uncertainty + at);
+        if (!(x % 128)) R_CheckUserInterrupt();
+    }
+    for (int b = 0; b <= extra; b++) previous[b] = up_previous[b] = R_NegInf;
+    previous[0] = up_previous[0] = 0;
+    int reached = 0;
+    for (int e = 0; e < nf; e++)
+    {
+        int next_reached = widths[e] > extra - reached ? extra : reached + widths[e];
+        for (int b = 0; b <= next_reached; b++)
+        {
+            double best = R_NegInf, bound = R_NegInf;
+            int bestx = -1, lo = b > reached ? b - reached : 0, hi = b < widths[e] ? b : widths[e];
+            for (int x = lo; x <= hi; x++)
+            {
+                size_t at = offset[e] + x;
+                double v = previous[b - x] + utility[at],
+                    z = nextafter(up_previous[b - x] + nextafter(utility[at] + uncertainty[at], R_PosInf), R_PosInf);
+                if (!R_FINITE(v) || !R_FINITE(z)) error("st.cross.allocate: finite-normal response accumulation is not finite");
+                if (v > best) { best = v; bestx = x; }
+                if (z > bound) bound = z;
+                answer.transitions++;
+            }
+            current[b] = best; up_current[b] = bound; trace[(size_t)e * stride + b] = bestx;
+            if (!(b % 128)) R_CheckUserInterrupt();
+        }
+        double *swap = previous; previous = current; current = swap;
+        swap = up_previous; up_previous = up_current; up_current = swap; reached = next_reached;
+    }
+    answer.response_upper = up_previous[extra];
+    int b = extra;
+    for (int e = nf - 1; e >= 0; e--)
+    {
+        int x = trace[(size_t)e * stride + b];
+        if (x < 0) error("st.cross.allocate: invalid finite-normal allocation traceback");
+        produced[e] = lower[e] + x; b -= x;
+    }
+    if (b) error("st.cross.allocate: incomplete finite-normal allocation traceback");
+    return answer;
+}
+
+static double st_allocate_normal_upper(st_allocate_normal_state *state, int nf, int extra,
+    const int *retained, const int *lower, const int *upper, const double *scale,
+    const int *produced, double *response_scale)
+{
+    long double response = 0, uncertainty = 0;
+    double greatest_next = 0, smallest_last = R_PosInf;
+    int available = 0, selected = 0;
+    for (int e = 0; e < nf; e++)
+    {
+        double err = 0, value = st_allocate_normal_scaled(state, produced[e], retained[e], 0, 1, scale[e], &err);
+        response += value; uncertainty += err + 8 * DBL_EPSILON * fabs(value);
+        if (produced[e] < upper[e])
+        {
+            double gain = st_allocate_normal_scaled(state, produced[e], retained[e], 1, 1, scale[e], &err);
+            greatest_next = fmax(greatest_next, nextafter(gain + err, R_PosInf)); available = 1;
+        }
+        if (produced[e] > lower[e])
+        {
+            double gain = st_allocate_normal_scaled(state, produced[e] - 1, retained[e], 1, 1, scale[e], &err);
+            smallest_last = fmin(smallest_last, fmax(0, nextafter(gain - err, R_NegInf))); selected = 1;
+        }
+    }
+    double exchange = available && selected ? nextafter(extra * fmax(0,
+        nextafter(greatest_next - smallest_last, R_PosInf)), R_PosInf) : 0;
+    *response_scale = (double)response;
+    return nextafter((double)(response + uncertainty) + exchange, R_PosInf);
+}
+
+static st_allocate_normal_result st_allocate_normal_solve(st_allocate_normal_state *state,
+    int nf, int extra, const int *retained, const int *lower, const int *upper,
+    const double *accuracy, const double *variance, int64_t sum_retained, int *produced,
+    int requested_algorithm, double max_cells, double max_transitions, double tolerance,
+    double old_cells, double utilities, double estimated_transitions)
+{
+    double *scale = st_work_alloc(nf, sizeof(double));
+    for (int e = 0; e < nf; e++)
+    {
+        scale[e] = (retained[e] / (double)sum_retained) * accuracy[e] * sqrt(variance[e]);
+        if (!R_FINITE(scale[e])) error("st.cross.allocate: a finite-normal response scale is not finite");
+    }
+    double shared_cells = (double)(sizeof(*state) + state->cache_size * sizeof(*state->cache)) / sizeof(double) +
+            state->lenw + state->limit * sizeof(int) / (double)sizeof(double) + nf,
+        dp_cells = ceil(shared_cells + (double)nf * ((double)extra + 2) * sizeof(int) / sizeof(double) +
+            (double)nf * sizeof(size_t) / sizeof(double) + 2 * utilities + 4 * ((double)extra + 1)),
+        greedy_cells = ceil(shared_cells + (double)nf * sizeof(int) / sizeof(double) + nf),
+        cells = requested_algorithm == 2 ? dp_cells : greedy_cells;
+    (void)old_cells;
+    st_allocate_normal_result answer = {0, "max.cells", requested_algorithm == 2 ? "dp" : "greedy",
+        cells, requested_algorithm == 2 ? estimated_transitions : extra, 0, R_PosInf};
+    if (requested_algorithm == 2)
+    {
+        if (dp_cells <= max_cells && estimated_transitions <= max_transitions)
+            return st_allocate_normal_dp(state, nf, extra, retained, lower, upper, scale, produced,
+                dp_cells, estimated_transitions);
+        answer.reason = dp_cells > max_cells ? "max.cells" : "max.transitions";
+        return answer;
+    }
+    if (greedy_cells > max_cells) return answer;
+    void *heap_mark = st_work_mark();
+    int *heap = st_work_alloc(nf, sizeof(int));
+    double *gain = st_work_alloc(nf, sizeof(double));
+    int heap_size = 0;
+    for (int e = 0; e < nf; e++)
+    {
+        produced[e] = lower[e];
+        if (produced[e] < upper[e])
+        {
+            double err;
+            gain[e] = st_allocate_normal_scaled(state, produced[e], retained[e], 1, 0, scale[e], &err);
+            heap[heap_size++] = e;
+        }
+    }
+    for (int at = heap_size / 2; at-- > 0;) st_allocate_normal_heap(heap, heap_size, at, gain);
+    int remaining = extra;
+    while (remaining > 0 && heap_size > 0 && answer.transitions < max_transitions)
+    {
+        int e = heap[0]; produced[e]++; remaining--; answer.transitions++;
+        if (produced[e] < upper[e])
+        {
+            double err;
+            gain[e] = st_allocate_normal_scaled(state, produced[e], retained[e], 1, 0, scale[e], &err);
+        }
+        else heap[0] = heap[--heap_size];
+        if (heap_size) st_allocate_normal_heap(heap, heap_size, 0, gain);
+        if (!((int64_t)answer.transitions % 128)) R_CheckUserInterrupt();
+    }
+    if (remaining)
+    {
+        for (int e = 0; e < nf; e++)
+        {
+            int add = upper[e] - produced[e]; if (add > remaining) add = remaining;
+            produced[e] += add; remaining -= add;
+        }
+        answer.reason = "max.transitions";
+        return answer;
+    }
+    answer.complete = 1; answer.reason = "complete.fixed.pair.greedy";
+    double response_scale = 0;
+    answer.response_upper = st_allocate_normal_upper(state, nf, extra, retained, lower, upper, scale, produced, &response_scale);
+    double estimated_gap = fmax(0, nextafter(answer.response_upper - response_scale, R_PosInf));
+    if (requested_algorithm == 0 && estimated_gap > tolerance * fmax(1, fabs(response_scale)) &&
+        dp_cells <= max_cells && estimated_transitions <= max_transitions)
+    {
+        st_work_reset(heap_mark);
+        st_allocate_normal_result fallback = st_allocate_normal_dp(state, nf, extra, retained, lower, upper,
+            scale, produced, dp_cells, estimated_transitions);
+        fallback.reason = "complete.fixed.pair.dp.fallback";
+        fallback.transitions += answer.transitions;
+        return fallback;
+    }
+    return answer;
+}
+
+static SEXP st_population_get(SEXP list, const char *name)
+{
+    if (isNull(list) || TYPEOF(list) != VECSXP) return R_NilValue;
+    return getListElement(list, name);
+}
+
+typedef struct
+{
+    int n;
+    const char **ids;
+    double *value, scale, tolerance, workspace_cells;
+    SEXP original;
+} st_population_matrix;
+
+typedef struct
+{
+    int nr, nf, np, produced_families, retained_families;
+    int *p1, *p2, *produced, *retained, *mapping, *uses;
+    const char **ids;
+    double *mu, *va, *accuracy, *intensity, *selected, *response;
+    double *family_share, *produced_share, *retained_share;
+    double *lower, *upper;
+    int64_t total_produced, total_retained;
+    st_population_matrix K;
+    st_allocate_normal_state *normal;
+} st_population_data;
+
+static const char *st_population_id(SEXP value, int i)
+{
+    if (TYPEOF(value) != STRSXP || i < 0 || (R_xlen_t)i >= XLENGTH(value) ||
+        STRING_ELT(value, i) == NA_STRING || !CHAR(STRING_ELT(value, i))[0])
+        error("st.cross.evaluate: parental IDs must be complete nonempty strings");
+    return translateCharUTF8(STRING_ELT(value, i));
+}
+
+static int st_population_count(SEXP value, int row, int n, const char *name)
+{
+    if (!st_allocate_numeric(value) || (XLENGTH(value) != 1 && XLENGTH(value) != n))
+        error("st.cross.evaluate: %s must be numeric with length one or the number of input rows", name);
+    double x = st_legacy_marker_number(value, XLENGTH(value) == 1 ? 0 : row);
+    if (!R_FINITE(x) || x < 0 || x > INT_MAX || x != floor(x))
+        error("st.cross.evaluate: %s must contain supported nonnegative whole counts", name);
+    return (int)x;
+}
+
+static double st_population_number(SEXP value, int row, int n, const char *name)
+{
+    if (!st_allocate_numeric(value) || (XLENGTH(value) != 1 && XLENGTH(value) != n))
+        error("st.cross.evaluate: %s must be numeric with length one or the number of input rows", name);
+    double out = st_legacy_marker_number(value, XLENGTH(value) == 1 ? 0 : row);
+    if (!R_FINITE(out)) error("st.cross.evaluate: %s must be finite", name);
+    return out;
+}
+
+static void st_population_prepare_matrix(st_population_matrix *out, SEXP matrix)
+{
+    memset(out, 0, sizeof(*out)); out->original = matrix;
+    if (isNull(matrix)) return;
+    SEXP dimensions = getAttrib(matrix, R_DimSymbol), dimnames = getAttrib(matrix, R_DimNamesSymbol);
+    if ((TYPEOF(matrix) != REALSXP && TYPEOF(matrix) != INTSXP) || inherits(matrix, "factor") ||
+        TYPEOF(dimensions) != INTSXP || XLENGTH(dimensions) != 2 || INTEGER(dimensions)[0] < 1 ||
+        INTEGER(dimensions)[0] != INTEGER(dimensions)[1] || TYPEOF(dimnames) != VECSXP || XLENGTH(dimnames) != 2)
+        error("st.cross.evaluate: K must be a nonempty named numeric square matrix");
+    int n = INTEGER(dimensions)[0];
+    if ((size_t)n > SIZE_MAX / (size_t)n / sizeof(double))
+        error("st.cross.evaluate: K exceeds the supported workspace size");
+    SEXP rows = VECTOR_ELT(dimnames, 0), columns = VECTOR_ELT(dimnames, 1);
+    if (TYPEOF(rows) != STRSXP || TYPEOF(columns) != STRSXP || XLENGTH(rows) != n || XLENGTH(columns) != n)
+        error("st.cross.evaluate: K needs complete unique row and column names");
+    out->n = n; out->ids = st_work_alloc(n, sizeof(*out->ids));
+    int *column_index = st_work_alloc(n, sizeof(int));
+    for (int i = 0; i < n; i++)
+    {
+        out->ids[i] = st_population_id(rows, i);
+        for (int j = 0; j < i; j++) if (!strcmp(out->ids[i], out->ids[j]))
+            error("st.cross.evaluate: K row names must be unique");
+        column_index[i] = -1;
+        for (int j = 0; j < n; j++)
+        {
+            const char *id = st_population_id(columns, j);
+            if (!strcmp(out->ids[i], id))
+            {
+                if (column_index[i] >= 0) error("st.cross.evaluate: K column names must be unique");
+                column_index[i] = j;
+            }
+        }
+        if (column_index[i] < 0) error("st.cross.evaluate: K row and column names must identify the same parents");
+    }
+    out->value = st_work_alloc((size_t)n * n, sizeof(double));
+    out->scale = 0;
+    for (int j = 0; j < n; j++) for (int i = 0; i < n; i++)
+    {
+        double x = st_legacy_marker_number(matrix, i + (size_t)n * column_index[j]);
+        if (!R_FINITE(x)) error("st.cross.evaluate: K must be finite");
+        out->value[i + (size_t)n * j] = x; out->scale = fmax(out->scale, fabs(x));
+    }
+    out->tolerance = 1e-10 * fmax(1, out->scale);
+    for (int j = 0; j < n; j++) for (int i = 0; i < j; i++)
+        if (fabs(out->value[i + (size_t)n * j] - out->value[j + (size_t)n * i]) > out->tolerance)
+            error("st.cross.evaluate: K must be symmetric by parent names");
+    double *copy = st_work_alloc((size_t)n * n, sizeof(double)),
+        *eigen = st_work_alloc(n, sizeof(double)), query;
+    memcpy(copy, out->value, (size_t)n * n * sizeof(double));
+    int info = 0, lwork = -1;
+    F77_CALL(dsyev)("N", "U", &n, copy, &n, eigen, &query, &lwork, &info FCONE FCONE);
+    if (info || !R_FINITE(query) || query > INT_MAX)
+        error("st.cross.evaluate: K eigendecomposition failed");
+    lwork = (int)query; if (lwork < 1) lwork = 1;
+    double *work = st_work_alloc(lwork, sizeof(double));
+    out->workspace_cells = 2.0 * n * n + n + lwork + n * (sizeof(char *) + sizeof(int)) / (double)sizeof(double);
+    F77_CALL(dsyev)("N", "U", &n, copy, &n, eigen, work, &lwork, &info FCONE FCONE);
+    if (info || eigen[0] < -1e-8 * fmax(1, out->scale))
+        error("st.cross.evaluate: K must be positive semidefinite");
+}
+
+static int st_population_same_matrix(const st_population_matrix *a, const st_population_matrix *b)
+{
+    if (a->n != b->n) return 0;
+    int *index = st_work_alloc(a->n, sizeof(int));
+    for (int i = 0; i < a->n; i++)
+    {
+        index[i] = st_allocate_find(a->ids[i], b->ids, b->n);
+        if (index[i] < 0) return 0;
+    }
+    for (int j = 0; j < a->n; j++) for (int i = 0; i < a->n; i++)
+        if (a->value[i + (size_t)a->n * j] != b->value[index[i] + (size_t)b->n * index[j]]) return 0;
+    return 1;
+}
+
+static void st_population_normalize(st_population_data *p, SEXP table, SEXP scores,
+                                    SEXP retained_arg, SEXP accuracy_arg, SEXP original_parents)
+{
+    SEXP first = st_population_get(table, "P1Name"), second = st_population_get(table, "P2Name"),
+        produced_arg = st_population_get(table, "n.progeny");
+    if (!inherits(table, "data.frame") || TYPEOF(first) != STRSXP || TYPEOF(second) != STRSXP ||
+        XLENGTH(first) > INT_MAX || XLENGTH(second) != XLENGTH(first))
+        error("st.cross.evaluate: plan needs P1Name and P2Name character columns");
+    p->nr = (int)XLENGTH(first);
+    if (isNull(produced_arg)) error("st.cross.evaluate: actual n.progeny counts are required");
+    if (isNull(retained_arg)) error("st.cross.evaluate: n.selected must be supplied or stored in the plan");
+    if (!st_allocate_numeric(produced_arg) || XLENGTH(produced_arg) != p->nr)
+        error("st.cross.evaluate: n.progeny must have one numeric count per input row");
+    p->p1 = st_work_alloc(p->nr, sizeof(int)); p->p2 = st_work_alloc(p->nr, sizeof(int));
+    p->produced = st_work_alloc(p->nr, sizeof(int)); p->retained = st_work_alloc(p->nr, sizeof(int));
+    p->mapping = st_work_alloc(p->nr, sizeof(int)); p->mu = st_work_alloc(p->nr, sizeof(double));
+    p->va = st_work_alloc(p->nr, sizeof(double)); p->accuracy = st_work_alloc(p->nr, sizeof(double));
+    p->intensity = st_work_alloc(p->nr, sizeof(double)); p->selected = st_work_alloc(p->nr, sizeof(double));
+    p->response = st_work_alloc(p->nr, sizeof(double)); p->lower = st_work_alloc(p->nr, sizeof(double));
+    p->upper = st_work_alloc(p->nr, sizeof(double));
+    if (p->K.n)
+    { p->np = p->K.n; p->ids = p->K.ids; }
+    else
+    {
+        R_xlen_t original_n = TYPEOF(original_parents) == STRSXP ? XLENGTH(original_parents) : 0;
+        if (original_n > INT_MAX) error("st.cross.evaluate: too many reference parents");
+        p->ids = st_work_alloc((size_t)p->nr * 2 + (size_t)original_n, sizeof(*p->ids));
+        for (int i = 0; i < original_n; i++)
+        {
+            const char *id = st_population_id(original_parents, i);
+            if (st_allocate_find(id, p->ids, p->np) >= 0) error("st.cross.evaluate: inherited parent IDs must be unique");
+            p->ids[p->np++] = id;
+        }
+    }
+    SEXP sf = st_population_get(scores, "P1Name"), ss = st_population_get(scores, "P2Name"),
+        sm = st_population_get(scores, "mu"), sv = st_population_get(scores, "va");
+    int external = !isNull(scores);
+    if (external && (!inherits(scores, "data.frame") || TYPEOF(sf) != STRSXP || TYPEOF(ss) != STRSXP ||
+        XLENGTH(sf) > INT_MAX || XLENGTH(ss) != XLENGTH(sf) || !st_allocate_numeric(sm) || !st_allocate_numeric(sv) ||
+        XLENGTH(sm) != XLENGTH(sf) || XLENGTH(sv) != XLENGTH(sf)))
+        error("st.cross.evaluate: scores need keyed character P1Name/P2Name and numeric mu/va columns");
+    if (!external)
+    {
+        sm = st_population_get(table, "mu"); sv = st_population_get(table, "va");
+        if (!st_allocate_numeric(sm) || !st_allocate_numeric(sv) || XLENGTH(sm) != p->nr || XLENGTH(sv) != p->nr)
+            error("st.cross.evaluate: finite mu and nonnegative va are required for every family");
+    }
+    for (R_xlen_t j = 0; external && j < XLENGTH(sf); j++)
+    {
+        st_population_id(sf, (int)j); st_population_id(ss, (int)j);
+        double m = st_legacy_marker_number(sm, j), v = st_legacy_marker_number(sv, j);
+        if (!R_FINITE(m) || !R_FINITE(v) || v < 0)
+            error("st.cross.evaluate: scores must have finite mu and nonnegative finite va");
+    }
+    SEXP minimum = st_population_get(table, "min.progeny"), maximum = st_population_get(table, "max.progeny");
+    for (int row = 0; row < p->nr; row++)
+    {
+        const char *a = st_population_id(first, row), *b = st_population_id(second, row);
+        if (!strcmp(a, b)) error("st.cross.evaluate: self crosses are not supported by this model");
+        int ia = st_allocate_find(a, p->ids, p->np), ib = st_allocate_find(b, p->ids, p->np);
+        if (ia < 0)
+        {
+            if (p->K.n) error("st.cross.evaluate: K does not contain every family parent");
+            if (p->np == INT_MAX) error("st.cross.evaluate: too many distinct parents");
+            ia = p->np; p->ids[p->np++] = a;
+        }
+        if (ib < 0)
+        {
+            if (p->K.n) error("st.cross.evaluate: K does not contain every family parent");
+            if (p->np == INT_MAX) error("st.cross.evaluate: too many distinct parents");
+            ib = p->np; p->ids[p->np++] = b;
+        }
+        int n = st_population_count(produced_arg, row, p->nr, "n.progeny"),
+            r = st_population_count(retained_arg, row, p->nr, "n.selected");
+        if (r > n) error("st.cross.evaluate: counts must satisfy 0 <= n.selected <= n.progeny");
+        double accuracy = isNull(accuracy_arg) ? 1 : st_population_number(accuracy_arg, row, p->nr, "accuracy");
+        if (accuracy < 0 || accuracy > 1) error("st.cross.evaluate: accuracy must lie between zero and one");
+        double m = 0, v = 0; int found = 0;
+        if (!external) { m = st_legacy_marker_number(sm, row); v = st_legacy_marker_number(sv, row); found = 1; }
+        else for (int j = 0; j < XLENGTH(sf); j++)
+        {
+            const char *x = st_population_id(sf, j), *y = st_population_id(ss, j);
+            if ((!strcmp(a, x) && !strcmp(b, y)) || (!strcmp(a, y) && !strcmp(b, x)))
+            {
+                double next_m = st_legacy_marker_number(sm, j), next_v = st_legacy_marker_number(sv, j);
+                if (found && (m != next_m || v != next_v))
+                    error("st.cross.evaluate: conflicting scores for a repeated biological family");
+                m = next_m; v = next_v; found = 1;
+            }
+        }
+        if (!found) error("st.cross.evaluate: scores must cover every supplied biological family");
+        if (!R_FINITE(m) || !R_FINITE(v) || v < 0)
+            error("st.cross.evaluate: mu must be finite and va finite and nonnegative");
+        int family = -1;
+        for (int e = 0; e < p->nf; e++)
+            if ((p->p1[e] == ia && p->p2[e] == ib) || (p->p1[e] == ib && p->p2[e] == ia)) { family = e; break; }
+        double lo = isNull(minimum) ? NA_REAL : st_population_count(minimum, row, p->nr, "min.progeny"),
+            hi = isNull(maximum) ? NA_REAL : st_population_count(maximum, row, p->nr, "max.progeny");
+        if (family < 0)
+        {
+            family = p->nf++; p->p1[family] = ia; p->p2[family] = ib;
+            p->produced[family] = p->retained[family] = 0;
+            p->mu[family] = m; p->va[family] = v; p->accuracy[family] = accuracy;
+            p->lower[family] = lo; p->upper[family] = hi;
+        }
+        else
+        {
+            if (p->mu[family] != m || p->va[family] != v || p->accuracy[family] != accuracy)
+                error("st.cross.evaluate: pooled families require identical scores and accuracy");
+            if (!isNull(minimum)) p->lower[family] += lo;
+            if (!isNull(maximum)) p->upper[family] += hi;
+        }
+        if (n > INT_MAX - p->produced[family] || r > INT_MAX - p->retained[family])
+            error("st.cross.evaluate: pooled family counts exceed the supported integer range");
+        p->produced[family] += n; p->retained[family] += r; p->mapping[row] = family;
+        if (p->total_produced > INT64_C(9007199254740991) - n || p->total_retained > INT64_C(9007199254740991) - r)
+            error("st.cross.evaluate: population totals must not exceed 2^53-1");
+        p->total_produced += n; p->total_retained += r;
+    }
+    p->uses = st_work_alloc(p->np, sizeof(int)); memset(p->uses, 0, (size_t)p->np * sizeof(int));
+    p->family_share = st_work_alloc(p->np, sizeof(double)); p->produced_share = st_work_alloc(p->np, sizeof(double));
+    p->retained_share = st_work_alloc(p->np, sizeof(double));
+    for (int e = 0; e < p->nf; e++)
+    {
+        if (p->produced[e]) { p->produced_families++; p->uses[p->p1[e]]++; p->uses[p->p2[e]]++; }
+        if (p->retained[e]) p->retained_families++;
+    }
+    for (int i = 0; i < p->np; i++)
+    {
+        p->family_share[i] = p->produced_families ? p->uses[i] / (2.0 * p->produced_families) : NA_REAL;
+        p->produced_share[i] = p->total_produced ? 0 : NA_REAL;
+        p->retained_share[i] = p->total_retained ? 0 : NA_REAL;
+    }
+    for (int e = 0; e < p->nf; e++)
+    {
+        if (p->total_produced)
+        {
+            double c = p->produced[e] / (2.0 * p->total_produced);
+            p->produced_share[p->p1[e]] += c; p->produced_share[p->p2[e]] += c;
+        }
+        if (p->total_retained)
+        {
+            double c = p->retained[e] / (2.0 * p->total_retained);
+            p->retained_share[p->p1[e]] += c; p->retained_share[p->p2[e]] += c;
+        }
+    }
+}
+
+static double st_population_finite(long double x, const char *name)
+{
+    double out = (double)x;
+    if (!R_FINITE(out)) error("st.cross.evaluate: %s exceeds the finite numeric range", name);
+    return out;
+}
+
+static double st_population_relatedness(const st_population_data *p, const double *share, int available)
+{
+    if (!available || !p->K.n) return NA_REAL;
+    long double out = 0;
+    for (int j = 0; j < p->np; j++) for (int i = 0; i < p->np; i++)
+        out += (long double)share[i] * p->K.value[i + (size_t)p->np * j] * share[j];
+    return st_population_finite(out, "relatedness");
+}
+
+typedef struct
+{
+    int active, families, budget, retained, lower, upper;
+    const char *method;
+} st_population_progeny_contract;
+
+static int st_population_contract_count(SEXP value, const char *name)
+{
+    if (!st_allocate_numeric(value) || XLENGTH(value) != 1)
+        error("cross planning: source progeny %s must be one positive integer", name);
+    double x = st_legacy_marker_number(value, 0);
+    if (!R_FINITE(x) || x < 1 || x > INT_MAX || x != floor(x))
+        error("cross planning: source progeny %s must be a supported positive integer", name);
+    return (int)x;
+}
+
+static st_population_progeny_contract st_population_progeny_contract_get(SEXP constraints)
+{
+    st_population_progeny_contract out; memset(&out, 0, sizeof(out));
+    SEXP group = st_population_get(constraints, "progeny");
+    if (isNull(group)) return out;
+    SEXP names = getAttrib(group, R_NamesSymbol);
+    if (TYPEOF(group) != VECSXP || Rf_isObject(group) || TYPEOF(names) != STRSXP || XLENGTH(names) != XLENGTH(group))
+        error("cross planning: source progeny must be a named list");
+    const char *allowed[] = {"total.progeny", "n.selected", "min.progeny", "max.progeny", "selection.method", "control",
+        "total.selected", "min.selected", "max.selected", "bounds"};
+    unsigned int seen = 0;
+    for (R_xlen_t i = 0; i < XLENGTH(group); i++)
+    {
+        const char *name = st_population_id(names, (int)i); int key = -1;
+        for (int j = 0; j < 10; j++) if (!strcmp(name, allowed[j])) key = j;
+        if (key < 0 || (seen & (1u << key))) error("cross planning: unknown or repeated source progeny component");
+        seen |= 1u << key;
+    }
+    int variable = (seen & (15u << 6)) != 0;
+    if (variable && ((seen & 2u) || !(seen & (1u << 6))))
+        error("cross planning: variable source progeny requires total.selected and excludes n.selected");
+    out.active = 1;
+    out.families = st_population_contract_count(st_population_get(constraints, "n.crosses"), "n.crosses");
+    out.budget = st_population_contract_count(st_population_get(group, "total.progeny"), "total.progeny");
+    out.retained = variable ? 0 : st_population_contract_count(st_population_get(group, "n.selected"), "n.selected");
+    SEXP lower = st_population_get(group, "min.progeny"), upper = st_population_get(group, "max.progeny"),
+        method = st_population_get(group, "selection.method"), control = st_population_get(group, "control");
+    out.lower = isNull(lower) ? variable ? 1 : out.retained : st_population_contract_count(lower, "min.progeny");
+    out.upper = isNull(upper) ? out.budget : st_population_contract_count(upper, "max.progeny");
+    out.method = isNull(method) ? "burrows" : st_legacy_marker_string(method, "source progeny selection.method");
+    if (strcmp(out.method, "burrows") && strcmp(out.method, "order.statistics"))
+        error("cross planning: unsupported source progeny selection.method");
+    if (out.lower < out.retained || out.upper < out.lower || (!variable &&
+        ((int64_t)out.families * out.lower > out.budget || (int64_t)out.families * out.upper < out.budget)))
+        error("cross planning: source progeny has inconsistent count bounds");
+    if (variable && st_population_contract_count(st_population_get(group, "total.selected"), "total.selected") > out.budget)
+        error("cross planning: source total.selected exceeds total.progeny");
+    if (!isNull(control))
+    {
+        SEXP labels = getAttrib(control, R_NamesSymbol);
+        if (TYPEOF(control) != VECSXP || Rf_isObject(control) || (XLENGTH(control) &&
+            (TYPEOF(labels) != STRSXP || XLENGTH(labels) != XLENGTH(control))))
+            error("cross planning: source progeny control must be a named list");
+        const char *controls[] = {"max.cells", "max.transitions", "tolerance", "algorithm"};
+        unsigned int used = 0;
+        for (R_xlen_t i = 0; i < XLENGTH(control); i++)
+        {
+            const char *name = st_population_id(labels, (int)i); int key = -1;
+            for (int j = 0; j < 4; j++) if (!strcmp(name, controls[j])) key = j;
+            if (key < 0 || (used & (1u << key))) error("cross planning: unknown or repeated source progeny control");
+            used |= 1u << key;
+            SEXP value = VECTOR_ELT(control, i);
+            if (key == 3)
+            {
+                const char *algorithm = st_legacy_marker_string(value, "source progeny algorithm");
+                if (strcmp(algorithm, "auto") && strcmp(algorithm, "dp") && strcmp(algorithm, "greedy"))
+                    error("cross planning: unsupported source progeny algorithm");
+                if (!strcmp(algorithm, "greedy") && (!strcmp(out.method, "burrows") || variable))
+                    error(variable ? "cross planning: variable source progeny cannot declare greedy allocation" :
+                        "cross planning: source Burrows progeny cannot declare greedy allocation");
+            }
+            else
+            {
+                if (!st_allocate_numeric(value) || XLENGTH(value) != 1)
+                    error("cross planning: invalid source progeny numeric control");
+                double x = st_legacy_marker_number(value, 0);
+                if (!R_FINITE(x) || (key < 2 ? x < 1 || x > 9007199254740991.0 || x != floor(x) : x < 0))
+                    error("cross planning: invalid source progeny numeric control");
+            }
+        }
+    }
+    return out;
+}
+
+typedef struct
+{
+    int active, total, lower, upper, rows;
+    SEXP bounds, first, second, columns[4];
+    size_t capacity;
+    int *slots;
+    double workspace_cells;
+} st_population_variable_contract;
+
+static int st_population_variable_count(SEXP value, int row, const char *name, int positive)
+{
+    if (!st_allocate_numeric(value) || row < 0 || (R_xlen_t)row >= XLENGTH(value))
+        error("cross planning: invalid source %s", name);
+    double x = st_legacy_marker_number(value, row);
+    if (!R_FINITE(x) || x < positive || x > INT_MAX || x != floor(x))
+        error("cross planning: source %s needs supported whole counts", name);
+    return (int)x;
+}
+
+static uint64_t st_population_variable_hash(const char *a, const char *b)
+{
+    if (strcmp(a, b) > 0) { const char *swap = a; a = b; b = swap; }
+    uint64_t h = UINT64_C(1469598103934665603);
+    for (const unsigned char *p = (const unsigned char *)a; *p; p++) { h ^= *p; h *= UINT64_C(1099511628211); }
+    h ^= UINT64_C(255); h *= UINT64_C(1099511628211);
+    for (const unsigned char *p = (const unsigned char *)b; *p; p++) { h ^= *p; h *= UINT64_C(1099511628211); }
+    return h;
+}
+
+static size_t st_population_variable_slot(const st_population_variable_contract *p, const char *a, const char *b)
+{
+    size_t slot = (size_t)st_population_variable_hash(a, b) & (p->capacity - 1);
+    while (p->slots[slot])
+    {
+        int row = p->slots[slot] - 1;
+        const char *x = st_population_id(p->first, row), *y = st_population_id(p->second, row);
+        if ((!strcmp(a, x) && !strcmp(b, y)) || (!strcmp(a, y) && !strcmp(b, x))) break;
+        slot = (slot + 1) & (p->capacity - 1);
+    }
+    return slot;
+}
+
+static int st_population_variable_row(const st_population_variable_contract *p, const char *a, const char *b)
+{
+    size_t slot = st_population_variable_slot(p, a, b);
+    return p->slots[slot] ? p->slots[slot] - 1 : -1;
+}
+
+static st_population_variable_contract st_population_variable_contract_get(SEXP constraints,
+    const st_population_progeny_contract *common)
+{
+    st_population_variable_contract out; memset(&out, 0, sizeof(out));
+    SEXP group = st_population_get(constraints, "progeny"), total = st_population_get(group, "total.selected");
+    if (isNull(total)) return out;
+    out.active = 1; out.total = st_population_contract_count(total, "total.selected");
+    SEXP lower = st_population_get(group, "min.selected"), upper = st_population_get(group, "max.selected");
+    if ((!isNull(lower) && XLENGTH(lower) != 1) || (!isNull(upper) && XLENGTH(upper) != 1))
+        error("cross planning: source selected defaults must be scalar");
+    out.lower = isNull(lower) ? 1 : st_population_variable_count(lower, 0, "min.selected", 0);
+    out.upper = isNull(upper) ? common->upper < out.total ? common->upper : out.total :
+        st_population_variable_count(upper, 0, "max.selected", 0);
+    if (out.lower > out.upper || out.total > common->budget)
+        error("cross planning: inconsistent source selected defaults or total");
+    out.bounds = st_population_get(group, "bounds");
+    SEXP names = getAttrib(out.bounds, R_NamesSymbol);
+    if (!inherits(out.bounds, "data.frame") || TYPEOF(out.bounds) != VECSXP || XLENGTH(out.bounds) != 6 ||
+        TYPEOF(names) != STRSXP || XLENGTH(names) != 6)
+        error("cross planning: variable source needs complete keyed effective bounds");
+    const char *columns[] = {"P1Name", "P2Name", "min.progeny", "max.progeny", "min.selected", "max.selected"};
+    unsigned int seen = 0;
+    for (int i = 0; i < 6; i++)
+    {
+        const char *name = st_population_id(names, i); int key = -1;
+        for (int j = 0; j < 6; j++) if (!strcmp(name, columns[j])) key = j;
+        if (key < 0 || (seen & (1u << key))) error("cross planning: unknown or repeated effective-bound column");
+        seen |= 1u << key;
+        if (key == 0) out.first = VECTOR_ELT(out.bounds, i);
+        else if (key == 1) out.second = VECTOR_ELT(out.bounds, i);
+        else out.columns[key - 2] = VECTOR_ELT(out.bounds, i);
+    }
+    if (TYPEOF(out.first) != STRSXP || TYPEOF(out.second) != STRSXP || XLENGTH(out.first) > INT_MAX)
+        error("cross planning: effective-bound keys must be character");
+    out.rows = (int)XLENGTH(out.first);
+    if (XLENGTH(out.second) != out.rows) error("cross planning: inconsistent effective-bound rows");
+    for (int j = 0; j < 4; j++)
+        if (!st_allocate_numeric(out.columns[j]) || XLENGTH(out.columns[j]) != out.rows)
+            error("cross planning: effective bounds need finite numeric columns");
+    out.capacity = 16;
+    while (out.capacity < (size_t)out.rows * 2)
+    {
+        if (out.capacity > SIZE_MAX / 2 / sizeof(int)) error("cross planning: effective-bound index is too large");
+        out.capacity *= 2;
+    }
+    out.slots = st_work_alloc(out.capacity, sizeof(int)); memset(out.slots, 0, out.capacity * sizeof(int));
+    out.workspace_cells = (sizeof(out) + (long double)out.capacity * sizeof(int)) / sizeof(double);
+    for (int row = 0; row < out.rows; row++)
+    {
+        const char *a = st_population_id(out.first, row), *b = st_population_id(out.second, row);
+        if (!strcmp(a, b)) error("cross planning: effective bounds cannot contain self pairs");
+        int L = st_population_variable_count(out.columns[0], row, "min.progeny", 1),
+            U = st_population_variable_count(out.columns[1], row, "max.progeny", 1),
+            l = st_population_variable_count(out.columns[2], row, "min.selected", 0),
+            u = st_population_variable_count(out.columns[3], row, "max.selected", 0);
+        if (L > U || l > u || l > L || u > U)
+            error("cross planning: inconsistent source effective local bounds");
+        size_t slot = st_population_variable_slot(&out, a, b);
+        if (out.slots[slot]) error("cross planning: duplicate unordered effective-bound key");
+        out.slots[slot] = row + 1;
+    }
+    return out;
+}
+
+static int st_population_constraint_family(SEXP constraints, const char *name, int legacy_family, int required)
+{
+    SEXP basis = st_population_get(constraints, name);
+    if (isNull(basis))
+    {
+        if (required) error("cross planning: source progeny needs explicit %s", name);
+        return legacy_family;
+    }
+    if (strcmp(st_legacy_marker_string(basis, name), "family.slots"))
+        error("cross planning: unsupported source %s", name);
+    return 1;
+}
+
+static int st_population_pair_allowed(SEXP allowed, const char *first, const char *second)
+{
+    if (isNull(allowed)) return 1;
+    SEXP a = R_NilValue, b = R_NilValue; R_xlen_t n = 0; int matrix = 0;
+    if (TYPEOF(allowed) == STRSXP)
+    {
+        SEXP dim = getAttrib(allowed, R_DimSymbol);
+        if (TYPEOF(dim) == INTSXP && XLENGTH(dim) == 2 && INTEGER(dim)[1] == 2)
+        { a = b = allowed; n = INTEGER(dim)[0]; matrix = 1; }
+    }
+    else if (inherits(allowed, "data.frame") && TYPEOF(allowed) == VECSXP && XLENGTH(allowed) == 2)
+    { a = VECTOR_ELT(allowed, 0); b = VECTOR_ELT(allowed, 1); if (TYPEOF(a) == STRSXP) n = XLENGTH(a); }
+    if (TYPEOF(a) != STRSXP || TYPEOF(b) != STRSXP || n > INT_MAX || (!matrix && XLENGTH(b) != n))
+        error("cross planning: invalid inherited allowed pairs");
+    for (R_xlen_t row = 0; row < n; row++)
+    {
+        const char *x = st_population_id(a, (int)row), *y = st_population_id(b, (int)(matrix ? row + n : row));
+        if ((!strcmp(first, x) && !strcmp(second, y)) || (!strcmp(first, y) && !strcmp(second, x))) return 1;
+    }
+    return 0;
+}
+
+static int st_population_known_constraints(SEXP constraints, int allocation,
+                                            const char **unsupported, int *unsupported_count)
+{
+    if (isNull(constraints)) return 0;
+    if (TYPEOF(constraints) != VECSXP) error("st.cross.evaluate: inherited constraints must be a named list");
+    SEXP names = getAttrib(constraints, R_NamesSymbol);
+    if (TYPEOF(names) != STRSXP || XLENGTH(names) != XLENGTH(constraints))
+        error("st.cross.evaluate: inherited constraints must be a named list");
+    const char *plan_names[] = {"n.crosses", "n.progeny", "total.progeny", "theta", "lower", "upper",
+        "degree.lower", "degree.upper", "requested.contributions", "allowed.pairs", "diversity", "practical",
+        "progeny", "theta.basis", "contribution.basis"};
+    const char *allocation_names[] = {"total.progeny", "total.selected", "n.families", "contribution.sample",
+        "inherited", "family.slots.fixed", "diversity.loss", "practical"};
+    int unknown = 0;
+    for (R_xlen_t i = 0; i < XLENGTH(names); i++)
+    {
+        if (STRING_ELT(names, i) == NA_STRING) error("st.cross.evaluate: inherited constraints have a missing name");
+        const char *name = CHAR(STRING_ELT(names, i)); int known = 0;
+        for (R_xlen_t j = 0; j < i; j++) if (!strcmp(name, CHAR(STRING_ELT(names, j))))
+            error("st.cross.evaluate: inherited constraints have a repeated name");
+        for (int j = 0; j < (allocation ? 8 : 15); j++)
+            if (!strcmp(name, allocation ? allocation_names[j] : plan_names[j])) known = 1;
+        if (!known) { unknown++; unsupported[(*unsupported_count)++] = name; }
+    }
+    return unknown;
+}
+
+static double st_population_parent_limit(SEXP value, const char *id, SEXP original_ids,
+                                          int index, int np, const char *name)
+{
+    if (!st_allocate_numeric(value)) error("st.cross.evaluate: inherited %s must be numeric", name);
+    R_xlen_t n = XLENGTH(value);
+    if (!n) error("st.cross.evaluate: inherited %s is empty", name);
+    SEXP names = getAttrib(value, R_NamesSymbol);
+    R_xlen_t at = -1;
+    if (TYPEOF(names) == STRSXP && XLENGTH(names) == n)
+    {
+        for (R_xlen_t j = 0; j < n; j++) if (!strcmp(id, st_population_id(names, (int)j)))
+        { if (at >= 0) error("st.cross.evaluate: inherited %s has repeated names", name); at = j; }
+    }
+    else if (n == 1) at = 0;
+    else if (TYPEOF(original_ids) == STRSXP && XLENGTH(original_ids) == n)
+    {
+        for (R_xlen_t j = 0; j < n; j++) if (!strcmp(id, st_population_id(original_ids, (int)j))) { at = j; break; }
+    }
+    else if (n == np) at = index;
+    if (at < 0) error("st.cross.evaluate: inherited %s does not identify every reference parent", name);
+    double out = st_legacy_marker_number(value, at);
+    if (!R_FINITE(out)) error("st.cross.evaluate: inherited %s must be finite", name);
+    return out;
+}
+
+void *st_cross_propsd_prepare64(SEXP matrix, int nparents, const char **ids);
+double st_cross_propsd_eval64(void *prepared, const int64_t *counts);
+double st_cross_propsd_loss64(SEXP matrix, int nparents, const char **ids, const int64_t *counts);
+double st_cross_propsd_workcells64(const void *prepared);
+
+typedef struct
+{
+    int kind, parent, pool, role, basis, measure, state, integer, upper_unbounded;
+    int64_t lo, hi, count, lower_count, upper_count, numerator, denominator, common;
+    int selected;
+    double lower, upper, achieved, achieved_lower, achieved_upper, lower_residual, upper_residual, allowance;
+    const char *reason;
+    char id[64];
+} st_practical_rule;
+
+typedef struct
+{
+    SEXP request, original_K;
+    int n, npools, roles, requirements, nrules, rule_capacity, result, direction_known;
+    const char **ids, **pools;
+    int *pool, *seed_ok, *pollen_ok;
+    st_practical_rule *rules;
+    st_population_matrix K;
+    double *candidate_K;
+    double tolerance;
+    int64_t *incidence, totals[4];
+    int known[4][3];
+    int *active_seed, *active_pollen, *active_all;
+    size_t row_capacity;
+    int *family_a, *family_b, *family_hint, *family_seed, *family_pollen, *family_ambiguous;
+    int64_t *family_n, *family_r;
+    int nf, nrows, checked;
+    void *diversity;
+    int diversity_basis;
+    double diversity_max, diversity_loss;
+} st_practical;
+
+static int st_practical_basis(const char *name)
+{
+    return !strcmp(name, "family.slots") ? 0 : !strcmp(name, "operations") ? 1 :
+        !strcmp(name, "produced") ? 2 : !strcmp(name, "retained") ? 3 : -1;
+}
+
+static int st_practical_role(const char *name)
+{
+    return !strcmp(name, "all") ? 0 : !strcmp(name, "seed") ? 1 : !strcmp(name, "pollen") ? 2 : -1;
+}
+
+static SEXP st_practical_column(SEXP table, const char *name, int n, int optional)
+{
+    SEXP out = st_population_get(table, name);
+    if (isNull(out) && optional) return out;
+    if (isNull(out) || XLENGTH(out) != n)
+        error("constraints: %s must have one value per table row", name);
+    return out;
+}
+
+static const char *st_practical_text(SEXP column, int row, int optional, const char *name)
+{
+    if (isNull(column) && optional) return NULL;
+    if (TYPEOF(column) == LGLSXP && optional && LOGICAL(column)[row] == NA_LOGICAL) return NULL;
+    if (TYPEOF(column) != STRSXP) error("constraints: %s must be character", name);
+    if (STRING_ELT(column, row) == NA_STRING)
+    { if (optional) return NULL; error("constraints: %s must not be missing", name); }
+    const char *out = translateCharUTF8(STRING_ELT(column, row));
+    if (!out[0]) error("constraints: %s must not be empty", name);
+    return out;
+}
+
+static int st_practical_rows(SEXP table, const char *name)
+{
+    if (isNull(table)) return 0;
+    if (!inherits(table, "data.frame") || TYPEOF(table) != VECSXP || XLENGTH(table) < 1)
+        error("constraints: %s must be a data frame", name);
+    SEXP column_names = getAttrib(table, R_NamesSymbol);
+    if (TYPEOF(column_names) != STRSXP || XLENGTH(column_names) != XLENGTH(table))
+        error("constraints: %s columns must have unique nonempty names", name);
+    for (R_xlen_t i = 0; i < XLENGTH(table); i++)
+    {
+        const char *column_name = st_practical_text(column_names, (int)i, 0, "column name");
+        for (R_xlen_t j = 0; j < i; j++) if (!strcmp(column_name, CHAR(STRING_ELT(column_names, j))))
+            error("constraints: %s has duplicate column names", name);
+    }
+    R_xlen_t n = XLENGTH(VECTOR_ELT(table, 0));
+    if (n > INT_MAX) error("constraints: %s has too many rows", name);
+    for (R_xlen_t i = 0; i < XLENGTH(table); i++)
+        if (XLENGTH(VECTOR_ELT(table, i)) != n) error("constraints: %s has inconsistent column lengths", name);
+    return (int)n;
+}
+
+static double st_practical_bound(SEXP column, int row, int measure, int upper)
+{
+    if (!st_allocate_numeric(column)) error("constraints: bounds must be numeric");
+    double x = st_legacy_marker_number(column, row);
+    if (upper && measure != 2 && x == R_PosInf) return x;
+    if (!R_FINITE(x) || x < 0 || (measure == 2 ? x > 1 : x > 9007199254740991.0 || x != floor(x)))
+        error("constraints: invalid nonnegative bound");
+    return x;
+}
+
+static void st_practical_destroy_rows(void *data)
+{
+    st_practical *p = data;
+    free(p->family_a); free(p->family_b); free(p->family_hint); free(p->family_seed);
+    free(p->family_pollen); free(p->family_ambiguous); free(p->family_n); free(p->family_r);
+}
+
+static void *st_practical_resize(void *old, size_t n, size_t size)
+{
+    if (size && n > SIZE_MAX / size) error("constraints: row workspace overflow");
+    void *out = realloc(old, n * size);
+    if (!out) error("constraints: cannot allocate row workspace");
+    return out;
+}
+
+static void st_practical_reserve(st_practical *p, int nrows)
+{
+    if ((size_t)nrows <= p->row_capacity) return;
+    size_t capacity = p->row_capacity ? p->row_capacity : 8;
+    while (capacity < (size_t)nrows)
+    { if (capacity > SIZE_MAX / 2) error("constraints: row workspace overflow"); capacity *= 2; }
+    p->family_a = st_practical_resize(p->family_a, capacity, sizeof(int));
+    p->family_b = st_practical_resize(p->family_b, capacity, sizeof(int));
+    p->family_hint = st_practical_resize(p->family_hint, capacity, sizeof(int));
+    p->family_seed = st_practical_resize(p->family_seed, capacity, sizeof(int));
+    p->family_pollen = st_practical_resize(p->family_pollen, capacity, sizeof(int));
+    p->family_ambiguous = st_practical_resize(p->family_ambiguous, capacity, sizeof(int));
+    p->family_n = st_practical_resize(p->family_n, capacity, sizeof(int64_t));
+    p->family_r = st_practical_resize(p->family_r, capacity, sizeof(int64_t));
+    p->row_capacity = capacity;
+}
+
+static void st_practical_prepare_matrix(st_practical *p, SEXP matrix)
+{
+    if (isNull(matrix)) return;
+    SEXP names = getAttrib(matrix, R_DimNamesSymbol), dim = getAttrib(matrix, R_DimSymbol);
+    int fully_named = TYPEOF(names) == VECSXP && XLENGTH(names) == 2 &&
+        TYPEOF(VECTOR_ELT(names, 0)) == STRSXP && TYPEOF(VECTOR_ELT(names, 1)) == STRSXP;
+    if (fully_named)
+    { st_population_prepare_matrix(&p->K, matrix); }
+    else
+    {
+        if ((TYPEOF(matrix) != REALSXP && TYPEOF(matrix) != INTSXP) || TYPEOF(dim) != INTSXP ||
+            XLENGTH(dim) != 2 || INTEGER(dim)[0] != p->n || INTEGER(dim)[1] != p->n || p->n < 1)
+            error("constraints: unnamed K must be square in the declared candidate order");
+        if (!isNull(names))
+        {
+            if (TYPEOF(names) != VECSXP || XLENGTH(names) != 2) error("constraints: invalid K dimension names");
+            for (int axis = 0; axis < 2; axis++) if (!isNull(VECTOR_ELT(names, axis)))
+            {
+                SEXP labels = VECTOR_ELT(names, axis);
+                if (TYPEOF(labels) != STRSXP || XLENGTH(labels) != p->n) error("constraints: invalid ordered K names");
+                for (int i = 0; i < p->n; i++) if (strcmp(st_population_id(labels, i), p->ids[i]))
+                    error("constraints: partially named K conflicts with candidate order");
+            }
+        }
+        p->K.n = p->n; p->K.ids = p->ids; p->K.original = matrix;
+        if ((size_t)p->n > SIZE_MAX / (size_t)p->n / sizeof(double)) error("constraints: K workspace overflow");
+        p->K.value = st_work_alloc((size_t)p->n * p->n, sizeof(double));
+        for (size_t i = 0; i < (size_t)p->n * p->n; i++)
+        {
+            double x = st_legacy_marker_number(matrix, i);
+            if (!R_FINITE(x)) error("constraints: K must be finite");
+            p->K.value[i] = x; p->K.scale = fmax(p->K.scale, fabs(x));
+        }
+        p->K.tolerance = 1e-10 * fmax(1, p->K.scale);
+        for (int j = 0; j < p->n; j++) for (int i = 0; i < j; i++)
+            if (fabs(p->K.value[i + (size_t)p->n * j] - p->K.value[j + (size_t)p->n * i]) > p->K.tolerance)
+                error("constraints: K must be symmetric");
+        double *copy = st_work_alloc((size_t)p->n * p->n, sizeof(double)),
+            *eigen = st_work_alloc(p->n, sizeof(double)), query;
+        memcpy(copy, p->K.value, (size_t)p->n * p->n * sizeof(double));
+        int n = p->n, lwork = -1, info = 0;
+        F77_CALL(dsyev)("N", "U", &n, copy, &n, eigen, &query, &lwork, &info FCONE FCONE);
+        if (info || !R_FINITE(query) || query > INT_MAX) error("constraints: K eigendecomposition failed");
+        lwork = (int)query; if (lwork < 1) lwork = 1;
+        double *work = st_work_alloc(lwork, sizeof(double));
+        p->K.workspace_cells = 2.0 * n * n + n + lwork;
+        F77_CALL(dsyev)("N", "U", &n, copy, &n, eigen, work, &lwork, &info FCONE FCONE);
+        if (info || eigen[0] < -1e-8 * fmax(1, p->K.scale)) error("constraints: K must be positive semidefinite");
+    }
+    p->candidate_K = st_work_alloc((size_t)p->n * p->n, sizeof(double));
+    int *index = st_work_alloc(p->n, sizeof(int));
+    for (int i = 0; i < p->n; i++)
+    {
+        index[i] = st_allocate_find(p->ids[i], p->K.ids, p->K.n);
+        if (index[i] < 0) error("constraints: K does not contain every candidate parent");
+    }
+    for (int j = 0; j < p->n; j++) for (int i = 0; i < p->n; i++)
+        p->candidate_K[i + (size_t)p->n * j] = p->K.value[index[i] + (size_t)p->K.n * index[j]];
+}
+
+static void st_practical_identified_matrix(st_population_matrix *out, SEXP matrix, SEXP candidate_names, int allow_unnamed)
+{
+    SEXP names = isNull(matrix) ? R_NilValue : getAttrib(matrix, R_DimNamesSymbol);
+    int fully_named = TYPEOF(names) == VECSXP && XLENGTH(names) == 2 &&
+        TYPEOF(VECTOR_ELT(names, 0)) == STRSXP && TYPEOF(VECTOR_ELT(names, 1)) == STRSXP;
+    if (!allow_unnamed || fully_named || isNull(matrix)) { st_population_prepare_matrix(out, matrix); return; }
+    st_practical temporary; memset(&temporary, 0, sizeof(temporary));
+    if (TYPEOF(candidate_names) != STRSXP || XLENGTH(candidate_names) > INT_MAX)
+        error("constraints: an unnamed inherited K needs its original candidate order");
+    temporary.n = (int)XLENGTH(candidate_names); temporary.ids = st_work_alloc(temporary.n, sizeof(*temporary.ids));
+    for (int i = 0; i < temporary.n; i++) temporary.ids[i] = st_population_id(candidate_names, i);
+    st_practical_prepare_matrix(&temporary, matrix); *out = temporary.K;
+    out->workspace_cells += (double)temporary.n * temporary.n + temporary.n * (sizeof(int) + sizeof(char *)) / (double)sizeof(double);
+}
+
+static void st_practical_select(st_practical *p, st_practical_rule *r,
+    SEXP parent_column, SEXP pool_column, SEXP role_column, SEXP basis_column, int row)
+{
+    const char *parent = st_practical_text(parent_column, row, 1, "parent"),
+        *pool = st_practical_text(pool_column, row, 1, "pool"),
+        *role = st_practical_text(role_column, row, 0, "role"),
+        *basis = st_practical_text(basis_column, row, 0, "basis");
+    r->parent = parent ? st_allocate_find(parent, p->ids, p->n) : -1;
+    r->pool = pool ? st_allocate_find(pool, p->pools, p->npools) : -1;
+    r->role = st_practical_role(role); r->basis = st_practical_basis(basis);
+    if (parent && r->parent < 0) error("constraints: unknown parent '%s'", parent);
+    if (pool && r->pool < 0) error("constraints: unknown pool '%s'", pool);
+    if (r->parent >= 0)
+    {
+        if (r->pool >= 0 && r->pool != p->pool[r->parent]) error("constraints: parent and pool selectors conflict");
+        r->pool = p->pool[r->parent];
+    }
+    if (r->role < 0 || r->basis < 0) error("constraints: unsupported role or basis");
+    if (r->role) { p->roles = 1; p->requirements |= 1; }
+    p->requirements |= r->basis == 0 ? 16 : r->basis == 1 ? 4 : r->basis == 2 ? 8 : 2;
+}
+
+static void *st_cross_practical_prepare_ids(SEXP request, int nparents,
+                                           const char **parent_ids,
+                                           SEXP original_K, double tolerance,
+                                           int direction_known)
+{
+    if (isNull(request)) return NULL;
+    if (TYPEOF(request) != VECSXP || Rf_isObject(request)) error("constraints: request must be a named list");
+    SEXP names = getAttrib(request, R_NamesSymbol);
+    if (XLENGTH(request) && (TYPEOF(names) != STRSXP || XLENGTH(names) != XLENGTH(request)))
+        error("constraints: request must have unique supported names");
+    unsigned int seen = 0;
+    for (R_xlen_t i = 0; i < XLENGTH(request); i++)
+    {
+        const char *name = st_practical_text(names, (int)i, 0, "component name");
+        int key = !strcmp(name, "parents") ? 0 : !strcmp(name, "limits") ? 1 : !strcmp(name, "equal.use") ? 2 :
+            !strcmp(name, "relatedness") ? 3 : !strcmp(name, "diversity") ? 4 : -1;
+        if (key < 0 || (seen & (1u << key))) error("constraints: unknown or repeated component '%s'", name);
+        seen |= 1u << key;
+    }
+    st_practical *p = st_work_alloc(1, sizeof(*p)); memset(p, 0, sizeof(*p));
+    st_work_adopt(p, st_practical_destroy_rows);
+    p->request = request; p->original_K = original_K;
+    p->n = nparents; p->tolerance = tolerance; p->direction_known = direction_known;
+    if (!R_FINITE(tolerance) || tolerance < 0 || tolerance > 1) error("constraints: invalid numerical tolerance");
+    p->ids = st_work_alloc(p->n, sizeof(*p->ids)); p->pools = st_work_alloc((size_t)p->n + 1, sizeof(*p->pools));
+    p->pool = st_work_alloc(p->n, sizeof(int)); p->seed_ok = st_work_alloc(p->n, sizeof(int)); p->pollen_ok = st_work_alloc(p->n, sizeof(int));
+    for (int i = 0; i < p->n; i++)
+    {
+        p->ids[i] = parent_ids[i];
+        if (st_allocate_find(p->ids[i], p->ids, i) >= 0) error("constraints: duplicate candidate parent");
+        p->pool[i] = 0; p->seed_ok[i] = p->pollen_ok[i] = 1;
+    }
+    p->pools[0] = "all"; p->npools = 1;
+    SEXP parents = st_population_get(request, "parents"); int metadata_rows = st_practical_rows(parents, "parents");
+    if (!isNull(parents))
+    {
+        if (metadata_rows != p->n) error("constraints: parents metadata must cover the exact candidate universe");
+        SEXP ids = st_practical_column(parents, "parent", metadata_rows, 0),
+            pools = st_practical_column(parents, "pool", metadata_rows, 1),
+            seed = st_practical_column(parents, "seed", metadata_rows, 1), pollen = st_practical_column(parents, "pollen", metadata_rows, 1);
+        if ((!isNull(seed) && TYPEOF(seed) != LGLSXP) || (!isNull(pollen) && TYPEOF(pollen) != LGLSXP))
+            error("constraints: seed and pollen eligibility flags must be logical");
+        if (!isNull(seed) || !isNull(pollen)) { p->roles = 1; p->requirements |= 1; }
+        int *found = st_work_alloc(p->n, sizeof(int)); memset(found, 0, (size_t)p->n * sizeof(int));
+        if (!isNull(pools)) p->npools = 0;
+        for (int row = 0; row < metadata_rows; row++)
+        {
+            const char *id = st_practical_text(ids, row, 0, "parent"),
+                *pool = isNull(pools) ? "all" : st_practical_text(pools, row, 0, "pool");
+            int at = st_allocate_find(id, p->ids, p->n);
+            if (at < 0 || found[at]) error("constraints: unknown or duplicated parent metadata ID");
+            found[at] = 1;
+            int group = st_allocate_find(pool, p->pools, p->npools);
+            if (group < 0) { group = p->npools; p->pools[p->npools++] = pool; }
+            p->pool[at] = group;
+            if (!isNull(seed)) p->seed_ok[at] = LOGICAL(seed)[row];
+            if (!isNull(pollen)) p->pollen_ok[at] = LOGICAL(pollen)[row];
+            if (p->seed_ok[at] == NA_LOGICAL || p->pollen_ok[at] == NA_LOGICAL)
+                error("constraints: eligibility flags must not be missing");
+        }
+    }
+    SEXP limits = st_population_get(request, "limits"), equal = st_population_get(request, "equal.use"),
+        relatedness = st_population_get(request, "relatedness"), diversity = st_population_get(request, "diversity");
+    int nl = st_practical_rows(limits, "limits"), ne = st_practical_rows(equal, "equal.use"),
+        nq = st_practical_rows(relatedness, "relatedness");
+    size_t capacity = (size_t)p->n * 2 + nl + ne + nq + !isNull(diversity);
+    if (capacity > INT_MAX) error("constraints: too many restrictions");
+    p->rule_capacity = (int)capacity;
+    p->rules = st_work_alloc(capacity, sizeof(*p->rules)); memset(p->rules, 0, capacity * sizeof(*p->rules));
+    for (int i = 0; i < p->n; i++) for (int role = 1; role <= 2; role++)
+        if (!(role == 1 ? p->seed_ok[i] : p->pollen_ok[i]))
+        {
+            st_practical_rule *r = p->rules + p->nrules++;
+            r->kind = 4; r->parent = i; r->pool = p->pool[i]; r->role = role; r->basis = -1; r->measure = 6;
+            st_text_write(r->id, sizeof(r->id), "eligibility.%d.%s", i + 1, role == 1 ? "seed" : "pollen");
+        }
+    if (nl)
+    {
+        SEXP parent = st_practical_column(limits, "parent", nl, 1), pool = st_practical_column(limits, "pool", nl, 1),
+            role = st_practical_column(limits, "role", nl, 0), basis = st_practical_column(limits, "basis", nl, 0),
+            measure = st_practical_column(limits, "measure", nl, 0), lower = st_practical_column(limits, "lower", nl, 0),
+            upper = st_practical_column(limits, "upper", nl, 0);
+        for (int row = 0; row < nl; row++)
+        {
+            st_practical_rule *r = p->rules + p->nrules++;
+            r->kind = 0; st_practical_select(p, r, parent, pool, role, basis, row);
+            const char *m = st_practical_text(measure, row, 0, "measure");
+            r->measure = !strcmp(m, "parents") ? 0 : !strcmp(m, "uses") ? 1 : !strcmp(m, "share") ? 2 : -1;
+            if (r->measure < 0 || (r->measure == 0 && r->parent >= 0)) error("constraints: invalid measure or individual parent-count selector");
+            r->lower = st_practical_bound(lower, row, r->measure, 0); r->upper = st_practical_bound(upper, row, r->measure, 1);
+            if (r->lower > r->upper) error("constraints: lower bound exceeds upper bound");
+            r->integer = r->measure != 2; r->upper_unbounded = r->upper == R_PosInf;
+            r->lo = r->integer ? (int64_t)r->lower : 0; r->hi = r->integer && !r->upper_unbounded ? (int64_t)r->upper : INT64_MAX;
+            for (int j = 0; j < p->nrules - 1; j++)
+            {
+                st_practical_rule *other = p->rules + j;
+                if (!other->kind && r->parent == other->parent && r->pool == other->pool && r->role == other->role &&
+                    r->basis == other->basis && r->measure == other->measure) error("constraints: duplicate limits selector");
+            }
+            st_text_write(r->id, sizeof(r->id), "limit.%d", row + 1);
+        }
+    }
+    if (ne)
+    {
+        SEXP pool = st_practical_column(equal, "pool", ne, 1), role = st_practical_column(equal, "role", ne, 0),
+            basis = st_practical_column(equal, "basis", ne, 0);
+        for (int row = 0; row < ne; row++)
+        {
+            st_practical_rule *r = p->rules + p->nrules++;
+            r->kind = 1; r->measure = 3; r->integer = 1;
+            st_practical_select(p, r, R_NilValue, pool, role, basis, row);
+            for (int j = 0; j < p->nrules - 1; j++)
+            {
+                st_practical_rule *other = p->rules + j;
+                if (other->kind == 1 && r->pool == other->pool && r->role == other->role && r->basis == other->basis)
+                    error("constraints: duplicate equal.use selector");
+            }
+            st_text_write(r->id, sizeof(r->id), "equal.use.%d", row + 1);
+        }
+    }
+    if (nq)
+    {
+        SEXP basis = st_practical_column(relatedness, "basis", nq, 0), maximum = st_practical_column(relatedness, "max", nq, 0);
+        for (int row = 0; row < nq; row++)
+        {
+            st_practical_rule *r = p->rules + p->nrules++;
+            r->kind = 2; r->parent = r->pool = -1; r->measure = 4;
+            r->basis = st_practical_basis(st_practical_text(basis, row, 0, "basis"));
+            if (r->basis < 0) error("constraints: unsupported relatedness basis");
+            r->lower = NA_REAL; r->upper = st_population_number(maximum, row, nq, "relatedness max");
+            for (int j = 0; j < p->nrules - 1; j++) if (p->rules[j].kind == 2 && p->rules[j].basis == r->basis)
+                error("constraints: duplicate relatedness basis");
+            p->requirements |= 32 | (r->basis == 0 ? 16 : r->basis == 1 ? 4 : r->basis == 2 ? 8 : 2);
+            st_text_write(r->id, sizeof(r->id), "relatedness.%d", row + 1);
+        }
+    }
+    if (!isNull(diversity))
+    {
+        if (TYPEOF(diversity) != VECSXP || XLENGTH(diversity) != 3)
+            error("constraints: diversity needs exactly G, max and sample");
+        SEXP G = st_population_get(diversity, "G"), maximum = st_population_get(diversity, "max"),
+            sample = st_population_get(diversity, "sample");
+        const char *s = st_legacy_marker_string(sample, "diversity sample");
+        p->diversity_basis = !strcmp(s, "family.slots") ? 0 : !strcmp(s, "produced.founder.slots") ? 2 :
+            !strcmp(s, "retained.founder.slots") ? 3 : -1;
+        if (p->diversity_basis < 0) error("constraints: unsupported nominal founder diversity sample");
+        p->diversity_max = st_cross_scalar(maximum, "diversity max");
+        p->diversity = st_cross_propsd_prepare64(G, p->n, p->ids);
+        p->requirements |= 64 | (p->diversity_basis == 0 ? 16 : p->diversity_basis == 2 ? 8 : 2);
+        st_practical_rule *r = p->rules + p->nrules++;
+        r->kind = 3; r->parent = r->pool = -1; r->basis = p->diversity_basis; r->measure = 5;
+        r->lower = NA_REAL; r->upper = p->diversity_max;
+        st_text_write(r->id, sizeof(r->id), "diversity.1");
+    }
+    if (!isNull(original_K)) st_practical_prepare_matrix(p, original_K);
+    if ((size_t)p->n > SIZE_MAX / 12 / sizeof(int64_t)) error("constraints: incidence workspace overflow");
+    p->incidence = st_work_alloc((size_t)p->n * 12, sizeof(int64_t));
+    p->active_seed = st_work_alloc(p->n, sizeof(int)); p->active_pollen = st_work_alloc(p->n, sizeof(int));
+    p->active_all = st_work_alloc(p->n, sizeof(int));
+    p->result = -2;
+    for (int i = 0; i < p->nrules; i++)
+    {
+        p->rules[i].state = -2; p->rules[i].achieved = p->rules[i].achieved_lower = p->rules[i].achieved_upper = NA_REAL;
+        p->rules[i].lower_residual = p->rules[i].upper_residual = NA_REAL;
+        p->rules[i].reason = "candidate not evaluated";
+    }
+    return p;
+}
+
+int st_cross_practical_roles(const void *prepared)
+{ return prepared ? ((const st_practical *)prepared)->roles : 0; }
+
+int st_cross_practical_requirements(const void *prepared)
+{ return prepared ? ((const st_practical *)prepared)->requirements : 0; }
+
+int st_cross_practical_eligible(const void *prepared, int seed, int pollen)
+{
+    if (!prepared) return seed != pollen;
+    const st_practical *p = prepared;
+    if (seed < 0 || pollen < 0 || seed >= p->n || pollen >= p->n || seed == pollen) return 0;
+    return p->seed_ok[seed] && p->pollen_ok[pollen];
+}
+
+void *st_cross_practical_prepare(SEXP request, SEXP parent_names,
+                                SEXP original_K, double tolerance,
+                                int direction_known)
+{
+    if (isNull(request))
+        return NULL;
+    if (TYPEOF(parent_names) != STRSXP || XLENGTH(parent_names) > INT_MAX)
+        error("constraints: candidate parents must have unique character names");
+    int n = (int)XLENGTH(parent_names);
+    const char **ids = st_work_alloc(n, sizeof(*ids));
+    for (int i = 0; i < n; i++)
+        ids[i] = st_population_id(parent_names, i);
+    return st_cross_practical_prepare_ids(request, n, ids, original_K,
+                                          tolerance, direction_known);
+}
+
+
+static void st_practical_product(uint64_t a, uint64_t b, uint64_t *hi, uint64_t *lo)
+{
+    uint64_t a0 = (uint32_t)a, a1 = a >> 32, b0 = (uint32_t)b, b1 = b >> 32,
+        w0 = a0 * b0, t = a1 * b0 + (w0 >> 32), w1 = (uint32_t)t,
+        w2 = t >> 32;
+    w1 += a0 * b1;
+    *hi = a1 * b1 + w2 + (w1 >> 32);
+    *lo = (w1 << 32) | (uint32_t)w0;
+}
+
+static uint64_t st_practical_share_threshold(double x, uint64_t denominator, int ceiling)
+{
+    if (x <= 0) return 0;
+    if (x >= 1) return denominator;
+    int exponent = 0;
+    double fraction = frexp(x, &exponent);
+    uint64_t mantissa = (uint64_t)ldexp(fraction, 53), hi, lo, integer = 0;
+    st_practical_product(mantissa, denominator, &hi, &lo);
+    int shift = 53 - exponent, remainder = 0;
+    if (shift >= 128) remainder = hi != 0 || lo != 0;
+    else if (shift >= 64)
+    {
+        int k = shift - 64;
+        integer = hi >> k;
+        remainder = lo != 0 || (k && (hi & ((UINT64_C(1) << k) - 1)) != 0);
+    }
+    else
+    {
+        integer = (hi << (64 - shift)) | (lo >> shift);
+        remainder = (lo & ((UINT64_C(1) << shift) - 1)) != 0;
+    }
+    return integer + (ceiling && remainder);
+}
+
+static int64_t *st_practical_incidence(st_practical *p, int basis, int role)
+{ return p->incidence + ((size_t)basis * 3 + role) * p->n; }
+
+static void st_practical_add(int64_t *total, int64_t value, int64_t maximum, const char *name)
+{
+    if (value < 0 || value > maximum || *total > maximum - value)
+        error("constraints: %s exceeds its exact supported count domain", name);
+    *total += value;
+}
+
+static void st_practical_record_incidence(st_practical *p, int basis, int seed, int pollen,
+                                           int64_t count, int direction_known)
+{
+    int64_t *all = st_practical_incidence(p, basis, 0);
+    st_practical_add(all + seed, count, INT64_C(9007199254740991), "parent incidence");
+    st_practical_add(all + pollen, count, INT64_C(9007199254740991), "parent incidence");
+    if (direction_known)
+    {
+        st_practical_add(st_practical_incidence(p, basis, 1) + seed, count, INT64_C(9007199254740991), "seed incidence");
+        st_practical_add(st_practical_incidence(p, basis, 2) + pollen, count, INT64_C(9007199254740991), "pollen incidence");
+    }
+}
+
+static int st_practical_member(const st_practical *p, const st_practical_rule *r, int parent)
+{
+    return r->parent >= 0 ? r->parent == parent : r->pool < 0 || r->pool == p->pool[parent];
+}
+
+static void st_practical_q(st_practical *p, int basis, double *value, double *lower, double *upper)
+{
+    int64_t *incidence = st_practical_incidence(p, basis, 0), denominator = p->totals[basis] * 2;
+    long double denom = denominator, denom_lower = denom, denom_upper = denom;
+    if ((int64_t)denom_lower > denominator) denom_lower = nextafterl(denom_lower, -INFINITY);
+    if ((int64_t)denom_upper < denominator) denom_upper = nextafterl(denom_upper, INFINITY);
+    long double point = 0, lo = 0, hi = 0;
+    for (int j = 0; j < p->n; j++) if (incidence[j]) for (int i = 0; i < p->n; i++) if (incidence[i])
+    {
+        long double k = p->candidate_K[i + (size_t)p->n * j];
+        if (!k) continue;
+        long double ai = (long double)incidence[i] / denom, aj = (long double)incidence[j] / denom,
+            il = fmaxl(0, nextafterl((long double)incidence[i] / denom_upper, -INFINITY)),
+            iu = nextafterl((long double)incidence[i] / denom_lower, INFINITY),
+            jl = fmaxl(0, nextafterl((long double)incidence[j] / denom_upper, -INFINITY)),
+            ju = nextafterl((long double)incidence[j] / denom_lower, INFINITY),
+            product_lower = nextafterl(il * jl, -INFINITY), product_upper = nextafterl(iu * ju, INFINITY),
+            term_lower = nextafterl((k < 0 ? product_upper : product_lower) * k, -INFINITY),
+            term_upper = nextafterl((k < 0 ? product_lower : product_upper) * k, INFINITY);
+        point += ai * k * aj; lo = nextafterl(lo + term_lower, -INFINITY); hi = nextafterl(hi + term_upper, INFINITY);
+    }
+    *value = st_population_finite(point, "practical relatedness");
+    *lower = (double)lo; if ((long double)*lower > lo) *lower = nextafter(*lower, R_NegInf);
+    *upper = (double)hi; if ((long double)*upper < hi) *upper = nextafter(*upper, R_PosInf);
+}
+
+int st_cross_practical_check(void *prepared, int nrows, const int *seed, const int *pollen,
+    const int *biological_family, const int64_t *produced, const int64_t *retained,
+    const int64_t *operations, int direction_known)
+{
+    if (!prepared) return 1;
+    st_practical *p = prepared;
+    if (nrows < 0 || (nrows && (!seed || !pollen))) error("constraints: invalid candidate row arrays");
+    st_practical_reserve(p, nrows); p->nrows = nrows; p->nf = 0; p->checked = 1; p->direction_known = direction_known != 0;
+    memset(p->incidence, 0, (size_t)p->n * 12 * sizeof(int64_t));
+    memset(p->active_seed, 0, (size_t)p->n * sizeof(int)); memset(p->active_pollen, 0, (size_t)p->n * sizeof(int));
+    memset(p->active_all, 0, (size_t)p->n * sizeof(int)); memset(p->totals, 0, sizeof(p->totals));
+    for (int b = 0; b < 4; b++) for (int r = 0; r < 3; r++) p->known[b][r] = 0;
+    p->known[0][0] = p->known[2][0] = produced != NULL;
+    p->known[1][0] = operations != NULL; p->known[3][0] = retained != NULL;
+    for (int row = 0; row < nrows; row++)
+    {
+        int a = seed[row], b = pollen[row];
+        if (a < 0 || b < 0 || a >= p->n || b >= p->n || a == b)
+            error("constraints: actual candidate parents are invalid or selfed");
+        int64_t n = produced ? produced[row] : 0, r = retained ? retained[row] : 0,
+            m = operations ? operations[row] : 0;
+        if ((produced && (n < 0 || n > INT_MAX)) || (retained && (r < 0 || r > INT_MAX || (produced && r > n))) ||
+            (operations && (m < 0 || m > INT64_C(9007199254740991))))
+            error("constraints: invalid actual produced, retained or operation count");
+        if (operations && n > 0 && !m) error("constraints: a produced operation cannot have zero n.operations");
+        if (produced) { st_practical_add(p->totals + 2, n, INT64_C(9007199254740991), "total produced"); st_practical_record_incidence(p, 2, a, b, n, direction_known); }
+        if (retained) { st_practical_add(p->totals + 3, r, INT64_C(9007199254740991), "total retained"); st_practical_record_incidence(p, 3, a, b, r, direction_known); }
+        if (operations) { st_practical_add(p->totals + 1, m, INT64_C(9007199254740991), "total operations"); st_practical_record_incidence(p, 1, a, b, m, direction_known); }
+        if (n > 0 || r > 0 || m > 0)
+        {
+            p->active_all[a]++; p->active_all[b]++;
+            if (direction_known) { p->active_seed[a]++; p->active_pollen[b]++; }
+        }
+        int low = a < b ? a : b, high = a < b ? b : a, family = -1,
+            hint = biological_family ? biological_family[row] : -1;
+        if (biological_family && hint < 0) error("constraints: biological family hints must be nonnegative");
+        for (int e = 0; e < p->nf; e++)
+        {
+            int same = p->family_a[e] == low && p->family_b[e] == high;
+            if (biological_family && ((same && p->family_hint[e] != hint) || (!same && p->family_hint[e] == hint)))
+                error("constraints: biological family hint conflicts with actual parent keys");
+            if (same) { family = e; break; }
+        }
+        if (family < 0)
+        {
+            family = p->nf++; p->family_a[family] = low; p->family_b[family] = high; p->family_hint[family] = hint;
+            p->family_seed[family] = p->family_pollen[family] = -1; p->family_ambiguous[family] = 0;
+            p->family_n[family] = p->family_r[family] = 0;
+        }
+        st_practical_add(p->family_n + family, n, INT_MAX, "pooled produced");
+        st_practical_add(p->family_r + family, r, INT_MAX, "pooled retained");
+        if (n > 0 && direction_known)
+        {
+            if (p->family_seed[family] < 0) { p->family_seed[family] = a; p->family_pollen[family] = b; }
+            else if (p->family_seed[family] != a || p->family_pollen[family] != b) p->family_ambiguous[family] = 1;
+        }
+        if (!(row % 256)) R_CheckUserInterrupt();
+    }
+    int family_ambiguous = 0;
+    for (int e = 0; e < p->nf; e++) if (p->family_n[e])
+    {
+        p->totals[0]++;
+        st_practical_record_incidence(p, 0, p->family_a[e], p->family_b[e], 1, 0);
+        if (p->family_ambiguous[e]) family_ambiguous = 1;
+        else if (direction_known) st_practical_record_incidence(p, 0, p->family_seed[e], p->family_pollen[e], 0, 0);
+        if (direction_known && !p->family_ambiguous[e])
+        {
+            st_practical_incidence(p, 0, 1)[p->family_seed[e]]++;
+            st_practical_incidence(p, 0, 2)[p->family_pollen[e]]++;
+        }
+    }
+    for (int b = 0; b < 4; b++)
+    {
+        p->known[b][1] = p->known[b][2] = p->known[b][0] && (direction_known || p->totals[b] == 0);
+        if (b == 0 && family_ambiguous) p->known[b][1] = p->known[b][2] = 0;
+    }
+    int failed = 0, unresolved = 0, unavailable = 0;
+    for (int row = 0; row < p->nrules; row++)
+    {
+        st_practical_rule *r = p->rules + row;
+        r->state = 1; r->achieved = r->achieved_lower = r->achieved_upper = NA_REAL;
+        r->lower_residual = r->upper_residual = NA_REAL; r->count = r->lower_count = r->upper_count = 0;
+        r->numerator = r->denominator = 0; r->selected = 0; r->common = 0; r->allowance = 0; r->reason = "qualified";
+        if (r->kind == 4)
+        {
+            r->integer = 1; r->count = direction_known ? (r->role == 1 ? p->active_seed[r->parent] : p->active_pollen[r->parent]) : 0;
+            r->upper_count = r->count; r->lower_count = -r->count;
+            if (!direction_known && p->active_all[r->parent]) { r->state = -2; r->reason = "reproductive direction is unavailable"; }
+            else if (r->count) { r->state = -1; r->reason = "an ineligible parent is used in this role"; }
+        }
+        else if (!p->known[r->basis][r->role])
+        {
+            if (r->basis == 0 && r->role && family_ambiguous)
+                error("constraints: role-specific family.slots requires one unambiguous direction per active family");
+            r->state = -2; r->reason = r->basis == 1 ? "operation counts or directions are unavailable" :
+                r->basis == 3 ? "retained counts or directions are unavailable" : "produced family directions are unavailable";
+        }
+        else if ((r->measure == 2 || r->kind == 2 || r->kind == 3) && !p->totals[r->basis])
+        { r->state = -2; r->reason = "the declared basis has zero total and undefined shares"; }
+        else if (r->kind == 2)
+        {
+            if (!p->candidate_K) { r->state = -2; r->reason = "the original K reference is unavailable"; }
+            else
+            {
+                st_practical_q(p, r->basis, &r->achieved, &r->achieved_lower, &r->achieved_upper);
+                r->upper_residual = r->achieved - r->upper;
+                r->allowance = fmax(r->achieved - r->achieved_lower, r->achieved_upper - r->achieved);
+                r->state = r->achieved_upper <= r->upper ? 1 : r->achieved_lower > r->upper ? -1 : 0;
+                r->reason = r->state == 0 ? "relatedness arithmetic overlaps the inclusive boundary" : "original-scale relatedness arithmetic";
+            }
+        }
+        else if (r->kind == 3)
+        {
+            if (p->totals[r->basis] > INT64_C(4503599627370495))
+                error("constraints: nominal founder-slot PropSD sample total exceeds 2^53-1");
+            p->diversity_loss = st_cross_propsd_eval64(p->diversity, st_practical_incidence(p, r->basis, 0));
+            r->achieved = r->achieved_lower = r->achieved_upper = p->diversity_loss;
+            r->upper_residual = r->achieved - r->upper; r->state = r->achieved < r->upper ? 1 : -1;
+            r->reason = "strict nominal founder-slot PropSD approximation";
+        }
+        else
+        {
+            int64_t *incidence = st_practical_incidence(p, r->basis, r->role), sum = 0, minimum = INT64_MAX, maximum = 0;
+            int selected = 0;
+            for (int i = 0; i < p->n; i++) if (st_practical_member(p, r, i))
+            {
+                st_practical_add(&sum, incidence[i], INT64_C(18014398509481982), "group incidence");
+                if (incidence[i]) { selected++; if (incidence[i] < minimum) minimum = incidence[i]; if (incidence[i] > maximum) maximum = incidence[i]; }
+            }
+            r->selected = selected;
+            if (r->kind == 1)
+            {
+                r->count = selected > 1 ? maximum - minimum : 0; r->common = selected ? minimum : 0;
+                r->lower_count = -r->count; r->upper_count = r->count;
+                r->state = r->count ? -1 : 1; r->reason = "exact integer equality on positive-use support";
+            }
+            else if (r->measure == 2)
+            {
+                r->numerator = sum; r->denominator = p->totals[r->basis] * (r->role ? 1 : 2);
+                uint64_t lo = st_practical_share_threshold(r->lower, (uint64_t)r->denominator, 1),
+                    hi = st_practical_share_threshold(r->upper, (uint64_t)r->denominator, 0);
+                r->achieved = (double)((long double)sum / r->denominator);
+                r->achieved_lower = r->achieved_upper = r->achieved;
+                r->lower_residual = (double)((long double)r->lower - (long double)sum / r->denominator);
+                r->upper_residual = (double)((long double)sum / r->denominator - r->upper);
+                r->state = (uint64_t)sum >= lo && (uint64_t)sum <= hi ? 1 : -1;
+                r->reason = "exact integer ratio compared with represented binary64 bounds";
+            }
+            else
+            {
+                r->count = r->measure == 0 ? selected : sum;
+                r->lower_count = r->lo - r->count; r->upper_count = r->upper_unbounded ? 0 : r->count - r->hi;
+                r->state = r->count >= r->lo && (r->upper_unbounded || r->count <= r->hi) ? 1 : -1;
+                r->reason = "exact integer incidence comparison";
+            }
+        }
+        if (r->integer && r->state != -2)
+        {
+            r->achieved = r->count <= INT64_C(9007199254740991) ? (double)r->count : NA_REAL;
+            r->achieved_lower = r->achieved_upper = r->achieved;
+            r->lower_residual = llabs(r->lower_count) <= INT64_C(9007199254740991) ? (double)r->lower_count : NA_REAL;
+            r->upper_residual = r->upper_unbounded ? R_NegInf : llabs(r->upper_count) <= INT64_C(9007199254740991) ? (double)r->upper_count : NA_REAL;
+        }
+        if (r->state == -1) failed = 1;
+        else if (r->state == -2) unavailable = 1;
+        else if (!r->state) unresolved = 1;
+    }
+    p->result = failed ? -1 : unavailable ? -2 : unresolved ? 0 : 1;
+    return p->result;
+}
+
+static void st_practical_set_exact(SEXP column, int row, int64_t value)
+{
+    char text[64]; st_text_write(text, sizeof(text), "%lld", (long long)value);
+    SET_STRING_ELT(column, row, mkChar(text));
+}
+
+double st_cross_practical_workspace_cells(const void *prepared)
+{
+    if (!prepared) return 0;
+    const st_practical *p = prepared;
+    double cells = (sizeof(*p) + (long double)p->rule_capacity * sizeof(*p->rules) +
+        (long double)p->row_capacity * (6 * sizeof(int) + 2 * sizeof(int64_t)) +
+        (2.0L * p->n + 1) * sizeof(char *) + (7.0L * p->n) * sizeof(int) +
+        12.0L * p->n * sizeof(int64_t)) / sizeof(double) + p->K.workspace_cells +
+        (p->candidate_K ? (double)p->n * p->n + p->n * sizeof(int) / (double)sizeof(double) : 0) +
+        (p->diversity ? st_cross_propsd_workcells64(p->diversity) : 0);
+    return ceil(cells);
+}
+
+SEXP st_cross_practical_report(const void *prepared)
+{
+    if (!prepared) return R_NilValue;
+    const st_practical *p = prepared;
+    int np = 0;
+    const char *out_names[] = {"feasible", "checks", "requests", "conventions", "parents", "requirements", "reference.contributions", "workspace.cells", "evaluated"};
+    SEXP out = st_allocate_list(9, out_names, &np);
+    SET_VECTOR_ELT(out, 0, st_allocate_keep(ScalarLogical(p->result == 1 ? TRUE : p->result == -1 ? FALSE : NA_LOGICAL), &np));
+    const char *columns[] = {"id", "kind", "parent", "pool", "role", "basis", "measure", "achieved", "achieved.exact",
+        "numerator.exact", "denominator.exact", "lower", "upper", "lower.residual", "upper.residual",
+        "lower.residual.exact", "upper.residual.exact", "arithmetic.allowance", "state", "reason", "selected.parents", "common.use.exact",
+        "achieved.lower", "achieved.upper"};
+    SEXP checks = st_legacy_marker_frame(24, columns, p->nrules, &np);
+    for (int j = 0; j < 24; j++)
+    {
+        int numeric = j == 7 || (j >= 11 && j <= 14) || j == 17 || j == 20 || j >= 22;
+        SET_VECTOR_ELT(checks, j, st_allocate_keep(allocVector(numeric ? REALSXP : STRSXP, p->nrules), &np));
+    }
+    const char *kind_names[] = {"limit", "equal.use", "relatedness", "diversity", "eligibility"},
+        *role_names[] = {"all", "seed", "pollen"}, *basis_names[] = {"family.slots", "operations", "produced", "retained"},
+        *measure_names[] = {"parents", "uses", "share", "equal.use", "relatedness", "propsd.loss", "active.records"};
+    for (int row = 0; row < p->nrules; row++)
+    {
+        const st_practical_rule *r = p->rules + row;
+        const char *text[] = {r->id, kind_names[r->kind], r->parent < 0 ? NULL : p->ids[r->parent],
+            r->pool < 0 ? NULL : p->pools[r->pool], role_names[r->role], r->basis < 0 ? "active.records" : basis_names[r->basis], measure_names[r->measure]};
+        for (int j = 0; j < 7; j++) SET_STRING_ELT(VECTOR_ELT(checks, j), row, text[j] ? mkCharCE(text[j], CE_UTF8) : NA_STRING);
+        REAL(VECTOR_ELT(checks, 7))[row] = r->achieved;
+        for (int j = 8; j <= 10; j++) SET_STRING_ELT(VECTOR_ELT(checks, j), row, NA_STRING);
+        if (r->integer && r->state != -2) st_practical_set_exact(VECTOR_ELT(checks, 8), row, r->count);
+        if (r->measure == 2 && r->denominator)
+        { st_practical_set_exact(VECTOR_ELT(checks, 9), row, r->numerator); st_practical_set_exact(VECTOR_ELT(checks, 10), row, r->denominator); }
+        REAL(VECTOR_ELT(checks, 11))[row] = r->lower; REAL(VECTOR_ELT(checks, 12))[row] = r->upper;
+        REAL(VECTOR_ELT(checks, 13))[row] = r->lower_residual; REAL(VECTOR_ELT(checks, 14))[row] = r->upper_residual;
+        SET_STRING_ELT(VECTOR_ELT(checks, 15), row, NA_STRING); SET_STRING_ELT(VECTOR_ELT(checks, 16), row, NA_STRING);
+        if (r->integer && r->state != -2)
+        {
+            st_practical_set_exact(VECTOR_ELT(checks, 15), row, r->lower_count);
+            if (r->upper_unbounded) SET_STRING_ELT(VECTOR_ELT(checks, 16), row, mkChar("-Inf"));
+            else st_practical_set_exact(VECTOR_ELT(checks, 16), row, r->upper_count);
+        }
+        REAL(VECTOR_ELT(checks, 17))[row] = r->allowance;
+        SET_STRING_ELT(VECTOR_ELT(checks, 18), row, mkChar(r->state == 1 ? "pass" : r->state == -1 ? "fail" : r->state == 0 ? "unresolved" : "unavailable"));
+        SET_STRING_ELT(VECTOR_ELT(checks, 19), row, mkChar(r->reason ? r->reason : "not checked"));
+        REAL(VECTOR_ELT(checks, 20))[row] = r->selected == NA_INTEGER ? NA_REAL : r->selected;
+        SET_STRING_ELT(VECTOR_ELT(checks, 21), row, NA_STRING);
+        if (r->kind == 1 && r->state == 1) st_practical_set_exact(VECTOR_ELT(checks, 21), row, r->common);
+        REAL(VECTOR_ELT(checks, 22))[row] = r->achieved_lower; REAL(VECTOR_ELT(checks, 23))[row] = r->achieved_upper;
+    }
+    SET_VECTOR_ELT(out, 1, checks);
+    SEXP requests = st_allocate_keep(allocVector(VECSXP, 1), &np); SET_VECTOR_ELT(requests, 0, p->request); SET_VECTOR_ELT(out, 2, requests);
+    const char *convention_names[] = {"overall.share", "role.share", "family.slots", "integer.comparison", "share.comparison", "relatedness", "direction.known"};
+    SEXP conventions = st_allocate_list(7, convention_names, &np);
+    const char *convention_text[] = {"Parent incidences divided by twice the global basis total.", "Role incidences divided by the global role total; pools are not renormalized.",
+        "One incidence per parent per active unordered biological family.", "Checked int64 arithmetic; exact character reports beyond binary64 integer precision.",
+        "Exact integer ratios against represented binary64 inclusive bounds.", "Original full K scale; arithmetic intervals can leave a boundary unresolved."};
+    for (int i = 0; i < 6; i++) SET_VECTOR_ELT(conventions, i, st_allocate_keep(mkString(convention_text[i]), &np));
+    SET_VECTOR_ELT(conventions, 6, st_allocate_keep(ScalarLogical(p->direction_known), &np)); SET_VECTOR_ELT(out, 3, conventions);
+    const char *parent_columns[] = {"parent", "pool", "seed", "pollen"};
+    SEXP parents = st_legacy_marker_frame(4, parent_columns, p->n, &np);
+    for (int j = 0; j < 4; j++) SET_VECTOR_ELT(parents, j, st_allocate_keep(allocVector(j < 2 ? STRSXP : LGLSXP, p->n), &np));
+    for (int i = 0; i < p->n; i++)
+    {
+        SET_STRING_ELT(VECTOR_ELT(parents, 0), i, mkCharCE(p->ids[i], CE_UTF8));
+        SET_STRING_ELT(VECTOR_ELT(parents, 1), i, mkCharCE(p->pools[p->pool[i]], CE_UTF8));
+        LOGICAL(VECTOR_ELT(parents, 2))[i] = p->seed_ok[i]; LOGICAL(VECTOR_ELT(parents, 3))[i] = p->pollen_ok[i];
+    }
+    SET_VECTOR_ELT(out, 4, parents); SET_VECTOR_ELT(out, 5, st_allocate_keep(ScalarInteger(p->requirements), &np));
+    const char *basis[] = {"family.slots", "operations", "produced", "retained"};
+    SEXP reference = st_allocate_list(4, basis, &np);
+    int nref = p->K.n ? p->K.n : p->n;
+    SEXP refnames = st_allocate_keep(allocVector(STRSXP, nref), &np);
+    for (int i = 0; i < nref; i++) SET_STRING_ELT(refnames, i, mkCharCE(p->K.n ? p->K.ids[i] : p->ids[i], CE_UTF8));
+    for (int b = 0; b < 4; b++)
+    {
+        SEXP share = st_allocate_keep(allocVector(REALSXP, nref), &np);
+        for (int i = 0; i < nref; i++) REAL(share)[i] = p->known[b][0] && p->totals[b] ? 0 : NA_REAL;
+        if (p->known[b][0] && p->totals[b]) for (int i = 0; i < p->n; i++)
+        {
+            int at = p->K.n ? st_allocate_find(p->ids[i], p->K.ids, p->K.n) : i;
+            REAL(share)[at] = (double)((long double)p->incidence[((size_t)b * 3) * p->n + i] / (2 * p->totals[b]));
+        }
+        setAttrib(share, R_NamesSymbol, refnames); SET_VECTOR_ELT(reference, b, share);
+    }
+    SET_VECTOR_ELT(out, 6, reference);
+    double cells = st_cross_practical_workspace_cells(p);
+    SET_VECTOR_ELT(out, 7, st_allocate_keep(ScalarReal(ceil(cells)), &np));
+    SET_VECTOR_ELT(out, 8, st_allocate_keep(ScalarLogical(p->checked), &np));
+    UNPROTECT(np); return out;
+}
+
+typedef struct
+{
+    int count, n, nf, nrows, roles, requirements, coupled, direction_known, operations_known, result;
+    st_practical **contexts;
+    SEXP *requests, explicit_request;
+    const char **ids;
+    int *seed, *pollen, *family;
+    int64_t *produced, *retained, *operations;
+} st_practical_set;
+
+static SEXP st_practical_inherited(SEXP source)
+{
+    for (int depth = 0; depth < 128; depth++)
+    {
+        if (!inherits(source, "st.cross.plan") && !inherits(source, "st.cross.allocation") && !inherits(source, "st.cross.population")) return R_NilValue;
+        SEXP request = st_population_get(st_population_get(source, "constraints"), "practical");
+        if (!isNull(request)) return request;
+        source = st_population_get(st_population_get(source, "inputs"), "plan");
+        if (isNull(source)) return R_NilValue;
+    }
+    error("constraints: source inheritance exceeds its supported depth");
+    return R_NilValue;
+}
+
+static int64_t st_practical_operation_count(SEXP column, int row, int n)
+{
+    if (!st_allocate_numeric(column) || (XLENGTH(column) != n && XLENGTH(column) != 1))
+        error("constraints: n.operations must contain one exact count per record");
+    double x = st_legacy_marker_number(column, XLENGTH(column) == 1 ? 0 : row);
+    if (!R_FINITE(x) || x < 0 || x > 9007199254740991.0 || x != floor(x))
+        error("constraints: n.operations must be an exact nonnegative whole count at most 2^53-1");
+    return (int64_t)x;
+}
+
+static int st_practical_context_count(SEXP inherited)
+{
+    if (isNull(inherited)) return 0;
+    SEXP requests = st_population_get(inherited, "requests");
+    if (isNull(requests)) return 1;
+    if (TYPEOF(inherited) != VECSXP || XLENGTH(inherited) != 1 || TYPEOF(requests) != VECSXP || XLENGTH(requests) > INT_MAX)
+        error("constraints: invalid inherited practical request collection");
+    return (int)XLENGTH(requests);
+}
+
+static int st_practical_context_family(const st_population_data *p, const char *a, const char *b)
+{
+    for (int e = 0; e < p->nf; e++)
+        if ((!strcmp(a, p->ids[p->p1[e]]) && !strcmp(b, p->ids[p->p2[e]])) ||
+            (!strcmp(b, p->ids[p->p1[e]]) && !strcmp(a, p->ids[p->p2[e]]))) return e;
+    return -1;
+}
+
+static st_practical_set *st_practical_set_prepare(SEXP source, SEXP explicit_request, SEXP original_ids,
+    SEXP matrix, SEXP table, SEXP retained_arg, const st_population_data *data, int allocation)
+{
+    SEXP inherited = st_practical_inherited(source);
+    int old_count = st_practical_context_count(inherited), count = old_count + !isNull(explicit_request);
+    if (!count) return NULL;
+    st_practical_set *set = st_work_alloc(1, sizeof(*set)); memset(set, 0, sizeof(*set));
+    set->count = count; set->nf = data->nf; set->explicit_request = explicit_request;
+    set->contexts = st_work_alloc(count, sizeof(*set->contexts)); set->requests = st_work_alloc(count, sizeof(SEXP));
+    SEXP old_requests = st_population_get(inherited, "requests");
+    for (int i = 0; i < old_count; i++) set->requests[i] = isNull(old_requests) ? inherited : VECTOR_ELT(old_requests, i);
+    if (!isNull(explicit_request)) set->requests[old_count] = explicit_request;
+    SEXP candidates = TYPEOF(original_ids) == STRSXP ? original_ids : R_NilValue;
+    if (isNull(candidates)) for (int i = 0; i < count; i++)
+    {
+        SEXP parents = st_population_get(set->requests[i], "parents");
+        if (!isNull(parents)) { candidates = st_population_get(parents, "parent"); break; }
+    }
+    if (isNull(candidates))
+    {
+        const char **ids = st_work_alloc((size_t)data->nf * 2, sizeof(*ids)); int n = 0;
+        for (int e = 0; e < data->nf; e++)
+        {
+            const char *a = data->ids[data->p1[e]], *b = data->ids[data->p2[e]];
+            if (st_allocate_find(a, ids, n) < 0) ids[n++] = a;
+            if (st_allocate_find(b, ids, n) < 0) ids[n++] = b;
+        }
+        set->ids = ids;
+        set->n = n;
+    }
+    else
+    {
+        if (TYPEOF(candidates) != STRSXP || XLENGTH(candidates) > INT_MAX)
+            error("constraints: candidate metadata requires unique character parent IDs");
+        set->n = (int)XLENGTH(candidates);
+        set->ids = st_work_alloc(set->n, sizeof(*set->ids));
+        for (int i = 0; i < set->n; i++)
+            set->ids[i] = st_population_id(candidates, i);
+    }
+    for (int i = 0; i < count; i++)
+    {
+        set->contexts[i] = st_cross_practical_prepare_ids(set->requests[i], set->n, set->ids, matrix, 1e-10, 0);
+        st_practical *p = set->contexts[i]; set->roles |= p->roles; set->requirements |= p->requirements;
+        for (int j = 0; j < p->nrules; j++)
+            if (p->rules[j].basis == 2 && !(p->rules[j].kind == 0 && p->rules[j].measure == 0)) set->coupled = 1;
+    }
+    int raw = inherits(source, "data.frame");
+    SEXP directions = st_population_get(source, "directions"), records = st_population_get(source, "operations");
+    int record_rows = isNull(records) ? 0 : st_practical_rows(records, "operations");
+    int record_counts = !isNull(st_population_get(records, "n.progeny")) && !isNull(st_population_get(records, "n.selected"));
+    int use_raw = raw || (!allocation && record_counts);
+    set->nrows = allocation ? data->nf : use_raw ? raw ? data->nr : record_rows : data->nf;
+    set->seed = st_work_alloc(set->nrows, sizeof(int)); set->pollen = st_work_alloc(set->nrows, sizeof(int));
+    set->family = st_work_alloc(set->nrows, sizeof(int)); set->produced = st_work_alloc(set->nrows, sizeof(int64_t));
+    set->retained = st_work_alloc(set->nrows, sizeof(int64_t)); set->operations = st_work_alloc(set->nrows, sizeof(int64_t));
+    memset(set->operations, 0, (size_t)set->nrows * sizeof(int64_t));
+    int *family_seed = st_work_alloc(data->nf, sizeof(int)), *family_pollen = st_work_alloc(data->nf, sizeof(int));
+    for (int e = 0; e < data->nf; e++)
+    {
+        family_seed[e] = st_allocate_find(data->ids[data->p1[e]], set->ids, set->n);
+        family_pollen[e] = st_allocate_find(data->ids[data->p2[e]], set->ids, set->n);
+        if (family_seed[e] < 0 || family_pollen[e] < 0) error("constraints: actual crosses use a noncandidate parent");
+    }
+    if (!isNull(directions))
+    {
+        int nd = st_practical_rows(directions, "directions");
+        if (nd != data->nf) error("constraints: directions must identify every current biological family exactly once");
+        SEXP seed = st_practical_column(directions, "seed", nd, 0), pollen = st_practical_column(directions, "pollen", nd, 0),
+            family = st_practical_column(directions, "family", nd, 0);
+        int *seen = st_work_alloc(data->nf, sizeof(int)), *hints = st_work_alloc(data->nf, sizeof(int));
+        memset(seen, 0, (size_t)data->nf * sizeof(int)); memset(hints, 0, (size_t)data->nf * sizeof(int));
+        for (int row = 0; row < nd; row++)
+        {
+            const char *a = st_practical_text(seed, row, 0, "seed"), *b = st_practical_text(pollen, row, 0, "pollen");
+            int e = st_practical_context_family(data, a, b), hint = st_population_count(family, row, nd, "direction family");
+            if (e < 0 || seen[e] || hint < 1 || hint > nd || hints[hint - 1])
+                error("constraints: missing, duplicate or conflicting direction keys or hints");
+            seen[e] = 1; hints[hint - 1] = 1;
+            family_seed[e] = st_allocate_find(a, set->ids, set->n); family_pollen[e] = st_allocate_find(b, set->ids, set->n);
+            if (family_seed[e] < 0 || family_pollen[e] < 0) error("constraints: directions contain a noncandidate parent");
+        }
+        set->direction_known = 1;
+    }
+    else set->direction_known = raw && set->roles;
+    if (use_raw)
+    {
+        SEXP rows = raw ? table : records,
+            first = st_population_get(rows, raw ? "P1Name" : "seed"), second = st_population_get(rows, raw ? "P2Name" : "pollen"),
+            n = st_population_get(rows, "n.progeny"), r = raw ? retained_arg : st_population_get(rows, "n.selected"),
+            m = st_population_get(rows, "n.operations");
+        int nr = raw ? data->nr : record_rows;
+        if (!raw && TYPEOF(first) != STRSXP)
+        { first = st_population_get(rows, "P1Name"); second = st_population_get(rows, "P2Name"); }
+        if (TYPEOF(first) != STRSXP || TYPEOF(second) != STRSXP || XLENGTH(first) != nr || XLENGTH(second) != nr)
+            error("constraints: operation records need complete parent direction keys");
+        int record_direction = raw ? set->direction_known : !isNull(st_population_get(rows, "seed")) && !isNull(st_population_get(rows, "pollen"));
+        if (!raw) set->direction_known = set->direction_known || record_direction;
+        if (!raw && !isNull(m))
+        {
+            int all_missing = 1;
+            if (!st_allocate_numeric(m) || XLENGTH(m) != nr) error("constraints: invalid stored operation counts");
+            for (int row = 0; row < nr; row++) if (!ISNA(st_legacy_marker_number(m, row))) all_missing = 0;
+            if (all_missing) m = R_NilValue;
+        }
+        int64_t *sum_n = st_work_alloc(data->nf, sizeof(int64_t)), *sum_r = st_work_alloc(data->nf, sizeof(int64_t)),
+            *sum_m = st_work_alloc(data->nf, sizeof(int64_t));
+        int *seen = st_work_alloc(data->nf, sizeof(int));
+        memset(sum_n, 0, (size_t)data->nf * sizeof(int64_t)); memset(sum_r, 0, (size_t)data->nf * sizeof(int64_t));
+        memset(sum_m, 0, (size_t)data->nf * sizeof(int64_t)); memset(seen, 0, (size_t)data->nf * sizeof(int));
+        set->operations_known = !isNull(m);
+        for (int row = 0; row < nr; row++)
+        {
+            const char *a = st_population_id(first, row), *b = st_population_id(second, row);
+            int e = st_practical_context_family(data, a, b), seed = st_allocate_find(a, set->ids, set->n),
+                pollen = st_allocate_find(b, set->ids, set->n);
+            if (e < 0 || seed < 0 || pollen < 0) error("constraints: operation record keys do not match the live crosses");
+            if (!isNull(directions))
+            {
+                if (record_direction && (seed != family_seed[e] || pollen != family_pollen[e]))
+                    error("constraints: operation direction conflicts with the live family direction map");
+                seed = family_seed[e]; pollen = family_pollen[e];
+            }
+            int64_t nn = allocation ? 0 : st_population_count(n, row, nr, "n.progeny"),
+                rr = allocation ? 0 : st_population_count(r, row, nr, "n.selected"),
+                mm = isNull(m) ? 0 : st_practical_operation_count(m, row, nr);
+            if (!allocation && rr > nn) error("constraints: retained operation count exceeds its produced count");
+            st_practical_add(sum_n + e, nn, INT_MAX, "pooled live produced");
+            st_practical_add(sum_r + e, rr, INT_MAX, "pooled live retained");
+            st_practical_add(sum_m + e, mm, INT64_C(9007199254740991), "pooled operation count");
+            if (allocation && seen[e] && set->direction_known && (family_seed[e] != seed || family_pollen[e] != pollen))
+                error("constraints: allocation of a reciprocal production split is not supported");
+            if (!seen[e]) { family_seed[e] = seed; family_pollen[e] = pollen; seen[e] = 1; }
+            if (!allocation)
+            {
+                set->seed[row] = seed; set->pollen[row] = pollen; set->family[row] = e;
+                set->produced[row] = nn; set->retained[row] = rr; set->operations[row] = mm;
+            }
+        }
+        if (!allocation) for (int e = 0; e < data->nf; e++)
+            if (sum_n[e] != data->produced[e] || sum_r[e] != data->retained[e])
+                error("constraints: recorded operation counts conflict with live family counts");
+        if (allocation) for (int e = 0; e < data->nf; e++) set->operations[e] = sum_m[e];
+    }
+    else
+    {
+        SEXP stored = records;
+        if (isNull(stored) && inherits(source, "st.cross.allocation"))
+        {
+            SEXP prior = st_population_get(st_population_get(source, "inputs"), "plan");
+            if (inherits(prior, "data.frame")) stored = prior;
+        }
+        SEXP m = st_population_get(stored, "n.operations");
+        if (!isNull(m))
+        {
+            int nr = st_practical_rows(stored, "operations");
+            SEXP first = st_population_get(stored, "seed"), second = st_population_get(stored, "pollen");
+            int record_direction = !isNull(first) && !isNull(second);
+            if (isNull(first)) first = st_population_get(stored, "P1Name");
+            if (isNull(second)) second = st_population_get(stored, "P2Name");
+            if (TYPEOF(first) != STRSXP || TYPEOF(second) != STRSXP || XLENGTH(first) != nr || XLENGTH(second) != nr)
+                error("constraints: stored operation counts need parent keys");
+            int *seen = st_work_alloc(data->nf, sizeof(int)); memset(seen, 0, (size_t)data->nf * sizeof(int));
+            for (int row = 0; row < nr; row++)
+            {
+                int e = st_practical_context_family(data, st_population_id(first, row), st_population_id(second, row));
+                if (e < 0) error("constraints: stored operation key is absent from live crosses");
+                if (!isNull(directions) && record_direction &&
+                    (strcmp(st_population_id(first, row), set->ids[family_seed[e]]) || strcmp(st_population_id(second, row), set->ids[family_pollen[e]])))
+                    error("constraints: stored operation direction conflicts with the live family direction map");
+                seen[e] = 1;
+                st_practical_add(set->operations + e, st_practical_operation_count(m, row, nr), INT64_C(9007199254740991), "fixed operations");
+            }
+            for (int e = 0; e < data->nf; e++) if (!seen[e]) error("constraints: stored operation counts do not cover every live family");
+            set->operations_known = 1;
+        }
+    }
+    if (allocation || !use_raw) for (int e = 0; e < data->nf; e++)
+    {
+        set->seed[e] = family_seed[e]; set->pollen[e] = family_pollen[e]; set->family[e] = e;
+        set->produced[e] = data->produced[e]; set->retained[e] = data->retained[e];
+    }
+    for (int i = 0; i < set->count; i++) st_practical_reserve(set->contexts[i], set->nrows);
+    return set;
+}
+
+static int st_practical_set_check(st_practical_set *set)
+{
+    if (!set) return 1;
+    int failed = 0, unavailable = 0, unresolved = 0;
+    for (int i = 0; i < set->count; i++)
+    {
+        int state = st_cross_practical_check(set->contexts[i], set->nrows, set->seed, set->pollen, set->family,
+            set->produced, set->retained, set->operations_known ? set->operations : NULL, set->direction_known);
+        if (state == -1) failed = 1; else if (state == -2) unavailable = 1; else if (!state) unresolved = 1;
+    }
+    set->result = failed ? -1 : unavailable ? -2 : unresolved ? 0 : 1;
+    return set->result;
+}
+
+static int st_practical_allocation_check(int nf, const int *produced, void *data)
+{
+    st_practical_set *set = data;
+    if (!set || nf != set->nf || set->nrows != nf) error("constraints: invalid fixed-family allocation context");
+    for (int e = 0; e < nf; e++) set->produced[e] = produced[e];
+    return st_practical_set_check(set);
+}
+
+static int st_public_field(SEXP object, const char *name)
+{
+    SEXP names = getAttrib(object, R_NamesSymbol);
+    if (TYPEOF(object) != VECSXP || TYPEOF(names) != STRSXP || XLENGTH(names) != XLENGTH(object))
+        error("cross planning: invalid public result schema");
+    for (R_xlen_t i = 0; i < XLENGTH(object); i++)
+        if (STRING_ELT(names, i) != NA_STRING && !strcmp(CHAR(STRING_ELT(names, i)), name)) return (int)i;
+    return -1;
+}
+
+static void st_public_set(SEXP object, const char *name, SEXP value)
+{
+    int at = st_public_field(object, name);
+    if (at < 0) error("cross planning: public result has no field '%s'", name);
+    SET_VECTOR_ELT(object, at, value);
+}
+
+static SEXP st_practical_set_request(const st_practical_set *set, int *np)
+{
+    if (set->count == 1) return set->requests[0];
+    const char *names[] = {"requests"}; SEXP out = st_allocate_list(1, names, np),
+        requests = st_allocate_keep(allocVector(VECSXP, set->count), np);
+    for (int i = 0; i < set->count; i++) SET_VECTOR_ELT(requests, i, set->requests[i]);
+    SET_VECTOR_ELT(out, 0, requests); return out;
+}
+
+static SEXP st_practical_set_report(const st_practical_set *set, int *np)
+{
+    const char *names[] = {"feasible", "checks", "requests", "conventions", "contexts", "requirements", "reference.contributions"};
+    SEXP out = st_allocate_list(7, names, np), contexts = st_allocate_keep(allocVector(VECSXP, set->count), np),
+        requests = st_allocate_keep(allocVector(VECSXP, set->count), np);
+    int rows = 0;
+    for (int i = 0; i < set->count; i++)
+    {
+        SEXP report = PROTECT(st_cross_practical_report(set->contexts[i]));
+        SEXP checks = st_population_get(report, "checks"); int n = (int)XLENGTH(VECTOR_ELT(checks, 0));
+        if (n > INT_MAX - rows) error("constraints: combined report has too many rows");
+        rows += n; SET_VECTOR_ELT(contexts, i, report); SET_VECTOR_ELT(requests, i, set->requests[i]); UNPROTECT(1);
+    }
+    SEXP first = st_population_get(VECTOR_ELT(contexts, 0), "checks"), column_names = getAttrib(first, R_NamesSymbol);
+    const char **labels = st_work_alloc(XLENGTH(first), sizeof(*labels));
+    for (int j = 0; j < XLENGTH(first); j++) labels[j] = CHAR(STRING_ELT(column_names, j));
+    SEXP checks = st_legacy_marker_frame((int)XLENGTH(first), labels, rows, np);
+    setAttrib(checks, R_NamesSymbol, column_names);
+    for (int j = 0; j < XLENGTH(first); j++) SET_VECTOR_ELT(checks, j, st_allocate_keep(allocVector(TYPEOF(VECTOR_ELT(first, j)), rows), np));
+    int at = 0;
+    for (int i = 0; i < set->count; i++)
+    {
+        SEXP child = st_population_get(VECTOR_ELT(contexts, i), "checks"); int n = (int)XLENGTH(VECTOR_ELT(child, 0));
+        for (int row = 0; row < n; row++)
+        {
+            for (int j = 0; j < XLENGTH(first); j++)
+                if (TYPEOF(VECTOR_ELT(first, j)) == REALSXP) REAL(VECTOR_ELT(checks, j))[at] = REAL(VECTOR_ELT(child, j))[row];
+                else SET_STRING_ELT(VECTOR_ELT(checks, j), at, STRING_ELT(VECTOR_ELT(child, j), row));
+            if (set->count > 1)
+            {
+                char id[96]; st_text_write(id, sizeof(id), "context.%d.%s", i + 1, CHAR(STRING_ELT(VECTOR_ELT(child, 0), row)));
+                SET_STRING_ELT(VECTOR_ELT(checks, 0), at, mkChar(id));
+            }
+            at++;
+        }
+    }
+    SET_VECTOR_ELT(out, 0, st_allocate_keep(ScalarLogical(set->result == 1 ? TRUE : set->result == -1 ? FALSE : NA_LOGICAL), np));
+    SET_VECTOR_ELT(out, 1, checks); SET_VECTOR_ELT(out, 2, requests);
+    SET_VECTOR_ELT(out, 3, st_population_get(VECTOR_ELT(contexts, 0), "conventions")); SET_VECTOR_ELT(out, 4, contexts);
+    SET_VECTOR_ELT(out, 5, st_allocate_keep(ScalarInteger(set->requirements), np));
+    SET_VECTOR_ELT(out, 6, st_population_get(VECTOR_ELT(contexts, 0), "reference.contributions"));
+    return out;
+}
+
+static SEXP st_practical_directions(const st_practical_set *set, const st_population_data *p, int *np)
+{
+    if (!set->direction_known)
+        return R_NilValue;
+    int *chosen = st_work_alloc(p->nf, sizeof(*chosen));
+    for (int e = 0; e < p->nf; e++)
+    {
+        int found = -1;
+        for (int row = 0; row < set->nrows; row++)
+            if (set->family[row] == e)
+            {
+                if (found >= 0 &&
+                    (set->seed[found] != set->seed[row] ||
+                     set->pollen[found] != set->pollen[row]))
+                    return R_NilValue;
+                found = row;
+            }
+        if (found < 0)
+            error("constraints: missing live family direction");
+        chosen[e] = found;
+    }
+    const char *columns[] = {"family", "seed", "pollen"};
+    SEXP out = st_legacy_marker_frame(3, columns, p->nf, np);
+    for (int j = 0; j < 3; j++)
+        SET_VECTOR_ELT(out, j,
+                       st_allocate_keep(allocVector(j ? STRSXP : INTSXP, p->nf), np));
+    for (int e = 0; e < p->nf; e++)
+    {
+        int found = chosen[e];
+        INTEGER(VECTOR_ELT(out, 0))[e] = e + 1;
+        SET_STRING_ELT(VECTOR_ELT(out, 1), e, mkCharCE(set->ids[set->seed[found]], CE_UTF8));
+        SET_STRING_ELT(VECTOR_ELT(out, 2), e, mkCharCE(set->ids[set->pollen[found]], CE_UTF8));
+    }
+    return out;
+}
+
+static SEXP st_practical_operations(const st_practical_set *set, int *np)
+{
+    int multiple = 0;
+    if (set->direction_known) for (int i = 0; i < set->nrows; i++) for (int j = 0; j < i; j++)
+        if (set->family[i] == set->family[j] && (set->seed[i] != set->seed[j] || set->pollen[i] != set->pollen[j])) multiple = 1;
+    if (!multiple && !set->operations_known) return R_NilValue;
+    const char *columns[] = {"family", set->direction_known ? "seed" : "P1Name", set->direction_known ? "pollen" : "P2Name",
+        multiple ? "n.progeny" : "n.operations", "n.selected", "n.operations"};
+    int nr = multiple ? set->nrows : set->nf, nc = multiple ? 6 : 4;
+    SEXP out = st_legacy_marker_frame(nc, columns, nr, np);
+    for (int j = 0; j < nc; j++) SET_VECTOR_ELT(out, j, st_allocate_keep(allocVector(j == 0 ? INTSXP : j < 3 ? STRSXP : REALSXP, nr), np));
+    for (int row = 0; row < nr; row++)
+    {
+        int at = row; int64_t total = 0;
+        if (!multiple)
+        {
+            at = -1;
+            for (int j = 0; j < set->nrows; j++) if (set->family[j] == row)
+            { if (at < 0) at = j; st_practical_add(&total, set->operations[j], INT64_C(9007199254740991), "family operations"); }
+            if (at < 0) error("constraints: missing operation family key");
+        }
+        INTEGER(VECTOR_ELT(out, 0))[row] = set->family[at] + 1;
+        SET_STRING_ELT(VECTOR_ELT(out, 1), row, mkCharCE(set->ids[set->seed[at]], CE_UTF8));
+        SET_STRING_ELT(VECTOR_ELT(out, 2), row, mkCharCE(set->ids[set->pollen[at]], CE_UTF8));
+        if (!multiple) REAL(VECTOR_ELT(out, 3))[row] = (double)total;
+        else
+        {
+            REAL(VECTOR_ELT(out, 3))[row] = (double)set->produced[at]; REAL(VECTOR_ELT(out, 4))[row] = (double)set->retained[at];
+            REAL(VECTOR_ELT(out, 5))[row] = set->operations_known ? (double)set->operations[at] : NA_REAL;
+        }
+    }
+    return out;
+}
+
+static void st_allocate_print_line(int width, const char *format, ...);
+
+static void st_practical_print_summary(SEXP diagnostics, int width)
+{
+    SEXP report = st_population_get(diagnostics, "practical");
+    if (isNull(report)) return;
+    SEXP checks = st_population_get(report, "checks"), state = st_population_get(checks, "state"),
+        feasible = st_population_get(report, "feasible");
+    int pass = 0, fail = 0, unresolved = 0, unavailable = 0;
+    if (TYPEOF(state) != STRSXP) error("print: invalid practical check states");
+    for (R_xlen_t i = 0; i < XLENGTH(state); i++)
+    {
+        const char *s = st_population_id(state, (int)i);
+        if (!strcmp(s, "pass")) pass++; else if (!strcmp(s, "fail")) fail++;
+        else if (!strcmp(s, "unresolved")) unresolved++; else if (!strcmp(s, "unavailable")) unavailable++;
+        else error("print: invalid practical check state");
+    }
+    int ok = asLogical(feasible);
+    st_allocate_print_line(width, "Practical checks: %s; pass %d, fail %d, unresolved %d, unavailable %d",
+        ok == TRUE ? "feasible" : ok == FALSE ? "infeasible" : "unqualified", pass, fail, unresolved, unavailable);
+}
+
+static int st_practical_request_roles(SEXP request)
+{
+    if (isNull(request)) return 0;
+    SEXP requests = st_population_get(request, "requests");
+    if (TYPEOF(requests) == VECSXP)
+    {
+        for (R_xlen_t i = 0; i < XLENGTH(requests); i++) if (st_practical_request_roles(VECTOR_ELT(requests, i))) return 1;
+        return 0;
+    }
+    SEXP parents = st_population_get(request, "parents");
+    if (!isNull(st_population_get(parents, "seed")) || !isNull(st_population_get(parents, "pollen"))) return 1;
+    const char *tables[] = {"limits", "equal.use"};
+    for (int i = 0; i < 2; i++)
+    {
+        SEXP roles = st_population_get(st_population_get(request, tables[i]), "role");
+        if (TYPEOF(roles) == STRSXP) for (R_xlen_t row = 0; row < XLENGTH(roles); row++)
+            if (STRING_ELT(roles, row) != NA_STRING && (!strcmp(CHAR(STRING_ELT(roles, row)), "seed") ||
+                !strcmp(CHAR(STRING_ELT(roles, row)), "pollen"))) return 1;
+    }
+    return 0;
+}
+
+static int st_practical_original_roles(SEXP plan)
+{
+    SEXP known = st_population_get(st_population_get(st_population_get(plan, "diagnostics"), "practical.search"), "directions.known");
+    if (TYPEOF(known) == LGLSXP && XLENGTH(known) == 1 && LOGICAL(known)[0] == TRUE) return 1;
+    return st_practical_request_roles(st_practical_inherited(plan));
+}
+
+static void st_population_variable_flags(SEXP request, SEXP ids, int n, int *seed, int *pollen)
+{
+    if (isNull(request)) return;
+    SEXP requests = st_population_get(request, "requests");
+    if (TYPEOF(requests) == VECSXP)
+    {
+        for (R_xlen_t i = 0; i < XLENGTH(requests); i++) st_population_variable_flags(VECTOR_ELT(requests, i), ids, n, seed, pollen);
+        return;
+    }
+    SEXP parents = st_population_get(request, "parents"), parent = st_population_get(parents, "parent"),
+        seed_column = st_population_get(parents, "seed"), pollen_column = st_population_get(parents, "pollen");
+    if (isNull(seed_column) && isNull(pollen_column)) return;
+    if (TYPEOF(parent) != STRSXP || XLENGTH(parent) != n ||
+        (!isNull(seed_column) && (TYPEOF(seed_column) != LGLSXP || XLENGTH(seed_column) != n)) ||
+        (!isNull(pollen_column) && (TYPEOF(pollen_column) != LGLSXP || XLENGTH(pollen_column) != n)))
+        error("cross planning: invalid source eligibility metadata");
+    for (int row = 0; row < n; row++)
+    {
+        const char *id = st_population_id(parent, row); int at = -1;
+        for (int i = 0; i < n; i++) if (!strcmp(id, st_population_id(ids, i))) { at = i; break; }
+        if (at < 0) error("cross planning: eligibility metadata uses a noncandidate parent");
+        if ((!isNull(seed_column) && LOGICAL(seed_column)[row] == NA_LOGICAL) ||
+            (!isNull(pollen_column) && LOGICAL(pollen_column)[row] == NA_LOGICAL))
+            error("cross planning: source eligibility must not be missing");
+        if (!isNull(seed_column)) seed[at] &= LOGICAL(seed_column)[row] != 0;
+        if (!isNull(pollen_column)) pollen[at] &= LOGICAL(pollen_column)[row] != 0;
+    }
+}
+
+static void st_population_variable_keys_check(st_population_variable_contract *v, SEXP plan, SEXP ids)
+{
+    if (!v->active) return;
+    if (TYPEOF(ids) != STRSXP || XLENGTH(ids) > INT_MAX) error("cross planning: variable source needs its candidate IDs");
+    int n = (int)XLENGTH(ids), *seed = st_work_alloc(n, sizeof(int)), *pollen = st_work_alloc(n, sizeof(int)),
+        *seen = st_work_alloc(v->rows, sizeof(int));
+    for (int i = 0; i < n; i++) seed[i] = pollen[i] = 1;
+    memset(seen, 0, (size_t)v->rows * sizeof(int));
+    v->workspace_cells += (2.0L * n + v->rows) * sizeof(int) / sizeof(double);
+    st_population_variable_flags(st_practical_inherited(plan), ids, n, seed, pollen);
+    for (int row = 0; row < v->rows; row++)
+    {
+        const char *a = st_population_id(v->first, row), *b = st_population_id(v->second, row); int found_a = 0, found_b = 0;
+        for (int i = 0; i < n; i++)
+        { const char *id = st_population_id(ids, i); if (!strcmp(a, id)) found_a = 1; if (!strcmp(b, id)) found_b = 1; }
+        if (!found_a || !found_b) error("cross planning: effective bounds use a noncandidate parent");
+    }
+    SEXP allowed = st_population_get(st_population_get(plan, "inputs"), "pairs");
+    int roles = st_practical_original_roles(plan);
+    if (isNull(allowed))
+    {
+        for (int i = 0; i < n; i++) for (int j = i + 1; j < n; j++)
+        {
+            if (roles && !(seed[i] && pollen[j]) && !(seed[j] && pollen[i])) continue;
+            int at = st_population_variable_row(v, st_population_id(ids, i), st_population_id(ids, j));
+            if (at < 0) error("cross planning: effective bounds omit an eligible biological family");
+            seen[at] = 1;
+        }
+    }
+    else
+    {
+        SEXP a = R_NilValue, b = R_NilValue; R_xlen_t rows = 0; int matrix = 0;
+        if (TYPEOF(allowed) == STRSXP)
+        {
+            SEXP dim = getAttrib(allowed, R_DimSymbol);
+            if (TYPEOF(dim) == INTSXP && XLENGTH(dim) == 2 && INTEGER(dim)[1] == 2)
+            { a = b = allowed; rows = INTEGER(dim)[0]; matrix = 1; }
+        }
+        else if (inherits(allowed, "data.frame") && TYPEOF(allowed) == VECSXP && XLENGTH(allowed) == 2)
+        { a = VECTOR_ELT(allowed, 0); b = VECTOR_ELT(allowed, 1); if (TYPEOF(a) == STRSXP) rows = XLENGTH(a); }
+        if (TYPEOF(a) != STRSXP || TYPEOF(b) != STRSXP || rows > INT_MAX || (!matrix && XLENGTH(b) != rows))
+            error("cross planning: invalid variable-source allowed pairs");
+        for (R_xlen_t row = 0; row < rows; row++)
+        {
+            const char *x = st_population_id(a, (int)row), *y = st_population_id(b, (int)(matrix ? row + rows : row));
+            int i = -1, j = -1;
+            for (int k = 0; k < n; k++)
+            { const char *id = st_population_id(ids, k); if (!strcmp(x, id)) i = k; if (!strcmp(y, id)) j = k; }
+            if (i < 0 || j < 0 || i == j) error("cross planning: invalid candidate key in source allowed pairs");
+            if (roles && !(seed[i] && pollen[j])) continue;
+            int at = st_population_variable_row(v, x, y);
+            if (at < 0) error("cross planning: effective bounds omit an eligible allowed family");
+            seen[at] = 1;
+        }
+    }
+    for (int row = 0; row < v->rows; row++) if (!seen[row])
+        error("cross planning: effective bounds contain a family outside the eligible graph");
+}
+
+static int st_practical_directed_pairs(const st_practical_set *set, SEXP original_plan)
+{
+    if (!set || !st_practical_original_roles(original_plan)) return 0;
+    SEXP allowed = st_population_get(st_population_get(original_plan, "inputs"), "pairs");
+    if (isNull(allowed)) return 0;
+    if (!set->direction_known) return -1;
+    SEXP a = R_NilValue, b = R_NilValue; R_xlen_t n = 0; int matrix = 0;
+    if (TYPEOF(allowed) == STRSXP)
+    {
+        SEXP dim = getAttrib(allowed, R_DimSymbol);
+        if (TYPEOF(dim) == INTSXP && XLENGTH(dim) == 2 && INTEGER(dim)[1] == 2)
+        { a = b = allowed; n = INTEGER(dim)[0]; matrix = 1; }
+    }
+    else if (inherits(allowed, "data.frame") && XLENGTH(allowed) == 2)
+    { a = VECTOR_ELT(allowed, 0); b = VECTOR_ELT(allowed, 1); if (TYPEOF(a) == STRSXP) n = XLENGTH(a); }
+    if (TYPEOF(a) != STRSXP || TYPEOF(b) != STRSXP || n > INT_MAX || (!matrix && XLENGTH(b) != n)) return -1;
+    int failures = 0;
+    for (int row = 0; row < set->nrows; row++)
+    {
+        if (!set->produced[row] && !set->retained[row] && (!set->operations_known || !set->operations[row])) continue;
+        int found = 0;
+        for (R_xlen_t j = 0; j < n; j++)
+            if (!strcmp(st_population_id(a, (int)j), set->ids[set->seed[row]]) &&
+                !strcmp(st_population_id(b, (int)(matrix ? j + n : j)), set->ids[set->pollen[row]])) { found = 1; break; }
+        if (!found) failures++;
+    }
+    return failures;
+}
+
+typedef int (*st_allocate_practical_callback)(int, const int *, void *);
+
+typedef struct
+{
+    int has_incumbent, complete, unresolved, proof_infeasible;
+    const char *reason, *algorithm;
+    double cells, transitions, response_upper;
+} st_allocate_practical_result;
+
+typedef struct
+{
+    int has_incumbent, unknown;
+    long double value;
+    double lower, feasible_upper, unknown_upper;
+} st_allocate_practical_best;
+
+static double st_allocate_practical_utility(st_allocate_normal_state *state, int normal_mode,
+    int retained, int produced, double scale, double *uncertainty)
+{
+    *uncertainty = 0;
+    return normal_mode ? st_allocate_normal_scaled(state, produced, retained, 0, 1, scale, uncertainty) :
+        st_allocate_response(retained, produced, scale);
+}
+
+static void st_allocate_practical_accept(st_allocate_practical_best *best, int status,
+    int nf, const int *candidate, int *produced, long double value, double lower, double upper)
+{
+    if (status == 1)
+    {
+        if (!best->has_incumbent || value > best->value)
+        {
+            memcpy(produced, candidate, (size_t)nf * sizeof(int));
+            best->has_incumbent = 1; best->value = value; best->lower = lower;
+        }
+        if (upper > best->feasible_upper) best->feasible_upper = upper;
+    }
+    else if (status == 0 || status == -2)
+    {
+        best->unknown = 1;
+        if (upper > best->unknown_upper) best->unknown_upper = upper;
+    }
+    else if (status != -1)
+        error("st.cross.allocate: invalid constrained-allocation checker result");
+}
+
+static void st_allocate_practical_seed(st_allocate_practical_best *best,
+    st_allocate_normal_state *state, int normal_mode, int nf, int budget,
+    const int *retained, const int *lower, const int *upper, const double *scale,
+    const int *candidate, int *produced, st_allocate_practical_callback check, void *check_data, int known_pass)
+{
+    int64_t total = 0;
+    for (int e = 0; e < nf; e++)
+    {
+        if (candidate[e] < lower[e] || candidate[e] > upper[e]) return;
+        total += candidate[e];
+    }
+    if (total != budget) return;
+    int status = known_pass ? 1 : check(nf, candidate, check_data);
+    if (status == -1) return;
+    long double value = 0;
+    double low = 0, high = 0;
+    for (int e = 0; e < nf; e++)
+    {
+        double err = 0, u = st_allocate_practical_utility(state, normal_mode, retained[e], candidate[e], scale[e], &err);
+        value += u;
+        low = nextafter(low + nextafter(u - err, R_NegInf), R_NegInf);
+        high = nextafter(high + nextafter(u + err, R_PosInf), R_PosInf);
+    }
+    st_allocate_practical_accept(best, status, nf, candidate, produced, value, low, high);
+}
+
+static st_allocate_practical_result st_allocate_practical_solve(st_allocate_normal_state *normal_state,
+    int normal_mode, int nf, int budget, const int *retained, const int *lower, const int *upper,
+    const double *accuracy, const double *variance, int64_t sum_retained, const int *initial,
+    int *produced, st_allocate_practical_callback check, void *check_data,
+    double max_cells, double max_transitions, double tolerance, double reserved_cells,
+    int (*external_limit)(void *), int initial_checked)
+{
+    st_allocate_practical_result answer = {0, 0, 0, 0, "max.cells", "constrained.enumeration", 0, 0, R_PosInf};
+    if (nf < 1 || budget < 1 || sum_retained < 1 || !check || (normal_mode && !normal_state))
+        error("st.cross.allocate: invalid constrained-allocation input");
+    int64_t minimum_total = 0, maximum_total = 0;
+    for (int e = 0; e < nf; e++)
+    {
+        if (retained[e] < 1 || lower[e] < retained[e] || upper[e] < lower[e])
+            error("st.cross.allocate: invalid constrained-allocation family bounds");
+        minimum_total += lower[e]; maximum_total += upper[e];
+    }
+    if (minimum_total > budget || maximum_total < budget)
+    {
+        answer.complete = answer.proof_infeasible = 1;
+        answer.reason = "family.bounds.infeasible";
+        answer.response_upper = R_NegInf;
+        answer.cells = reserved_cells;
+        return answer;
+    }
+    int extra = budget - (int)minimum_total;
+    size_t utilities = 0;
+    for (int e = 0; e < nf; e++)
+    {
+        int width = upper[e] - lower[e]; if (width > extra) width = extra;
+        if ((size_t)width + 1 > SIZE_MAX - utilities)
+            error("st.cross.allocate: constrained utility-table dimensions overflow");
+        utilities += (size_t)width + 1;
+    }
+    long double bytes = (long double)utilities * 2 * sizeof(double) +
+        (long double)nf * (sizeof(double) + sizeof(size_t) + 3 * sizeof(int)) +
+        ((long double)nf + 1) * (2 * sizeof(int) + 3 * sizeof(double) + sizeof(long double));
+    answer.cells = ceil(reserved_cells + (double)(bytes / sizeof(double)));
+    int *candidate = st_work_alloc(nf, sizeof(int));
+    double *scale = st_work_alloc(nf, sizeof(double));
+    for (int e = 0; e < nf; e++)
+    {
+        scale[e] = (retained[e] / (double)sum_retained) * accuracy[e] * sqrt(variance[e]);
+        if (!R_FINITE(scale[e]) || scale[e] < 0)
+            error("st.cross.allocate: constrained response scale is not finite and nonnegative");
+    }
+    st_allocate_practical_best best = {0, 0, R_NegInf, R_NegInf, R_NegInf, R_NegInf};
+    if (initial)
+    {
+        memcpy(candidate, initial, (size_t)nf * sizeof(int));
+        st_allocate_practical_seed(&best, normal_state, normal_mode, nf, budget, retained, lower, upper,
+            scale, candidate, produced, check, check_data, initial_checked);
+    }
+    int remaining = extra;
+    for (int e = 0; e < nf; e++)
+    {
+        int add = upper[e] - lower[e]; if (add > remaining) add = remaining;
+        candidate[e] = lower[e] + add; remaining -= add;
+    }
+    st_allocate_practical_seed(&best, normal_state, normal_mode, nf, budget, retained, lower, upper,
+        scale, candidate, produced, check, check_data, 0);
+    int externally_limited = external_limit && external_limit(check_data);
+    if (answer.cells > max_cells || (double)utilities > max_transitions || externally_limited)
+    {
+        answer.reason = externally_limited ? "genetic.resource.limit" : answer.cells > max_cells ? "max.cells" : "max.transitions";
+        answer.has_incumbent = best.has_incumbent;
+        answer.unresolved = best.unknown;
+        if (best.has_incumbent && !externally_limited && check(nf, produced, check_data) != 1)
+            error("st.cross.allocate: constrained incumbent failed its final independent check");
+        return answer;
+    }
+    int *width = st_work_alloc(nf, sizeof(int)), *next_value = st_work_alloc(nf, sizeof(int)),
+        *suffix_capacity = st_work_alloc((size_t)nf + 1, sizeof(int)),
+        *remaining_at = st_work_alloc((size_t)nf + 1, sizeof(int));
+    size_t *offset = st_work_alloc(nf, sizeof(size_t));
+    double *utility = st_work_alloc(utilities, sizeof(double)), *uncertainty = st_work_alloc(utilities, sizeof(double)),
+        *prefix_lower = st_work_alloc((size_t)nf + 1, sizeof(double)),
+        *prefix_upper = st_work_alloc((size_t)nf + 1, sizeof(double)),
+        *suffix_upper = st_work_alloc((size_t)nf + 1, sizeof(double));
+    long double *prefix_value = st_work_alloc((size_t)nf + 1, sizeof(long double));
+    size_t at = 0;
+    for (int e = 0; e < nf; e++)
+    {
+        width[e] = upper[e] - lower[e]; if (width[e] > extra) width[e] = extra;
+        offset[e] = at;
+        for (int x = 0; x <= width[e]; x++)
+        {
+            utility[at] = st_allocate_practical_utility(normal_state, normal_mode, retained[e], lower[e] + x,
+                scale[e], uncertainty + at);
+            at++; answer.transitions++;
+            if (!(x % 128)) R_CheckUserInterrupt();
+        }
+    }
+    suffix_capacity[nf] = 0; suffix_upper[nf] = 0;
+    for (int e = nf - 1; e >= 0; e--)
+    {
+        suffix_capacity[e] = width[e] > extra - suffix_capacity[e + 1] ? extra : width[e] + suffix_capacity[e + 1];
+        double greatest = R_NegInf;
+        for (int x = 0; x <= width[e]; x++)
+        {
+            size_t index = offset[e] + x;
+            double u = nextafter(utility[index] + uncertainty[index], R_PosInf);
+            if (u > greatest) greatest = u;
+        }
+        suffix_upper[e] = nextafter(greatest + suffix_upper[e + 1], R_PosInf);
+        if (!R_FINITE(suffix_upper[e])) error("st.cross.allocate: constrained objective bound is not finite");
+    }
+    prefix_lower[0] = prefix_upper[0] = 0; prefix_value[0] = 0; remaining_at[0] = extra;
+    next_value[0] = width[0] < extra ? width[0] : extra;
+    int depth = 0, stopped = 0;
+    while (depth >= 0)
+    {
+        if (external_limit && external_limit(check_data)) { stopped = externally_limited = 1; break; }
+        int lo = remaining_at[depth] > suffix_capacity[depth + 1] ? remaining_at[depth] - suffix_capacity[depth + 1] : 0;
+        if (next_value[depth] < lo) { depth--; continue; }
+        if (answer.transitions >= max_transitions) { stopped = 1; break; }
+        int x = next_value[depth]--, left = remaining_at[depth] - x;
+        candidate[depth] = lower[depth] + x;
+        size_t index = offset[depth] + x;
+        double low = nextafter(prefix_lower[depth] + nextafter(utility[index] - uncertainty[index], R_NegInf), R_NegInf),
+            high = nextafter(prefix_upper[depth] + nextafter(utility[index] + uncertainty[index], R_PosInf), R_PosInf),
+            optimistic = nextafter(high + suffix_upper[depth + 1], R_PosInf);
+        long double value = prefix_value[depth] + utility[index];
+        answer.transitions++;
+        if (!((int64_t)answer.transitions % 1024)) R_CheckUserInterrupt();
+        if (!R_FINITE(low) || !R_FINITE(high) || !R_FINITE(optimistic))
+            error("st.cross.allocate: constrained response accumulation is not finite");
+        if (best.has_incumbent && optimistic <= best.lower) continue;
+        if (depth + 1 == nf)
+        {
+            if (left) error("st.cross.allocate: constrained budget traversal failed");
+            int status = check(nf, candidate, check_data);
+            st_allocate_practical_accept(&best, status, nf, candidate, produced, value, low, high);
+        }
+        else
+        {
+            prefix_lower[depth + 1] = low; prefix_upper[depth + 1] = high; prefix_value[depth + 1] = value;
+            remaining_at[depth + 1] = left; depth++;
+            next_value[depth] = width[depth] < left ? width[depth] : left;
+        }
+    }
+    answer.has_incumbent = best.has_incumbent;
+    answer.complete = !stopped;
+    answer.proof_infeasible = answer.complete && !best.has_incumbent && !best.unknown;
+    answer.unresolved = best.unknown && (!best.has_incumbent ||
+        best.unknown_upper > best.lower + tolerance * fmax(1, fabs((double)best.value)));
+    answer.response_upper = stopped ? suffix_upper[0] : fmax(best.feasible_upper, best.unknown_upper);
+    answer.reason = stopped ? externally_limited ? "genetic.resource.limit" : "max.transitions" : answer.proof_infeasible ? "complete.fixed.pair.infeasible" :
+        !best.has_incumbent ? "complete.fixed.pair.numerically.unresolved" : "complete.fixed.pair.constrained.enumeration";
+    if (best.has_incumbent && !externally_limited && check(nf, produced, check_data) != 1)
+        error("st.cross.allocate: constrained incumbent failed its final independent check");
+    return answer;
+}
+
+static double st_practical_matrix_number(SEXP matrix, const double *identified, size_t index)
+{
+    return identified ? identified[index] : st_legacy_marker_number(matrix, index);
+}
+
+static double st_practical_set_cells(const st_practical_set *set)
+{
+    if (!set) return 0;
+    long double cells = (sizeof(*set) + (long double)set->count * (sizeof(void *) + sizeof(SEXP)) +
+        (long double)set->n * sizeof(char *) + (long double)set->nrows * (3 * sizeof(int) + 3 * sizeof(int64_t)) +
+        (long double)set->nf * (5 * sizeof(int) + 2 * sizeof(char *))) / sizeof(double);
+    for (int i = 0; i < set->count; i++)
+    {
+        const st_practical *p = set->contexts[i];
+        cells += (sizeof(*p) + (long double)p->rule_capacity * sizeof(*p->rules) +
+            (long double)p->row_capacity * (6 * sizeof(int) + 2 * sizeof(int64_t)) +
+            (2.0L * p->n + 1) * sizeof(char *) + 7.0L * p->n * sizeof(int) +
+            12.0L * p->n * sizeof(int64_t)) / sizeof(double);
+        cells += p->K.workspace_cells + (p->candidate_K ? (double)p->n * p->n + p->n * sizeof(int) / (double)sizeof(double) : 0);
+        if (p->diversity) cells += st_cross_propsd_workcells64(p->diversity);
+    }
+    return ceil((double)cells);
+}
+
+static void st_practical_set_no_incumbent(st_practical_set *set)
+{
+    set->result = -2;
+    for (int i = 0; i < set->count; i++)
+    {
+        st_practical *p = set->contexts[i]; p->checked = 0; p->result = -2;
+        memset(p->known, 0, sizeof(p->known)); memset(p->totals, 0, sizeof(p->totals));
+        for (int j = 0; j < p->nrules; j++)
+        {
+            st_practical_rule *r = p->rules + j; r->state = -2;
+            r->achieved = r->achieved_lower = r->achieved_upper = r->lower_residual = r->upper_residual = r->allowance = NA_REAL;
+            r->selected = NA_INTEGER;
+            r->denominator = 0; r->reason = "No independently feasible incumbent is available.";
+        }
+    }
+}
+
+typedef int (*st_cross_joint_check)(void *, int, const int *);
+
+typedef struct
+{
+    int families, budget, retained, lower, upper;
+    int normal_mode, algorithm, response_criterion;
+    double max_cells, max_transitions, tolerance;
+} st_cross_joint_parameters;
+
+typedef struct
+{
+    int has_incumbent, complete, unresolved, proof_infeasible, limited;
+    double response, response_error, criterion_lower, criterion_upper, gap, work, cells;
+    const char *reason, *algorithm;
+} st_cross_joint_solution;
+
+typedef struct
+{
+    int n, r, kind, quality, failed;
+    double value, kernel_error;
+} st_joint_entry;
+
+typedef struct
+{
+    st_cross_joint_parameters p;
+    SEXP original;
+    st_allocate_normal_state *normal;
+    st_joint_entry *cache;
+    size_t capacity, used;
+    int limited, numerical_failures;
+    const char *stop_reason;
+    double reserved_cells, fixed_cells, call_cells, live_cells, peak_cells, work;
+    double calls, solves, hits, misses, refinements, heap_work, dp_work, branch_work, utility_work;
+    double preparation_cpu, kernel_cpu, lookup_cpu, inner_cpu, checker_cpu;
+} st_joint_context;
+
+static double st_joint_cpu(void)
+{ return (double)clock() / CLOCKS_PER_SEC; }
+
+static void st_joint_destroy(void *opaque)
+{
+    st_joint_context *p = opaque;
+    if (p) { free(p->cache); p->cache = NULL; }
+}
+
+static double st_joint_cells(const st_joint_context *p, size_t capacity)
+{
+    return ceil(p->reserved_cells + p->fixed_cells + p->call_cells + p->live_cells +
+        (long double)capacity * sizeof(st_joint_entry) / sizeof(double));
+}
+
+static void st_joint_stop(st_joint_context *p, const char *reason)
+{
+    p->limited = 1;
+    if (!p->stop_reason) p->stop_reason = reason;
+}
+
+static uint64_t st_joint_hash(int n, int r, int kind)
+{
+    uint64_t x = ((uint64_t)(unsigned int)n << 32) ^ (unsigned int)r;
+    x ^= (uint64_t)(kind + 1) * UINT64_C(11400714819323198485);
+    x ^= x >> 30; x *= UINT64_C(13787848793156543929); x ^= x >> 27;
+    return x;
+}
+
+static size_t st_joint_slot(const st_joint_entry *cache, size_t capacity, int n, int r, int kind)
+{
+    size_t at = (size_t)st_joint_hash(n, r, kind) & (capacity - 1);
+    while (cache[at].n && !(cache[at].n == n && cache[at].r == r && cache[at].kind == kind))
+        at = (at + 1) & (capacity - 1);
+    return at;
+}
+
+static int st_joint_grow(st_joint_context *p)
+{
+    if (p->capacity > SIZE_MAX / 2 / sizeof(st_joint_entry))
+    { st_joint_stop(p, "max.cells"); return 0; }
+    size_t next = p->capacity * 2;
+    double peak = st_joint_cells(p, next + p->capacity);
+    if (peak > p->p.max_cells) { st_joint_stop(p, "max.cells"); return 0; }
+    st_joint_entry *cache = calloc(next, sizeof(*cache));
+    if (!cache) error("st.cross.plan: cannot grow the shared count cache");
+    for (size_t i = 0; i < p->capacity; i++) if (p->cache[i].n)
+    {
+        const st_joint_entry *e = p->cache + i;
+        cache[st_joint_slot(cache, next, e->n, e->r, e->kind)] = *e;
+    }
+    free(p->cache); p->cache = cache; p->capacity = next;
+    p->peak_cells = fmax(p->peak_cells, peak);
+    return 1;
+}
+
+static double st_joint_scalar(SEXP list, const char *name, double fallback, int required)
+{
+    SEXP value = st_population_get(list, name);
+    if (isNull(value))
+    {
+        if (required) error("st.cross.plan: progeny requires %s", name);
+        return fallback;
+    }
+    if (!st_allocate_numeric(value) || XLENGTH(value) != 1)
+        error("st.cross.plan: progeny %s must be one number", name);
+    double out = asReal(value);
+    if (!R_FINITE(out)) error("st.cross.plan: progeny %s must be finite", name);
+    return out;
+}
+
+void *st_cross_joint_prepare(SEXP progeny, int families, int response_criterion, double reserved_cells)
+{
+    double started = st_joint_cpu();
+    if (TYPEOF(progeny) != VECSXP || Rf_isObject(progeny))
+        error("st.cross.plan: progeny must be a named list");
+    SEXP names = getAttrib(progeny, R_NamesSymbol);
+    if (TYPEOF(names) != STRSXP || XLENGTH(names) != XLENGTH(progeny))
+        error("st.cross.plan: progeny must have unique supported names");
+    unsigned int seen = 0;
+    for (R_xlen_t i = 0; i < XLENGTH(progeny); i++)
+    {
+        const char *name = st_practical_text(names, (int)i, 0, "progeny component");
+        int key = !strcmp(name, "total.progeny") ? 0 : !strcmp(name, "n.selected") ? 1 :
+            !strcmp(name, "min.progeny") ? 2 : !strcmp(name, "max.progeny") ? 3 :
+            !strcmp(name, "selection.method") ? 4 : !strcmp(name, "control") ? 5 : -1;
+        if (key < 0 || (seen & (1u << key))) error("st.cross.plan: unknown or repeated progeny component '%s'", name);
+        seen |= 1u << key;
+    }
+    if (families < 1 || (response_criterion != 0 && response_criterion != 1) ||
+        !R_FINITE(reserved_cells) || reserved_cells < 0)
+        error("st.cross.plan: invalid joint allocation context");
+    st_joint_context *p = st_work_alloc(1, sizeof(*p)); memset(p, 0, sizeof(*p));
+    st_work_adopt(p, st_joint_destroy); p->original = progeny; p->reserved_cells = reserved_cells;
+    p->p.families = families; p->p.response_criterion = response_criterion;
+    double budget = st_joint_scalar(progeny, "total.progeny", 0, 1),
+        retained = st_joint_scalar(progeny, "n.selected", 0, 1),
+        lower = st_joint_scalar(progeny, "min.progeny", retained, 0),
+        upper = st_joint_scalar(progeny, "max.progeny", budget, 0);
+    if (budget < 1 || budget > INT_MAX || budget != floor(budget) || retained < 1 || retained > INT_MAX ||
+        retained != floor(retained) || lower < retained || lower > INT_MAX || lower != floor(lower) ||
+        upper < lower || upper > INT_MAX || upper != floor(upper))
+        error("st.cross.plan: progeny requires supported positive whole P/r/L/U with r <= L <= U");
+    p->p.budget = (int)budget; p->p.retained = (int)retained;
+    p->p.lower = (int)lower; p->p.upper = (int)upper;
+    if ((int64_t)families * p->p.lower > p->p.budget || (int64_t)families * p->p.upper < p->p.budget)
+        error("st.cross.plan: progeny budget is infeasible for the selected family count and common bounds");
+    SEXP method = st_population_get(progeny, "selection.method");
+    const char *selection = isNull(method) ? "burrows" : st_legacy_marker_string(method, "selection.method");
+    p->p.normal_mode = !strcmp(selection, "order.statistics");
+    if (!p->p.normal_mode && strcmp(selection, "burrows"))
+        error("st.cross.plan: progeny selection.method must be burrows or order.statistics");
+    p->p.max_cells = 1e7; p->p.max_transitions = 1e8; p->p.tolerance = 1e-10;
+    SEXP control = st_population_get(progeny, "control");
+    if (!isNull(control))
+    {
+        if (TYPEOF(control) != VECSXP || Rf_isObject(control)) error("st.cross.plan: progeny control must be a named list");
+        SEXP labels = getAttrib(control, R_NamesSymbol);
+        if (XLENGTH(control) && (TYPEOF(labels) != STRSXP || XLENGTH(labels) != XLENGTH(control)))
+            error("st.cross.plan: progeny control must be a named list");
+        seen = 0;
+        for (R_xlen_t i = 0; i < XLENGTH(control); i++)
+        {
+            const char *name = st_practical_text(labels, (int)i, 0, "control name");
+            int key = !strcmp(name, "max.cells") ? 0 : !strcmp(name, "max.transitions") ? 1 :
+                !strcmp(name, "tolerance") ? 2 : !strcmp(name, "algorithm") ? 3 : -1;
+            if (key < 0 || (seen & (1u << key))) error("st.cross.plan: unknown or repeated progeny control '%s'", name);
+            seen |= 1u << key;
+            if (key == 3)
+            {
+                const char *algorithm = st_legacy_marker_string(VECTOR_ELT(control, i), "algorithm");
+                p->p.algorithm = !strcmp(algorithm, "auto") ? 0 : !strcmp(algorithm, "greedy") ? 1 : !strcmp(algorithm, "dp") ? 2 : -1;
+                if (p->p.algorithm < 0) error("st.cross.plan: progeny algorithm must be auto, greedy or dp");
+            }
+            else
+            {
+                double x = st_joint_scalar(control, name, 0, 1);
+                if (key < 2 && (x < 1 || x > 9007199254740991.0 || x != floor(x)))
+                    error("st.cross.plan: progeny resource limits must be positive whole numbers at most 2^53-1");
+                if (key == 2 && x < 0) error("st.cross.plan: progeny tolerance must be nonnegative");
+                if (key == 0) p->p.max_cells = x;
+                if (key == 1) p->p.max_transitions = x;
+                if (key == 2) p->p.tolerance = x;
+            }
+        }
+    }
+    if (p->p.algorithm == 1 && !p->p.normal_mode)
+        error("st.cross.plan: progeny greedy requires order.statistics");
+    if (p->p.normal_mode) p->normal = st_allocate_normal_initialize(1, 0);
+    p->fixed_cells = (double)sizeof(*p) / sizeof(double);
+    if (p->normal) p->fixed_cells += (sizeof(*p->normal) + (long double)p->normal->cache_size * sizeof(*p->normal->cache) +
+        (long double)p->normal->limit * sizeof(int) + (long double)p->normal->lenw * sizeof(double)) / sizeof(double);
+    p->capacity = 16; p->cache = calloc(p->capacity, sizeof(*p->cache));
+    if (!p->cache) error("st.cross.plan: cannot allocate the shared count cache");
+    p->peak_cells = st_joint_cells(p, p->capacity);
+    if (p->peak_cells > p->p.max_cells) st_joint_stop(p, "max.cells");
+    p->preparation_cpu = st_joint_cpu() - started;
+    return p;
+}
+
+void st_cross_joint_parameters_get(const void *context, st_cross_joint_parameters *parameters)
+{
+    if (!context || !parameters) error("st.cross.plan: invalid joint parameter destination");
+    *parameters = ((const st_joint_context *)context)->p;
+}
+
+void st_cross_joint_validate(const void *context, int coupled)
+{
+    if (!context) error("st.cross.plan: missing joint allocation context");
+    const st_joint_context *p = context;
+    if (coupled && p->p.algorithm != 0)
+        error("st.cross.plan: coupled progeny constraints require algorithm auto");
+}
+
+double st_cross_joint_remaining(const void *context)
+{
+    const st_joint_context *p = context;
+    return p ? fmax(0, p->p.max_transitions - p->work) : 0;
+}
+
+void st_cross_joint_work_limit(void *context, double remaining)
+{
+    st_joint_context *p = context;
+    if (!p || !R_FINITE(remaining) || remaining < 0) error("cross planning: invalid cumulative count-work allowance");
+    if (remaining < 1 || remaining < p->work) { st_joint_stop(p, "frontier.max.transitions"); return; }
+    p->p.max_transitions = fmin(p->p.max_transitions, floor(remaining));
+    if (p->work >= p->p.max_transitions) st_joint_stop(p, "frontier.max.transitions");
+}
+double st_cross_joint_work_used(const void *context)
+{ return context ? ((const st_joint_context *)context)->work : 0; }
+
+int st_cross_joint_limited(const void *context)
+{ return context ? ((const st_joint_context *)context)->limited : 1; }
+
+double st_cross_joint_kernel(void *context, int n, int r, int marginal, int refinement, double *error_estimate)
+{
+    st_joint_context *p = context;
+    if (!p || !error_estimate || r < 1 || n < r || (marginal != 0 && marginal != 1) ||
+        (refinement != 0 && refinement != 1) || (marginal && n == INT_MAX))
+        error("st.cross.plan: invalid shared count-kernel request");
+    double started = st_joint_cpu(); p->calls++;
+    size_t slot = st_joint_slot(p->cache, p->capacity, n, r, marginal);
+    st_joint_entry *entry = p->cache + slot;
+    if (entry->n && entry->quality >= refinement)
+    {
+        p->hits++; *error_estimate = entry->failed ? R_PosInf : entry->kernel_error;
+        if (entry->failed) p->numerical_failures++;
+        p->lookup_cpu += st_joint_cpu() - started; return entry->value;
+    }
+    int previous = entry->n != 0;
+    if (previous) p->refinements++; else p->misses++;
+    p->lookup_cpu += st_joint_cpu() - started;
+    started = st_joint_cpu(); double value = 0, uncertainty = 0; int failed = 0;
+    if (!marginal && n == r) value = 0;
+    else if (p->p.normal_mode)
+    {
+        memset(p->normal->cache, 0, p->normal->cache_size * sizeof(*p->normal->cache));
+        double before = p->normal->failures;
+        value = st_allocate_normal_estimate(p->normal, n, r, marginal, refinement, &uncertainty);
+        failed = p->normal->failures > before;
+    }
+    else if (!marginal) value = st_cross_intensity((double)r / n, r, n);
+    else
+    {
+        double e1 = 0, e2 = 0, a = st_cross_joint_kernel(p, n, r, 0, refinement, &e1),
+            b = st_cross_joint_kernel(p, n + 1, r, 0, refinement, &e2);
+        value = b - a; uncertainty = e1 + e2 + 8 * DBL_EPSILON * (fabs(a) + fabs(b));
+    }
+    if (!R_FINITE(value) || uncertainty < 0 || ISNAN(uncertainty))
+        error("st.cross.plan: count kernel did not produce a finite value and valid uncertainty");
+    if (failed) p->numerical_failures++;
+    p->kernel_cpu += st_joint_cpu() - started;
+    if (!previous && (p->used + 1) * 2 >= p->capacity)
+    {
+        if (!st_joint_grow(p)) { *error_estimate = failed ? R_PosInf : uncertainty; return value; }
+    }
+    slot = st_joint_slot(p->cache, p->capacity, n, r, marginal); entry = p->cache + slot;
+    if (!entry->n) p->used++;
+    entry->n = n; entry->r = r; entry->kind = marginal; entry->quality = refinement;
+    entry->value = value; entry->kernel_error = uncertainty; entry->failed = failed;
+    *error_estimate = failed ? R_PosInf : uncertainty;
+    return value;
+}
+
+static int st_joint_tick(st_joint_context *p, double *counter)
+{
+    if (p->limited || p->work >= p->p.max_transitions) { st_joint_stop(p, "max.transitions"); return 0; }
+    p->work++; (*counter)++;
+    if (!((int64_t)p->work % 1024)) R_CheckUserInterrupt();
+    return 1;
+}
+
+static int st_joint_check(st_joint_context *p, st_cross_joint_check check, void *opaque, const int *produced)
+{
+    double started = st_joint_cpu(); int answer = check ? check(opaque, p->p.families, produced) : 1;
+    p->checker_cpu += st_joint_cpu() - started;
+    if (answer != 1 && answer != -1 && answer != 0 && answer != -2)
+        error("st.cross.plan: invalid joint feasibility callback state");
+    return answer;
+}
+
+static double st_joint_utility(st_joint_context *p, int n, double scale, double *uncertainty)
+{
+    *uncertainty = 0;
+    if (!p->p.response_criterion || scale == 0) return 0;
+    double kernel_error = 0, a = st_cross_joint_kernel(p, n, p->p.retained, 0, 1, &kernel_error);
+    *uncertainty = nextafter(fabs(scale) * kernel_error + 8 * DBL_EPSILON * fabs(scale * a), R_PosInf);
+    return scale * a;
+}
+
+typedef struct
+{
+    int has, unknown;
+    long double value;
+    double lower, upper, unknown_upper;
+} st_joint_best;
+
+static void st_joint_score(st_joint_context *p, const int *produced, const double *scale,
+    long double *value, double *lower, double *upper)
+{
+    *value = 0; *lower = *upper = 0;
+    if (!p->p.response_criterion) return;
+    for (int e = 0; e < p->p.families; e++)
+    {
+        double kernel_error = 0, u = st_joint_utility(p, produced[e], scale[e], &kernel_error);
+        *value += u;
+        *lower = nextafter(*lower + nextafter(u - kernel_error, R_NegInf), R_NegInf);
+        *upper = nextafter(*upper + nextafter(u + kernel_error, R_PosInf), R_PosInf);
+    }
+}
+
+static void st_joint_accept(st_joint_context *p, st_joint_best *best, const int *candidate,
+    int *produced, const double *scale, int state)
+{
+    if (state == -1) return;
+    long double value; double lower, upper;
+    st_joint_score(p, candidate, scale, &value, &lower, &upper);
+    if (state == 1)
+    {
+        if (!best->has || value > best->value)
+        {
+            memcpy(produced, candidate, (size_t)p->p.families * sizeof(int));
+            best->has = 1; best->value = value; best->lower = lower;
+        }
+        best->upper = fmax(best->upper, upper);
+    }
+    else { best->unknown = 1; best->unknown_upper = fmax(best->unknown_upper, upper); }
+}
+
+static int st_joint_counts(const st_joint_context *p, const int *counts)
+{
+    if (!counts) return 0;
+    int64_t total = 0;
+    for (int e = 0; e < p->p.families; e++)
+    {
+        if (counts[e] < p->p.lower || counts[e] > p->p.upper) return 0;
+        total += counts[e];
+    }
+    return total == p->p.budget;
+}
+
+static int st_joint_workspace(st_joint_context *p, double inner_cells)
+{
+    p->live_cells = inner_cells;
+    double cells = st_joint_cells(p, p->capacity); p->peak_cells = fmax(p->peak_cells, cells);
+    if (cells > p->p.max_cells) { p->live_cells = 0; st_joint_stop(p, "max.cells"); return 0; }
+    return 1;
+}
+
+static double st_joint_endpoint(st_joint_context *p, const double *scale)
+{
+    if (!p->p.response_criterion) return 0;
+    if (!p->p.normal_mode) return R_PosInf;
+    int maximum = p->p.budget - (p->p.families - 1) * p->p.lower;
+    if (maximum > p->p.upper) maximum = p->p.upper;
+    double upper = 0;
+    for (int e = 0; e < p->p.families; e++)
+    {
+        double kernel_error = 0, u = st_joint_utility(p, maximum, scale[e], &kernel_error);
+        upper = nextafter(upper + nextafter(u + kernel_error, R_PosInf), R_PosInf);
+    }
+    return upper;
+}
+
+static int st_joint_greedy(st_joint_context *p, const double *scale, int *candidate,
+    double *response_upper)
+{
+    int nf = p->p.families, extra = p->p.budget - nf * p->p.lower;
+    double cells = (long double)nf * (sizeof(int) + sizeof(double)) / sizeof(double);
+    if (!st_joint_workspace(p, cells)) { *response_upper = st_joint_endpoint(p, scale); return 0; }
+    void *mark = st_work_mark();
+    int *heap = st_work_alloc(nf, sizeof(int)); double *gain = st_work_alloc(nf, sizeof(double)); int size = 0;
+    for (int e = 0; e < nf; e++)
+    {
+        candidate[e] = p->p.lower;
+        if (candidate[e] < p->p.upper)
+        {
+            double kernel_error = 0;
+            gain[e] = scale[e] == 0 ? 0 : scale[e] * st_cross_joint_kernel(p, candidate[e], p->p.retained, 1, 1, &kernel_error);
+            heap[size++] = e;
+        }
+    }
+    for (int at = size / 2; at-- > 0;) st_allocate_normal_heap(heap, size, at, gain);
+    int left = extra;
+    while (left && size && st_joint_tick(p, &p->heap_work))
+    {
+        int e = heap[0]; candidate[e]++; left--;
+        if (candidate[e] < p->p.upper)
+        {
+            double kernel_error = 0;
+            gain[e] = scale[e] == 0 ? 0 : scale[e] * st_cross_joint_kernel(p, candidate[e], p->p.retained, 1, 1, &kernel_error);
+        }
+        else heap[0] = heap[--size];
+        if (size) st_allocate_normal_heap(heap, size, 0, gain);
+    }
+    int complete = !left;
+    for (int e = 0; e < nf && left; e++)
+    {
+        int add = p->p.upper - candidate[e]; if (add > left) add = left;
+        candidate[e] += add; left -= add;
+    }
+    if (left) error("st.cross.plan: joint greedy fill failed its budget");
+    if (complete)
+    {
+        long double value; double lower, upper;
+        st_joint_score(p, candidate, scale, &value, &lower, &upper);
+        double next = 0, last = R_PosInf; int have_next = 0, have_last = 0;
+        for (int e = 0; e < nf; e++)
+        {
+            if (candidate[e] < p->p.upper)
+            {
+                double kernel_error = 0, d = scale[e] == 0 ? 0 : scale[e] *
+                    st_cross_joint_kernel(p, candidate[e], p->p.retained, 1, 1, &kernel_error);
+                next = fmax(next, nextafter(d + fabs(scale[e]) * kernel_error + 8 * DBL_EPSILON * fabs(d), R_PosInf)); have_next = 1;
+            }
+            if (candidate[e] > p->p.lower)
+            {
+                double kernel_error = 0, d = scale[e] == 0 ? 0 : scale[e] *
+                    st_cross_joint_kernel(p, candidate[e] - 1, p->p.retained, 1, 1, &kernel_error);
+                last = fmin(last, fmax(0, nextafter(d - fabs(scale[e]) * kernel_error - 8 * DBL_EPSILON * fabs(d), R_NegInf))); have_last = 1;
+            }
+        }
+        double exchange = have_next && have_last ? nextafter(extra * fmax(0, nextafter(next - last, R_PosInf)), R_PosInf) : 0;
+        *response_upper = nextafter(upper + exchange, R_PosInf);
+    }
+    else *response_upper = st_joint_endpoint(p, scale);
+    st_work_reset(mark); p->live_cells = 0;
+    return complete;
+}
+
+static int st_joint_dp(st_joint_context *p, const double *scale, int *candidate, double *response_upper)
+{
+    int nf = p->p.families, extra = p->p.budget - nf * p->p.lower,
+        width = p->p.upper - p->p.lower;
+    if (width > extra) width = extra;
+    size_t stride = (size_t)extra + 1, utilities;
+    if ((size_t)nf > SIZE_MAX / ((size_t)width + 1) || (size_t)nf > SIZE_MAX / stride / sizeof(int))
+    { st_joint_stop(p, "max.cells"); return 0; }
+    utilities = (size_t)nf * ((size_t)width + 1);
+    long double transitions = (long double)nf * (extra + 1.0L) * (width + 1.0L),
+        cells = (long double)nf * stride * sizeof(int) / sizeof(double) + 2.0L * utilities + 4.0L * stride;
+    if (transitions + utilities > st_cross_joint_remaining(p))
+    { st_joint_stop(p, "max.transitions"); return 0; }
+    if (!st_joint_workspace(p, (double)cells)) return 0;
+    void *mark = st_work_mark();
+    int *trace = st_work_alloc((size_t)nf * stride, sizeof(int));
+    double *utility = st_work_alloc(utilities, sizeof(double)), *kernel_error = st_work_alloc(utilities, sizeof(double)),
+        *previous = st_work_alloc(stride, sizeof(double)), *current = st_work_alloc(stride, sizeof(double)),
+        *previous_upper = st_work_alloc(stride, sizeof(double)), *current_upper = st_work_alloc(stride, sizeof(double));
+    int stopped = 0;
+    for (int e = 0; e < nf && !stopped; e++) for (int x = 0; x <= width; x++)
+    {
+        if (!st_joint_tick(p, &p->utility_work)) { stopped = 1; break; }
+        size_t at = (size_t)e * (width + 1) + x;
+        utility[at] = st_joint_utility(p, p->p.lower + x, scale[e], kernel_error + at);
+    }
+    if (stopped) { st_work_reset(mark); p->live_cells = 0; return 0; }
+    for (int b = 0; b <= extra; b++) previous[b] = previous_upper[b] = R_NegInf;
+    previous[0] = previous_upper[0] = 0; int reached = 0;
+    for (int e = 0; e < nf && !stopped; e++)
+    {
+        int next_reached = width > extra - reached ? extra : reached + width;
+        for (int b = 0; b <= next_reached; b++)
+        {
+            double best = R_NegInf, upper = R_NegInf; int bestx = -1,
+                lo = b > reached ? b - reached : 0, hi = b < width ? b : width;
+            for (int x = lo; x <= hi; x++)
+            {
+                if (!st_joint_tick(p, &p->dp_work)) { stopped = 1; break; }
+                size_t at = (size_t)e * (width + 1) + x;
+                double value = previous[b - x] + utility[at],
+                    bound = nextafter(previous_upper[b - x] + nextafter(utility[at] + kernel_error[at], R_PosInf), R_PosInf);
+                if (value > best) { best = value; bestx = x; }
+                if (bound > upper) upper = bound;
+            }
+            if (stopped) break;
+            current[b] = best; current_upper[b] = upper; trace[(size_t)e * stride + b] = bestx;
+        }
+        double *swap = previous; previous = current; current = swap;
+        swap = previous_upper; previous_upper = current_upper; current_upper = swap; reached = next_reached;
+    }
+    if (!stopped)
+    {
+        *response_upper = previous_upper[extra]; int left = extra;
+        for (int e = nf - 1; e >= 0; e--)
+        {
+            int x = trace[(size_t)e * stride + left];
+            if (x < 0) error("st.cross.plan: joint allocation traceback failed");
+            candidate[e] = p->p.lower + x; left -= x;
+        }
+        if (left) error("st.cross.plan: joint allocation traceback did not consume the budget");
+    }
+    st_work_reset(mark); p->live_cells = 0;
+    return !stopped;
+}
+
+static int st_joint_enumerate(st_joint_context *p, const double *scale, int *candidate, int *produced,
+    st_cross_joint_check check, void *opaque, st_joint_best *best, double *response_upper)
+{
+    int nf = p->p.families, extra = p->p.budget - nf * p->p.lower,
+        width = p->p.upper - p->p.lower;
+    if (width > extra) width = extra;
+    double cells = ((long double)nf + 1) * (2 * sizeof(int) + 3 * sizeof(double) + sizeof(long double)) / sizeof(double);
+    if (!st_joint_workspace(p, cells)) return 0;
+    void *mark = st_work_mark();
+    int *next = st_work_alloc((size_t)nf + 1, sizeof(int)), *remaining = st_work_alloc((size_t)nf + 1, sizeof(int));
+    double *prefix_lower = st_work_alloc((size_t)nf + 1, sizeof(double)),
+        *prefix_upper = st_work_alloc((size_t)nf + 1, sizeof(double)), *suffix = st_work_alloc((size_t)nf + 1, sizeof(double));
+    long double *prefix = st_work_alloc((size_t)nf + 1, sizeof(long double));
+    int stopped = 0;
+    suffix[nf] = 0;
+    for (int e = nf - 1; e >= 0 && !stopped; e--)
+    {
+        double greatest = p->p.response_criterion ? R_NegInf : 0;
+        if (p->p.response_criterion && p->p.normal_mode)
+        {
+            double kernel_error = 0, value = st_joint_utility(p, p->p.lower + width, scale[e], &kernel_error);
+            greatest = nextafter(value + kernel_error, R_PosInf);
+        }
+        else if (p->p.response_criterion) for (int x = 0; x <= width; x++)
+        {
+            if (!st_joint_tick(p, &p->utility_work)) { stopped = 1; break; }
+            double kernel_error = 0, value = st_joint_utility(p, p->p.lower + x, scale[e], &kernel_error);
+            greatest = fmax(greatest, nextafter(value + kernel_error, R_PosInf));
+        }
+        suffix[e] = nextafter(greatest + suffix[e + 1], R_PosInf);
+    }
+    if (stopped) { *response_upper = R_PosInf; st_work_reset(mark); p->live_cells = 0; return 0; }
+    double relaxation = suffix[0]; prefix[0] = 0; prefix_lower[0] = prefix_upper[0] = 0;
+    remaining[0] = extra; next[0] = width < extra ? width : extra; int depth = 0;
+    while (depth >= 0 && !stopped)
+    {
+        int64_t capacity = (int64_t)(nf - depth - 1) * width;
+        int lo = remaining[depth] > capacity ? remaining[depth] - (int)capacity : 0;
+        if (next[depth] < lo) { depth--; continue; }
+        if (!st_joint_tick(p, &p->branch_work)) { stopped = 1; break; }
+        int x = next[depth]--, left = remaining[depth] - x; candidate[depth] = p->p.lower + x;
+        double kernel_error = 0, u = st_joint_utility(p, candidate[depth], scale[depth], &kernel_error),
+            low = nextafter(prefix_lower[depth] + nextafter(u - kernel_error, R_NegInf), R_NegInf),
+            high = nextafter(prefix_upper[depth] + nextafter(u + kernel_error, R_PosInf), R_PosInf),
+            optimistic = nextafter(high + suffix[depth + 1], R_PosInf);
+        long double value = prefix[depth] + u;
+        if (best->has && optimistic <= best->lower) continue;
+        if (depth + 1 == nf)
+        {
+            if (left) error("st.cross.plan: joint bounded traversal failed its budget");
+            int state = st_joint_check(p, check, opaque, candidate);
+            st_joint_accept(p, best, candidate, produced, scale, state);
+            if (!p->p.response_criterion && best->has) { depth = -1; break; }
+        }
+        else
+        {
+            prefix[depth + 1] = value; prefix_lower[depth + 1] = low; prefix_upper[depth + 1] = high;
+            remaining[depth + 1] = left; depth++; next[depth] = width < left ? width : left;
+        }
+    }
+    *response_upper = stopped ? relaxation : fmax(best->upper, best->unknown_upper);
+    st_work_reset(mark); p->live_cells = 0;
+    return !stopped;
+}
+
+void st_cross_joint_solve(void *context, const double *variance, double accuracy, const int *initial,
+    int *produced, double *intensity, double *intensity_error, double *family_response,
+    int coupled, st_cross_joint_check check, void *opaque, st_cross_joint_solution *solution)
+{
+    st_joint_context *p = context;
+    if (!p || !variance || !produced || !solution || !R_FINITE(accuracy) || accuracy < 0 || accuracy > 1)
+        error("st.cross.plan: invalid joint fixed-family allocation request");
+    st_cross_joint_validate(p, coupled); double started = st_joint_cpu(), work_before = p->work; p->solves++;
+    memset(solution, 0, sizeof(*solution)); solution->reason = "resource.limit"; solution->algorithm = "fixed.mean.feasibility";
+    solution->criterion_lower = R_NegInf; solution->criterion_upper = R_PosInf; solution->gap = R_PosInf;
+    int nf = p->p.families;
+    void *mark = st_work_mark(); double old_live = p->live_cells, old_call = p->call_cells;
+    p->call_cells = (long double)nf * (sizeof(double) + sizeof(int)) / sizeof(double);
+    p->peak_cells = fmax(p->peak_cells, st_joint_cells(p, p->capacity));
+    if (st_joint_cells(p, p->capacity) > p->p.max_cells) st_joint_stop(p, "max.cells");
+    double *scale = st_work_alloc(nf, sizeof(double)); int *candidate = st_work_alloc(nf, sizeof(int));
+    for (int e = 0; e < nf; e++)
+    {
+        if (!R_FINITE(variance[e]) || variance[e] < 0) error("st.cross.plan: joint family variances must be finite and nonnegative");
+        scale[e] = (accuracy * sqrt(variance[e])) / nf;
+    }
+    st_joint_best best = {0, 0, R_NegInf, R_NegInf, R_NegInf, R_NegInf};
+    if (st_joint_counts(p, initial))
+    { memcpy(candidate, initial, (size_t)nf * sizeof(int)); st_joint_accept(p, &best, candidate, produced, scale, st_joint_check(p, check, opaque, candidate)); }
+    int left = p->p.budget - nf * p->p.lower;
+    for (int e = 0; e < nf; e++)
+    { int add = p->p.upper - p->p.lower; if (add > left) add = left; candidate[e] = p->p.lower + add; left -= add; }
+    int fixed_state = st_joint_check(p, check, opaque, candidate);
+    st_joint_accept(p, &best, candidate, produced, scale, fixed_state);
+    int complete = 0, proof = 0; double upper = R_PosInf; const char *algorithm = "fixed.mean.feasibility";
+    if (!coupled && fixed_state != 1)
+    {
+        complete = 1; proof = fixed_state == -1;
+        upper = proof ? R_NegInf : p->p.response_criterion ? R_PosInf : 0;
+        solution->reason = proof ? "fixed.family.constraints.infeasible" : "fixed.family.constraints.unresolved";
+    }
+    else if (!p->p.response_criterion && best.has)
+    { complete = 1; upper = 0; solution->reason = "fixed.mean.feasible"; }
+    else if (!p->limited)
+    {
+        int separable_complete = 0; double separable_upper = R_PosInf;
+        if (p->p.response_criterion)
+        {
+            if (p->p.normal_mode && p->p.algorithm != 2)
+            { algorithm = "shared.greedy"; separable_complete = st_joint_greedy(p, scale, candidate, &separable_upper); }
+            else
+            { algorithm = "shared.dp"; separable_complete = st_joint_dp(p, scale, candidate, &separable_upper); }
+            if (st_joint_counts(p, candidate))
+            {
+                int state = st_joint_check(p, check, opaque, candidate);
+                st_joint_accept(p, &best, candidate, produced, scale, state);
+                if (separable_complete && state == 1) { complete = 1; upper = separable_upper; }
+            }
+        }
+        if (!complete && coupled && !p->limited)
+        {
+            algorithm = "shared.constrained.enumeration";
+            complete = st_joint_enumerate(p, scale, candidate, produced, check, opaque, &best, &upper);
+            if (R_FINITE(separable_upper)) upper = fmin(upper, separable_upper);
+            proof = complete && !best.has && !best.unknown;
+        }
+        else if (!complete && !coupled && p->p.response_criterion) upper = separable_upper;
+        if (complete) solution->reason = proof ? "complete.fixed.family.infeasible" : "complete.fixed.family.allocation";
+    }
+    if (!complete && !R_FINITE(upper) && p->p.normal_mode) upper = st_joint_endpoint(p, scale);
+    if (!p->p.response_criterion) upper = proof ? R_NegInf : 0;
+    solution->has_incumbent = best.has; solution->complete = complete; solution->proof_infeasible = proof;
+    solution->limited = !complete && p->limited; solution->algorithm = algorithm;
+    solution->criterion_upper = upper;
+    if (!complete && p->limited) solution->reason = p->stop_reason ? p->stop_reason : "resource.limit";
+    if (best.has)
+    {
+        if (st_joint_check(p, check, opaque, produced) != 1)
+            error("st.cross.plan: returned joint allocation failed its independent final check");
+        long double response = 0, error_sum = 0;
+        for (int e = 0; e < nf; e++)
+        {
+            double kernel_error = 0, a = 0;
+            if (accuracy != 0 && variance[e] != 0)
+                a = st_cross_joint_kernel(p, produced[e], p->p.retained, 0, 1, &kernel_error);
+            else if (intensity) a = st_cross_joint_kernel(p, produced[e], p->p.retained, 0, 1, &kernel_error);
+            double actual = accuracy * sqrt(variance[e]) * a;
+            response += (long double)actual / nf;
+            if (accuracy != 0 && variance[e] != 0)
+                error_sum += ((long double)accuracy * sqrt(variance[e]) / nf) * kernel_error + 16 * DBL_EPSILON * fabs(actual) / nf;
+            if (intensity) intensity[e] = a;
+            if (intensity_error) intensity_error[e] = kernel_error;
+            if (family_response) family_response[e] = actual;
+        }
+        solution->response = (double)response; solution->response_error = error_sum == 0 ? 0 : nextafter((double)error_sum, R_PosInf);
+        solution->criterion_lower = p->p.response_criterion ? nextafter(solution->response - solution->response_error, R_NegInf) : 0;
+        if (p->p.response_criterion && upper < solution->response) solution->criterion_upper = nextafter(solution->response + solution->response_error, R_PosInf);
+        solution->gap = p->p.response_criterion ? fmax(0, nextafter(solution->criterion_upper - solution->criterion_lower, R_PosInf)) : 0;
+        solution->unresolved = (best.unknown && best.unknown_upper > solution->criterion_lower + p->p.tolerance * fmax(1, fabs(solution->response))) ||
+            (p->p.response_criterion && (!R_FINITE(solution->response_error) || solution->gap > p->p.tolerance * fmax(1, fabs(solution->response))));
+    }
+    else solution->unresolved = best.unknown || (complete && !proof);
+    solution->work = p->work - work_before; solution->cells = p->peak_cells;
+    st_work_reset(mark); p->live_cells = old_live; p->call_cells = old_call; p->inner_cpu += st_joint_cpu() - started;
+}
+
+SEXP st_cross_joint_normalized(const void *context)
+{
+    const st_joint_context *p = context; if (!p) return R_NilValue;
+    int np = 0; const char *names[] = {"total.progeny", "n.selected", "min.progeny", "max.progeny", "selection.method", "control"};
+    SEXP out = st_allocate_list(6, names, &np);
+    SET_VECTOR_ELT(out, 0, st_allocate_keep(ScalarInteger(p->p.budget), &np));
+    SET_VECTOR_ELT(out, 1, st_allocate_keep(ScalarInteger(p->p.retained), &np));
+    SET_VECTOR_ELT(out, 2, st_allocate_keep(ScalarInteger(p->p.lower), &np));
+    SET_VECTOR_ELT(out, 3, st_allocate_keep(ScalarInteger(p->p.upper), &np));
+    SET_VECTOR_ELT(out, 4, st_allocate_keep(mkString(p->p.normal_mode ? "order.statistics" : "burrows"), &np));
+    const char *controls[] = {"max.cells", "max.transitions", "tolerance", "algorithm"};
+    SEXP control = st_allocate_list(4, controls, &np);
+    SET_VECTOR_ELT(control, 0, st_allocate_keep(ScalarReal(p->p.max_cells), &np));
+    SET_VECTOR_ELT(control, 1, st_allocate_keep(ScalarReal(p->p.max_transitions), &np));
+    SET_VECTOR_ELT(control, 2, st_allocate_keep(ScalarReal(p->p.tolerance), &np));
+    SET_VECTOR_ELT(control, 3, st_allocate_keep(mkString(p->p.algorithm == 0 ? "auto" : p->p.algorithm == 1 ? "greedy" : "dp"), &np));
+    SET_VECTOR_ELT(out, 5, control); UNPROTECT(np); return out;
+}
+
+static SEXP st_joint_report_public(const void *context, int variable, int *np)
+{
+    const st_joint_context *p = context; if (!p) return R_NilValue;
+    const char *names[] = {"allocation.work", "max.transitions", "remaining.work", "workspace.cells", "max.cells",
+        "inner.solves", "kernel.requests", "cache.hits", "cache.misses", "cache.refinements", "cache.entries", "cache.capacity",
+        "quadrature.evaluations", "quadrature.failures", "unqualified.kernel.requests", "limited", "reason", "work.units", "work.by.algorithm", "cpu.seconds", "variable.work.by.phase", "count.mode", "density.kernel.evaluations", "density.kernel.fallbacks", "cpu.measurement"};
+    SEXP out = st_allocate_list(variable ? 25 : 20, names, np);
+    double values[] = {p->work, p->p.max_transitions, st_cross_joint_remaining(p), p->peak_cells, p->p.max_cells,
+        p->solves, p->calls, p->hits, p->misses, p->refinements, (double)p->used, (double)p->capacity,
+        p->normal ? p->normal->evaluations : 0, p->normal ? p->normal->failures : 0, p->numerical_failures};
+    for (int i = 0; i < 15; i++) SET_VECTOR_ELT(out, i, st_allocate_keep(ScalarReal(values[i]), np));
+    SET_VECTOR_ELT(out, 15, st_allocate_keep(ScalarLogical(p->limited), np));
+    SET_VECTOR_ELT(out, 16, st_allocate_keep(mkString(p->stop_reason ? p->stop_reason : "within.limits"), np));
+    SET_VECTOR_ELT(out, 17, st_allocate_keep(mkString("Heap one-individual assignments, tested DP alternatives, utility-table alternatives and bounded enumeration count branches; one cumulative allowance for the complete joint call."), np));
+    const char *work_names[] = {"heap", "dp", "utility", "enumeration"};
+    SEXP work = st_allocate_list(4, work_names, np); double counts[] = {p->heap_work, p->dp_work, p->utility_work, p->branch_work};
+    for (int i = 0; i < 4; i++) SET_VECTOR_ELT(work, i, st_allocate_keep(ScalarReal(counts[i]), np));
+    SET_VECTOR_ELT(out, 18, work);
+    const char *cpu_names[] = {"preparation", "count.kernel", "cache.lookup", "inner.total", "practical.checker"};
+    SEXP cpu = st_allocate_list(5, cpu_names, np); double times[] = {p->preparation_cpu, p->kernel_cpu, p->lookup_cpu, p->inner_cpu, p->checker_cpu};
+    for (int i = 0; i < 5; i++) SET_VECTOR_ELT(cpu, i, st_allocate_keep(ScalarReal(times[i]), np));
+    SET_VECTOR_ELT(out, 19, cpu); return out;
+}
+
+
+SEXP st_cross_joint_report(const void *context)
+{
+    if (!context) return R_NilValue;
+    int np = 0;
+    SEXP out = st_joint_report_public(context, 0, &np);
+    UNPROTECT(np); return out;
+}
+
+typedef int (*st_cross_variable_check)(void *, int, const int *, const int *);
+
+typedef struct
+{
+    long double baseline, tail, response;
+} st_cross_variable_score;
+
+typedef struct
+{
+    int families, budget, selected, lower, upper, min_selected, max_selected;
+    int normal_mode, algorithm, response_criterion;
+    double max_cells, max_transitions, tolerance;
+} st_cross_variable_parameters;
+
+typedef struct
+{
+    int has_incumbent, complete, unresolved, proof_infeasible, limited;
+    st_cross_variable_score value, lower, upper;
+    long double selected_response;
+    double gap, work, cells;
+    const char *reason, *algorithm;
+} st_cross_variable_solution;
+
+typedef struct
+{
+    st_cross_variable_parameters p;
+    st_joint_context *kernel;
+    SEXP original, parent_names;
+    const char **ids;
+    int np, nf, necessary;
+    int *first, *second, *lower, *upper, *min_selected, *max_selected, *lookup;
+    size_t lookup_size;
+    double fixed_cells, production_work, retention_work, block_work, bound_work, enumeration_work;
+    double density_kernels, density_fallbacks;
+} st_variable_context;
+
+typedef struct
+{
+    int n, r, marginal;
+    double constant;
+} st_var_density_state;
+
+static void st_var_density_integrand(double *x, int count, void *opaque)
+{
+    const st_var_density_state *p = opaque;
+    for (int i = 0; i < count; i++)
+    {
+        double z = x[i], logp = pnorm5(z, 0, 1, 1, 1), logq = pnorm5(z, 0, 1, 0, 1), value;
+        if (!p->marginal)
+            value = exp(p->constant - z * z + (p->r - 1.0) * logp + (p->n - p->r - 1.0) * logq);
+        else
+            value = st_allocate_normal_ei(z) * exp(p->constant - .5 * z * z +
+                (p->r - 1.0) * logq + (p->n - p->r) * logp);
+        x[i] = value;
+    }
+}
+
+static double st_var_kernel(st_variable_context *p, int n, int r, int marginal,
+    int refinement, double *kernel_error);
+
+static int st_var_density_estimate(st_variable_context *p, int n, int r, int marginal,
+    int refinement, double *value, double *uncertainty)
+{
+    if (!marginal && r > n - r)
+    {
+        double error = 0, complement = 0;
+        int qualified = st_var_density_estimate(p, n, n - r, 0, refinement, &complement, &error);
+        long double factor = (long double)(n - r) / r;
+        *value = (double)(factor * complement);
+        *uncertainty = nextafter((double)(factor * error) + 32 * DBL_EPSILON * fabs(*value), R_PosInf);
+        return qualified && R_FINITE(*value) && R_FINITE(*uncertainty);
+    }
+    st_var_density_state state = {n, r, marginal, 0};
+    state.constant = marginal ? -log((double)r) - lbeta(r, (double)n - r + 1) - .91893853320467274178032973640561764 :
+        log((double)n / r) - lbeta(r, (double)n - r) - 1.8378770664093454835606594728112353;
+    st_allocate_normal_state *work = p->kernel->normal;
+    double epsabs = refinement ? 4e-14 : 3e-13, epsrel = refinement ? 2e-13 : 2e-12;
+    if (marginal) epsabs /= n;
+    long double sum = 0, errors = 0; int failed = 0;
+    for (int part = 0; part < 2; part++)
+    {
+        double left = part ? 0 : -12, right = part ? 12 : 0, result = 0, abserr = 0;
+        int neval = 0, status = 0, last = 0;
+        Rdqags(st_var_density_integrand, &state, &left, &right, &epsabs, &epsrel,
+            &result, &abserr, &neval, &status, &work->limit, &work->lenw, &last, work->iwork, work->work);
+        work->evaluations += neval;
+        if (status || !R_FINITE(result) || !R_FINITE(abserr) || result < 0 || abserr < 0) failed = 1;
+        sum += result; errors += abserr; R_CheckUserInterrupt();
+    }
+    *value = (double)sum;
+    *uncertainty = nextafter((double)errors + 1e-27 + (512 + 8.0 * n) * DBL_EPSILON * fabs(*value), R_PosInf);
+    return !failed && R_FINITE(*value) && R_FINITE(*uncertainty) && *value >= 0;
+}
+
+static double st_var_kernel(st_variable_context *p, int n, int r, int marginal,
+    int refinement, double *kernel_error)
+{
+    st_joint_context *k = p->kernel;
+    if (!kernel_error || r < 1 || n < r || (marginal != 0 && marginal != 1) ||
+        (refinement != 0 && refinement != 1) || (marginal && n == INT_MAX))
+        error("st.cross.plan: invalid variable count-kernel request");
+    size_t slot = st_joint_slot(k->cache, k->capacity, n, r, marginal);
+    st_joint_entry *entry = k->cache + slot;
+    if (entry->n && entry->quality >= refinement)
+    {
+        k->calls++; k->hits++;
+        *kernel_error = entry->failed ? R_PosInf : entry->kernel_error;
+        if (entry->failed) k->numerical_failures++;
+        return entry->value;
+    }
+    if (!p->p.normal_mode || n > 256 || (!marginal && (n == r || (n == 2 && r == 1))))
+        return st_cross_joint_kernel(k, n, r, marginal, refinement, kernel_error);
+    int previous = entry->n != 0;
+    k->calls++; if (previous) k->refinements++; else k->misses++;
+    double started = st_joint_cpu(), value = 0, uncertainty = 0; int failed = 0;
+    p->density_kernels++;
+    int qualified = st_var_density_estimate(p, n, r, marginal, refinement, &value, &uncertainty);
+    if (!qualified)
+    {
+        p->density_fallbacks++;
+        double before = k->normal->failures;
+        memset(k->normal->cache, 0, k->normal->cache_size * sizeof(*k->normal->cache));
+        value = st_allocate_normal_estimate(k->normal, n, r, marginal, refinement, &uncertainty);
+        failed = k->normal->failures > before;
+    }
+    if (!R_FINITE(value) || uncertainty < 0 || ISNAN(uncertainty)) error("st.cross.plan: variable count kernel failed to return a valid estimate");
+    if (failed) k->numerical_failures++;
+    k->kernel_cpu += st_joint_cpu() - started;
+    if (!previous && (k->used + 1) * 2 >= k->capacity)
+    {
+        if (!st_joint_grow(k)) { *kernel_error = failed ? R_PosInf : uncertainty; return value; }
+    }
+    slot = st_joint_slot(k->cache, k->capacity, n, r, marginal); entry = k->cache + slot;
+    if (!entry->n) k->used++;
+    entry->n = n; entry->r = r; entry->kind = marginal; entry->quality = refinement;
+    entry->value = value; entry->kernel_error = uncertainty; entry->failed = failed;
+    *kernel_error = failed ? R_PosInf : uncertainty;
+    return value;
+}
+
+static void st_var_two_sum(long double a, long double b, long double *sum, long double *tail)
+{
+    *sum = a + b;
+    if (!isfinite(*sum)) { *tail = 0; return; }
+    long double v = *sum - a;
+    *tail = (a - (*sum - v)) + (b - v);
+}
+
+static void st_var_accumulate(long double *high, long double *low, long double value, long double *lost)
+{
+    long double a, b, c, d;
+    st_var_two_sum(*high, value, &a, &b);
+    st_var_two_sum(*low, b, &c, &d);
+    st_var_two_sum(a, c, high, low);
+    if (d != 0) *lost = nextafterl(*lost + fabsl(d), INFINITY);
+}
+
+static st_cross_variable_score st_var_score_add(st_cross_variable_score a, st_cross_variable_score b)
+{
+    st_cross_variable_score out = {a.baseline, a.tail, a.response + b.response};
+    long double lost = 0;
+    st_var_accumulate(&out.baseline, &out.tail, b.baseline, &lost);
+    st_var_accumulate(&out.baseline, &out.tail, b.tail, &lost);
+    return out;
+}
+
+static st_cross_variable_score st_var_score_add_bound(st_cross_variable_score a,
+    st_cross_variable_score b, int side)
+{
+    st_cross_variable_score out = {a.baseline, a.tail, 0};
+    long double lost = 0;
+    st_var_accumulate(&out.baseline, &out.tail, b.baseline, &lost);
+    st_var_accumulate(&out.baseline, &out.tail, b.tail, &lost);
+    if (lost != 0) out.tail = nextafterl(out.tail + side * lost, side < 0 ? -INFINITY : INFINITY);
+    long double response = a.response + b.response;
+    out.response = response == 0 && a.response == 0 && b.response == 0 ? 0 :
+        nextafterl(response, side < 0 ? -INFINITY : INFINITY);
+    return out;
+}
+
+static int st_var_difference_expansion(const st_cross_variable_score *a,
+    const st_cross_variable_score *b, long double *expansion)
+{
+    long double terms[] = {a->baseline, -b->baseline, a->tail, -b->tail, a->response, -b->response};
+    int length = 0;
+    for (int t = 0; t < 6; t++)
+    {
+        long double next[12], value = terms[t]; int count = 0;
+        for (int i = 0; i < length; i++)
+        {
+            long double total, residual;
+            st_var_two_sum(value, expansion[i], &total, &residual);
+            if (residual != 0) next[count++] = residual;
+            value = total;
+        }
+        if (value != 0 || !count) next[count++] = value;
+        memcpy(expansion, next, (size_t)count * sizeof(long double)); length = count;
+    }
+    return length;
+}
+
+int st_cross_variable_compare(const st_cross_variable_score *a, const st_cross_variable_score *b)
+{
+    long double x = a->baseline - b->baseline, y = a->tail - b->tail,
+        z = a->response - b->response, value = (x + y) + z,
+        allowance = 16 * LDBL_EPSILON * (fabsl(x) + fabsl(y) + fabsl(z));
+    if (isfinite(value) && fabsl(value) > allowance) return value > 0 ? 1 : -1;
+    if (isinf(value) && !isnan(x) && !isnan(y) && !isnan(z)) return value > 0 ? 1 : -1;
+    long double expansion[12]; int n = st_var_difference_expansion(a, b, expansion);
+    for (int i = n - 1; i >= 0; i--)
+        if (expansion[i] > 0) return 1; else if (expansion[i] < 0) return -1;
+    return 0;
+}
+
+long double st_cross_variable_difference(const st_cross_variable_score *a, const st_cross_variable_score *b)
+{
+    long double expansion[12]; int n = st_var_difference_expansion(a, b, expansion), sign = st_cross_variable_compare(a, b);
+    long double value = 0;
+    for (int i = 0; i < n; i++) value += expansion[i];
+    if (isnan(value)) return sign ? sign > 0 ? INFINITY : -INFINITY : NAN;
+    return value;
+}
+
+double st_cross_variable_gap(const st_cross_variable_score *upper, const st_cross_variable_score *lower)
+{
+    int sign = st_cross_variable_compare(upper, lower);
+    long double value = st_cross_variable_difference(upper, lower);
+    if (sign < 0 || !isfinite(value) || value < 0 || value > DBL_MAX) return R_PosInf;
+    if (!sign) return 0;
+    value = nextafterl(value, INFINITY);
+    double out = (double)value;
+    if ((long double)out < value) out = nextafter(out, R_PosInf);
+    return nextafter(out, R_PosInf);
+}
+
+double st_cross_variable_total(const st_cross_variable_score *value, double anchor, int include_response)
+{
+    if (!value || !R_FINITE(anchor) || !isfinite(value->baseline) || !isfinite(value->tail) || isnan(value->response))
+        error("st.cross.plan: invalid variable score arithmetic");
+    if (include_response && isinf(value->response)) return value->response > 0 ? R_PosInf : R_NegInf;
+    long double high = anchor, low = 0, lost = 0;
+    st_var_accumulate(&high, &low, value->baseline, &lost);
+    st_var_accumulate(&high, &low, value->tail, &lost);
+    if (include_response) st_var_accumulate(&high, &low, value->response, &lost);
+    return st_population_finite(high + low, "variable retained mean");
+}
+
+static st_cross_variable_score st_var_infinite(int positive)
+{
+    st_cross_variable_score out = {0, 0, positive ? INFINITY : -INFINITY}; return out;
+}
+
+static int st_var_count(SEXP value, int row, int n, const char *name, int zero)
+{
+    if (!st_allocate_numeric(value) || inherits(value, "factor") || (XLENGTH(value) != n && XLENGTH(value) != 1))
+        error("st.cross.plan: variable %s must contain supported whole numeric values", name);
+    double x = st_legacy_marker_number(value, XLENGTH(value) == 1 ? 0 : row);
+    if (!R_FINITE(x) || x < (zero ? 0 : 1) || x > INT_MAX || x != floor(x))
+        error("st.cross.plan: variable %s must contain supported whole numeric values", name);
+    return (int)x;
+}
+
+static size_t st_var_family_slot(const st_variable_context *p, int a, int b)
+{
+    if (a > b) { int swap = a; a = b; b = swap; }
+    size_t at = (size_t)st_joint_hash(a + 1, b + 1, 0) & (p->lookup_size - 1);
+    while (p->lookup[at] >= 0)
+    {
+        int e = p->lookup[at], x = p->first[e], y = p->second[e];
+        if (x > y) { int swap = x; x = y; y = swap; }
+        if (x == a && y == b) break;
+        at = (at + 1) & (p->lookup_size - 1);
+    }
+    return at;
+}
+
+static int st_var_int_order(const void *a, const void *b)
+{
+    int x = *(const int *)a, y = *(const int *)b; return x < y ? -1 : x > y;
+}
+
+static void st_var_necessary(st_variable_context *p)
+{
+    p->necessary = p->p.families <= p->nf;
+    if (!p->necessary) return;
+    void *mark = st_work_mark(); int *copy = st_work_alloc(p->nf, sizeof(int));
+    int64_t low_n = 0, high_n = 0, low_r = 0, high_r = 0;
+    const int *arrays[] = {p->lower, p->upper, p->min_selected, p->max_selected};
+    for (int j = 0; j < 4; j++)
+    {
+        memcpy(copy, arrays[j], (size_t)p->nf * sizeof(int)); qsort(copy, p->nf, sizeof(int), st_var_int_order);
+        int64_t sum = 0;
+        for (int i = 0; i < p->p.families; i++) sum += copy[j % 2 ? p->nf - 1 - i : i];
+        if (j == 0) low_n = sum;
+        if (j == 1) high_n = sum;
+        if (j == 2) low_r = sum;
+        if (j == 3) high_r = sum;
+    }
+    p->necessary = low_n <= p->p.budget && high_n >= p->p.budget && low_r <= p->p.selected && high_r >= p->p.selected;
+    st_work_reset(mark);
+}
+
+void *st_cross_variable_prepare(SEXP group, int families, SEXP parent_names, int nf,
+    const int *first, const int *second, int response_criterion, double reserved_cells)
+{
+    double started = st_joint_cpu();
+    if (TYPEOF(group) != VECSXP || Rf_isObject(group)) error("st.cross.plan: variable progeny must be a named list");
+    SEXP names = getAttrib(group, R_NamesSymbol);
+    if (TYPEOF(names) != STRSXP || XLENGTH(names) != XLENGTH(group)) error("st.cross.plan: variable progeny needs unique supported names");
+    const char *allowed[] = {"total.progeny", "total.selected", "min.progeny", "max.progeny", "min.selected", "max.selected", "bounds", "selection.method", "control"};
+    unsigned int seen = 0;
+    for (R_xlen_t i = 0; i < XLENGTH(group); i++)
+    {
+        const char *name = st_practical_text(names, (int)i, 0, "progeny component"); int key = -1;
+        for (int j = 0; j < 9; j++) if (!strcmp(name, allowed[j])) key = j;
+        if (key < 0 || (seen & (1u << key))) error("st.cross.plan: unknown or repeated variable progeny component '%s'", name);
+        seen |= 1u << key;
+    }
+    if (families < 1 || nf < 0 || (nf && (!first || !second)) || TYPEOF(parent_names) != STRSXP || XLENGTH(parent_names) > INT_MAX ||
+        !R_FINITE(reserved_cells) || reserved_cells < 0 || (response_criterion != 0 && response_criterion != 1))
+        error("st.cross.plan: invalid variable allocation context");
+    st_variable_context *p = st_work_alloc(1, sizeof(*p)); memset(p, 0, sizeof(*p));
+    p->original = group; p->parent_names = parent_names; p->np = (int)XLENGTH(parent_names); p->nf = nf;
+    p->p.families = families; p->p.response_criterion = response_criterion;
+    p->p.budget = st_var_count(st_population_get(group, "total.progeny"), 0, 1, "total.progeny", 0);
+    p->p.selected = st_var_count(st_population_get(group, "total.selected"), 0, 1, "total.selected", 0);
+    if (p->p.selected > p->p.budget) error("st.cross.plan: variable total.selected must not exceed total.progeny");
+    SEXP value = st_population_get(group, "min.progeny"); p->p.lower = isNull(value) ? 1 : st_var_count(value, 0, 1, "min.progeny", 0);
+    value = st_population_get(group, "max.progeny"); p->p.upper = isNull(value) ? p->p.budget : st_var_count(value, 0, 1, "max.progeny", 0);
+    value = st_population_get(group, "min.selected"); p->p.min_selected = isNull(value) ? 1 : st_var_count(value, 0, 1, "min.selected", 1);
+    value = st_population_get(group, "max.selected"); p->p.max_selected = isNull(value) ?
+        (p->p.upper < p->p.selected ? p->p.upper : p->p.selected) : st_var_count(value, 0, 1, "max.selected", 1);
+    if (p->p.lower > p->p.upper || p->p.min_selected > p->p.max_selected || p->p.min_selected > p->p.upper)
+        error("st.cross.plan: variable common bounds are inconsistent");
+    value = st_population_get(group, "selection.method");
+    const char *method = isNull(value) ? "burrows" : st_legacy_marker_string(value, "selection.method");
+    p->p.normal_mode = !strcmp(method, "order.statistics");
+    if (!p->p.normal_mode && strcmp(method, "burrows")) error("st.cross.plan: variable selection.method must be burrows or order.statistics");
+    p->p.max_cells = 1e7; p->p.max_transitions = 1e8; p->p.tolerance = 1e-10;
+    SEXP control = st_population_get(group, "control");
+    if (!isNull(control))
+    {
+        if (TYPEOF(control) != VECSXP || Rf_isObject(control)) error("st.cross.plan: variable control must be a named list");
+        SEXP labels = getAttrib(control, R_NamesSymbol);
+        if (XLENGTH(control) && (TYPEOF(labels) != STRSXP || XLENGTH(labels) != XLENGTH(control))) error("st.cross.plan: variable control needs unique names");
+        seen = 0;
+        for (R_xlen_t i = 0; i < XLENGTH(control); i++)
+        {
+            const char *name = st_practical_text(labels, (int)i, 0, "control name");
+            int key = !strcmp(name, "max.cells") ? 0 : !strcmp(name, "max.transitions") ? 1 : !strcmp(name, "tolerance") ? 2 : !strcmp(name, "algorithm") ? 3 : -1;
+            if (key < 0 || (seen & (1u << key))) error("st.cross.plan: unknown or repeated variable control '%s'", name);
+            seen |= 1u << key;
+            if (key == 3)
+            {
+                const char *algorithm = st_legacy_marker_string(VECTOR_ELT(control, i), "algorithm");
+                p->p.algorithm = !strcmp(algorithm, "auto") ? 0 : !strcmp(algorithm, "dp") ? 2 : -1;
+                if (p->p.algorithm < 0) error("st.cross.plan: variable retention supports algorithm auto or dp, not greedy");
+            }
+            else
+            {
+                double x = st_joint_scalar(control, name, 0, 1);
+                if (key < 2 && (x < 1 || x > 9007199254740991.0 || x != floor(x))) error("st.cross.plan: invalid variable resource ceiling");
+                if (key == 2 && x < 0) error("st.cross.plan: variable tolerance must be nonnegative");
+                if (key == 0) p->p.max_cells = x;
+                if (key == 1) p->p.max_transitions = x;
+                if (key == 2) p->p.tolerance = x;
+            }
+        }
+    }
+    p->ids = st_work_alloc(p->np, sizeof(*p->ids));
+    for (int i = 0; i < p->np; i++)
+    { p->ids[i] = st_population_id(parent_names, i); if (st_allocate_find(p->ids[i], p->ids, i) >= 0) error("st.cross.plan: duplicate variable candidate ID"); }
+    p->first = st_work_alloc(nf, sizeof(int)); p->second = st_work_alloc(nf, sizeof(int));
+    p->lower = st_work_alloc(nf, sizeof(int)); p->upper = st_work_alloc(nf, sizeof(int));
+    p->min_selected = st_work_alloc(nf, sizeof(int)); p->max_selected = st_work_alloc(nf, sizeof(int));
+    p->lookup_size = 16; while (p->lookup_size < (size_t)nf * 2)
+    { if (p->lookup_size > SIZE_MAX / 2 / sizeof(int)) error("st.cross.plan: variable family index exceeds its supported domain"); p->lookup_size *= 2; }
+    p->lookup = st_work_alloc(p->lookup_size, sizeof(int));
+    for (size_t i = 0; i < p->lookup_size; i++) p->lookup[i] = -1;
+    for (int e = 0; e < nf; e++)
+    {
+        int a = first[e], b = second[e];
+        if (a < 0 || b < 0 || a >= p->np || b >= p->np || a == b) error("st.cross.plan: invalid biological bounds key");
+        p->first[e] = a; p->second[e] = b;
+        size_t at = st_var_family_slot(p, a, b);
+        if (p->lookup[at] >= 0) error("st.cross.plan: duplicate biological bounds key");
+        p->lookup[at] = e;
+        p->lower[e] = p->p.lower; p->upper[e] = p->p.upper;
+        p->min_selected[e] = p->p.min_selected; p->max_selected[e] = p->p.max_selected;
+    }
+    SEXP bounds = st_population_get(group, "bounds");
+    if (!isNull(bounds))
+    {
+        int rows = st_practical_rows(bounds, "bounds"); SEXP labels = getAttrib(bounds, R_NamesSymbol);
+        int has_bound = 0;
+        for (int j = 0; j < XLENGTH(bounds); j++)
+        {
+            const char *name = st_population_id(labels, j); int found = 0;
+            for (int k = 0; k < 6; k++) if (!strcmp(name, k == 0 ? "P1Name" : k == 1 ? "P2Name" : allowed[k])) { found = 1; if (k > 1) has_bound = 1; }
+            if (!found) error("st.cross.plan: unsupported variable bounds column '%s'", name);
+        }
+        if (!has_bound) error("st.cross.plan: bounds needs keys and at least one numeric bound column");
+        SEXP a = st_practical_column(bounds, "P1Name", rows, 0), b = st_practical_column(bounds, "P2Name", rows, 0);
+        if (TYPEOF(a) != STRSXP || TYPEOF(b) != STRSXP) error("st.cross.plan: variable bounds keys must be character");
+        const char *bound_names[] = {"min.progeny", "max.progeny", "min.selected", "max.selected"};
+        for (int j = 0; j < 4; j++)
+        {
+            SEXP column = st_population_get(bounds, bound_names[j]);
+            if (!isNull(column) && (!st_allocate_numeric(column) || inherits(column, "factor")))
+                error("st.cross.plan: variable bound columns must be numeric");
+        }
+        int *used = st_work_alloc(nf, sizeof(int)); memset(used, 0, (size_t)nf * sizeof(int));
+        const char *columns[] = {"min.progeny", "max.progeny", "min.selected", "max.selected"};
+        int *destination[] = {p->lower, p->upper, p->min_selected, p->max_selected};
+        for (int row = 0; row < rows; row++)
+        {
+            int x = st_allocate_find(st_population_id(a, row), p->ids, p->np), y = st_allocate_find(st_population_id(b, row), p->ids, p->np);
+            if (x < 0 || y < 0 || x == y) error("st.cross.plan: variable bounds has unknown or self parent keys");
+            int e = p->lookup[st_var_family_slot(p, x, y)];
+            if (e < 0 || used[e]) error("st.cross.plan: variable bounds has an unavailable or repeated biological key");
+            used[e] = 1;
+            for (int j = 0; j < 4; j++)
+            {
+                SEXP column = st_population_get(bounds, columns[j]);
+                if (!isNull(column)) destination[j][e] = st_var_count(column, row, rows, columns[j], j >= 2);
+            }
+        }
+    }
+    for (int e = 0; e < nf; e++)
+    {
+        if (p->lower[e] > p->upper[e] || p->min_selected[e] > p->max_selected[e] || p->min_selected[e] > p->upper[e])
+            error("st.cross.plan: a variable biological family has inconsistent local bounds");
+        if (p->lower[e] < p->min_selected[e]) p->lower[e] = p->min_selected[e];
+        if (p->max_selected[e] > p->upper[e]) p->max_selected[e] = p->upper[e];
+    }
+    st_var_necessary(p);
+    p->fixed_cells = (sizeof(*p) + (long double)p->np * sizeof(char *) +
+        ((long double)8 * nf + p->lookup_size) * sizeof(int)) / sizeof(double);
+    st_joint_context *k = st_work_alloc(1, sizeof(*k)); memset(k, 0, sizeof(*k)); st_work_adopt(k, st_joint_destroy);
+    p->kernel = k; k->original = group; k->reserved_cells = reserved_cells + p->fixed_cells;
+    k->p.families = families; k->p.budget = p->p.budget; k->p.retained = 0;
+    k->p.lower = p->p.lower; k->p.upper = p->p.upper; k->p.normal_mode = p->p.normal_mode;
+    k->p.algorithm = p->p.algorithm; k->p.response_criterion = response_criterion;
+    k->p.max_cells = p->p.max_cells; k->p.max_transitions = p->p.max_transitions; k->p.tolerance = p->p.tolerance;
+    if (p->p.normal_mode) k->normal = st_allocate_normal_initialize(1, 0);
+    k->fixed_cells = (double)sizeof(*k) / sizeof(double);
+    if (k->normal) k->fixed_cells += (sizeof(*k->normal) + (long double)k->normal->cache_size * sizeof(*k->normal->cache) +
+        (long double)k->normal->limit * sizeof(int) + (long double)k->normal->lenw * sizeof(double)) / sizeof(double);
+    k->capacity = 16; k->cache = calloc(k->capacity, sizeof(*k->cache));
+    if (!k->cache) error("st.cross.plan: cannot allocate the variable count cache");
+    k->peak_cells = st_joint_cells(k, k->capacity); if (k->peak_cells > p->p.max_cells) st_joint_stop(k, "max.cells");
+    k->preparation_cpu = st_joint_cpu() - started;
+    return p;
+}
+
+void st_cross_variable_parameters_get(const void *context, st_cross_variable_parameters *parameters)
+{ if (!context || !parameters) error("st.cross.plan: invalid variable parameter destination"); *parameters = ((const st_variable_context *)context)->p; }
+
+void st_cross_variable_bounds_get(const void *context, int family, int *lower, int *upper, int *min_selected, int *max_selected)
+{
+    const st_variable_context *p = context;
+    if (!p || family < 0 || family >= p->nf) error("st.cross.plan: unknown variable biological family");
+    if (lower) *lower = p->lower[family];
+    if (upper) *upper = p->upper[family];
+    if (min_selected) *min_selected = p->min_selected[family];
+    if (max_selected) *max_selected = p->max_selected[family];
+}
+
+void st_cross_variable_work_limit(void *context, double remaining)
+{
+    st_variable_context *p = context;
+    if (!p || !R_FINITE(remaining) || remaining < 0) error("cross planning: invalid cumulative variable count-work allowance");
+    st_cross_joint_work_limit(p->kernel, remaining);
+    if (remaining >= 1) p->p.max_transitions = fmin(p->p.max_transitions, floor(remaining));
+}
+double st_cross_variable_work_used(const void *context)
+{ return context ? st_cross_joint_work_used(((const st_variable_context *)context)->kernel) : 0; }
+
+int st_cross_variable_necessary(const void *context)
+{ return context ? ((const st_variable_context *)context)->necessary : 0; }
+
+void st_cross_variable_validate(const void *context, int coupled)
+{
+    if (!context) error("st.cross.plan: missing variable allocation context");
+    if (coupled && ((const st_variable_context *)context)->p.algorithm != 0)
+        error("st.cross.plan: coupled variable counts require algorithm auto");
+}
+
+double st_cross_variable_remaining(const void *context)
+{ return context ? st_cross_joint_remaining(((const st_variable_context *)context)->kernel) : 0; }
+
+int st_cross_variable_limited(const void *context)
+{ return context ? st_cross_joint_limited(((const st_variable_context *)context)->kernel) : 1; }
+
+typedef struct
+{
+    st_variable_context *context;
+    int nf, *family, *lower, *upper, *min_selected, *max_selected;
+    const double *mu, *variance;
+    double anchor, local_anchor, accuracy;
+    st_cross_variable_score offset;
+    double scratch_cells;
+} st_var_problem;
+
+static void st_var_problem_prepare(st_var_problem *s, st_variable_context *p, const int *family,
+    const double *mu, double anchor, const double *variance, double accuracy)
+{
+    if (!p || !family || !mu || !variance || !R_FINITE(anchor) || !R_FINITE(accuracy) || accuracy < 0 || accuracy > 1)
+        error("st.cross.plan: invalid variable fixed-family problem");
+    memset(s, 0, sizeof(*s)); s->context = p; s->nf = p->p.families; s->mu = mu; s->variance = variance;
+    s->anchor = anchor; s->accuracy = accuracy; s->family = st_work_alloc(s->nf, sizeof(int));
+    s->lower = st_work_alloc(s->nf, sizeof(int)); s->upper = st_work_alloc(s->nf, sizeof(int));
+    s->min_selected = st_work_alloc(s->nf, sizeof(int)); s->max_selected = st_work_alloc(s->nf, sizeof(int));
+    double smallest = R_PosInf, largest = R_NegInf;
+    for (int i = 0; i < s->nf; i++)
+    {
+        int e = family[i];
+        if (e < 0 || e >= p->nf || !R_FINITE(mu[i]) || !R_FINITE(variance[i]) || variance[i] < 0)
+            error("st.cross.plan: invalid variable family scores or keys");
+        for (int j = 0; j < i; j++) if (family[j] == e) error("st.cross.plan: repeated variable biological family");
+        s->family[i] = e; s->lower[i] = p->lower[e]; s->upper[i] = p->upper[e];
+        s->min_selected[i] = p->min_selected[e]; s->max_selected[i] = p->max_selected[e];
+        smallest = fmin(smallest, mu[i]); largest = fmax(largest, mu[i]);
+    }
+    s->local_anchor = smallest * .5 + largest * .5;
+    st_var_two_sum((long double)s->local_anchor, -(long double)anchor, &s->offset.baseline, &s->offset.tail);
+    s->offset.response = 0;
+    s->scratch_cells = (long double)s->nf * 5 * sizeof(int) / sizeof(double);
+}
+
+static int st_var_tighten(st_var_problem *s)
+{
+    st_variable_context *p = s->context;
+    for (int pass = 0; pass < 3; pass++)
+    {
+        int64_t ln = 0, un = 0, lr = 0, ur = 0;
+        for (int i = 0; i < s->nf; i++) { ln += s->lower[i]; un += s->upper[i]; lr += s->min_selected[i]; ur += s->max_selected[i]; }
+        if (ln > p->p.budget || un < p->p.budget || lr > p->p.selected || ur < p->p.selected) return 0;
+        for (int i = 0; i < s->nf; i++)
+        {
+            int64_t a = (int64_t)p->p.budget - (un - s->upper[i]), b = (int64_t)p->p.budget - (ln - s->lower[i]),
+                c = (int64_t)p->p.selected - (ur - s->max_selected[i]), d = (int64_t)p->p.selected - (lr - s->min_selected[i]);
+            if (a > s->lower[i]) s->lower[i] = (int)a;
+            if (b < s->upper[i]) s->upper[i] = (int)b;
+            if (c > s->min_selected[i]) s->min_selected[i] = (int)c;
+            if (d < s->max_selected[i]) s->max_selected[i] = (int)d;
+            if (s->lower[i] < s->min_selected[i]) s->lower[i] = s->min_selected[i];
+            if (s->max_selected[i] > s->upper[i]) s->max_selected[i] = s->upper[i];
+            if (s->lower[i] > s->upper[i] || s->min_selected[i] > s->max_selected[i]) return 0;
+        }
+    }
+    return 1;
+}
+
+static void st_var_utility(void *opaque, int i, int n, int r, st_cross_variable_score *point,
+    st_cross_variable_score *lower, st_cross_variable_score *upper)
+{
+    st_var_problem *s = opaque; st_variable_context *p = s->context;
+    st_cross_variable_score zero = {0, 0, 0}; *point = *lower = *upper = zero;
+    if (!r) return;
+    if (i < 0 || i >= s->nf || n < 1 || r < 0 || r > n) error("st.cross.plan: invalid variable local alternative");
+    long double weight = (long double)r / p->p.selected,
+        centered = (long double)s->mu[i] - s->local_anchor;
+    point->baseline = weight * centered;
+    long double baseline_error = point->baseline == 0 ? 0 : nextafterl(8 * LDBL_EPSILON * fabsl(point->baseline), INFINITY);
+    lower->baseline = upper->baseline = point->baseline;
+    lower->tail = -baseline_error; upper->tail = baseline_error;
+    if (!p->p.response_criterion || s->accuracy == 0 || s->variance[i] == 0 || n == r) return;
+    double kernel_error = 0, a = st_var_kernel(p, n, r, 0, 1, &kernel_error),
+        coefficient = s->accuracy * sqrt(s->variance[i]), response = coefficient * a;
+    point->response = weight * response;
+    long double response_error = weight * coefficient * kernel_error +
+        16 * DBL_EPSILON * fabsl(point->response);
+    lower->response = nextafterl(point->response - response_error, -INFINITY);
+    upper->response = nextafterl(point->response + response_error, INFINITY);
+}
+
+static st_cross_variable_score st_var_global(st_var_problem *s, st_cross_variable_score value, int side)
+{
+    return side ? st_var_score_add_bound(s->offset, value, side) : st_var_score_add(s->offset, value);
+}
+
+static int st_var_counts(st_var_problem *s, const int *n, const int *r)
+{
+    if (!n || !r) return 0;
+    int64_t sum_n = 0, sum_r = 0;
+    for (int i = 0; i < s->nf; i++)
+    {
+        if (n[i] < s->lower[i] || n[i] > s->upper[i] || r[i] < s->min_selected[i] || r[i] > s->max_selected[i] || r[i] > n[i]) return 0;
+        sum_n += n[i]; sum_r += r[i];
+    }
+    return sum_n == s->context->p.budget && sum_r == s->context->p.selected;
+}
+
+static int st_var_check(st_var_problem *s, const int *n, const int *r,
+    st_cross_variable_check check, void *opaque)
+{
+    if (!st_var_counts(s, n, r)) return -1;
+    double started = st_joint_cpu();
+    int answer = check ? check(opaque, s->nf, n, r) : 1;
+    s->context->kernel->checker_cpu += st_joint_cpu() - started;
+    if (answer != 1 && answer != -1 && answer != 0 && answer != -2) error("st.cross.plan: invalid variable feasibility callback");
+    return answer;
+}
+
+static int st_var_tick(void *opaque, int category)
+{
+    st_var_problem *s = opaque; st_joint_context *p = s->context->kernel;
+    return st_joint_tick(p, category == 0 ? &p->utility_work : category == 1 ? &p->dp_work : &p->branch_work);
+}
+
+static int st_var_workspace(void *opaque, double cells)
+{
+    st_var_problem *s = opaque;
+    return st_joint_workspace(s->context->kernel, cells);
+}
+
+static void st_var_score_counts(st_var_problem *s, const int *n, const int *r,
+    st_cross_variable_score *point, st_cross_variable_score *lower, st_cross_variable_score *upper)
+{
+    st_cross_variable_score zero = {0, 0, 0}; *point = *lower = *upper = zero;
+    for (int i = 0; i < s->nf; i++)
+    {
+        st_cross_variable_score x, l, u;
+        st_var_utility(s, i, n[i], r[i], &x, &l, &u);
+        *point = st_var_score_add(*point, x); *lower = st_var_score_add_bound(*lower, l, -1); *upper = st_var_score_add_bound(*upper, u, 1);
+    }
+}
+
+void st_cross_variable_rescore(void *context, const int *family, const double *mu, double anchor,
+    const double *variance, double accuracy, const int *n, const int *r, double *intensity,
+    double *intensity_error, double *family_response, st_cross_variable_solution *solution)
+{
+    st_variable_context *p = context;
+    if (!p || !solution) error("st.cross.plan: missing variable summary destination");
+    void *mark = st_work_mark(); st_var_problem s;
+    double old_call = p->kernel->call_cells;
+    st_var_problem_prepare(&s, p, family, mu, anchor, variance, accuracy);
+    p->kernel->call_cells += s.scratch_cells;
+    p->kernel->peak_cells = fmax(p->kernel->peak_cells, st_joint_cells(p->kernel, p->kernel->capacity));
+    if (st_joint_cells(p->kernel, p->kernel->capacity) > p->p.max_cells) st_joint_stop(p->kernel, "max.cells");
+    if (!st_var_counts(&s, n, r)) error("st.cross.plan: actual variable counts violate the current domain");
+    memset(solution, 0, sizeof(*solution)); solution->has_incumbent = 1; solution->reason = "rescore.only"; solution->algorithm = "original.input.summary";
+    st_cross_variable_score point, lower, upper;
+    st_var_score_counts(&s, n, r, &point, &lower, &upper);
+    solution->value = st_var_global(&s, point, 0); solution->lower = st_var_global(&s, lower, -1); solution->upper = st_var_global(&s, upper, 1);
+    long double response = 0;
+    for (int i = 0; i < s.nf; i++)
+    {
+        if (!r[i])
+        {
+            if (intensity) intensity[i] = NA_REAL;
+            if (intensity_error) intensity_error[i] = NA_REAL;
+            if (family_response) family_response[i] = NA_REAL;
+            continue;
+        }
+        double kernel_error = 0, a = n[i] == r[i] ? 0 : st_var_kernel(p, n[i], r[i], 0, 1, &kernel_error),
+            coefficient = accuracy * sqrt(variance[i]), value = coefficient == 0 ? 0 : coefficient * a;
+        response += ((long double)r[i] / p->p.selected) * value;
+        if (intensity) intensity[i] = a;
+        if (intensity_error) intensity_error[i] = kernel_error;
+        if (family_response) family_response[i] = value;
+    }
+    solution->selected_response = response;
+    solution->gap = st_cross_variable_gap(&solution->upper, &solution->lower);
+    solution->unresolved = !R_FINITE(solution->gap) || solution->gap > p->p.tolerance * fmax(1, (double)fabsl(response));
+    solution->cells = p->kernel->peak_cells;
+    st_work_reset(mark); p->kernel->call_cells = old_call;
+}
+
+st_cross_variable_score st_cross_variable_bound(void *context, int count, const int *family,
+    const double *mu, double anchor, const double *variance, double accuracy, int *known)
+{
+    st_variable_context *p = context;
+    if (!p || !known || count < 0 || (count && (!family || !mu || !variance)) || !R_FINITE(anchor) || !R_FINITE(accuracy) || accuracy < 0 || accuracy > 1)
+        error("st.cross.plan: invalid variable upper-bound request");
+    st_cross_variable_score best = st_var_infinite(0); *known = 1;
+    for (int i = 0; i < count; i++)
+    {
+        int e = family[i];
+        if (e < 0 || e >= p->nf || !R_FINITE(mu[i]) || !R_FINITE(variance[i]) || variance[i] < 0)
+            error("st.cross.plan: invalid variable upper-bound family");
+        int lower_n = p->lower[e], upper_n = p->upper[e] < p->p.budget ? p->upper[e] : p->p.budget,
+            lower_r = p->min_selected[e] > 0 ? p->min_selected[e] : 1,
+            upper_r = p->max_selected[e] < p->p.selected ? p->max_selected[e] : p->p.selected;
+        if (!p->max_selected[e] || lower_n > upper_n || lower_r > upper_r || lower_r > upper_n) continue;
+        st_cross_variable_score value = {0, 0, 0};
+        st_var_two_sum((long double)mu[i], -(long double)anchor, &value.baseline, &value.tail);
+        if (p->p.response_criterion && accuracy != 0 && variance[i] != 0)
+        {
+            double maximum = R_NegInf;
+            if (p->p.normal_mode)
+            {
+                double kernel_error = 0, a = st_var_kernel(p, upper_n, lower_r, 0, 1, &kernel_error);
+                if (!R_FINITE(a) || !R_FINITE(kernel_error)) { *known = 0; return st_var_infinite(1); }
+                maximum = nextafter(a + kernel_error, R_PosInf);
+            }
+            else
+            {
+                long double grid = ((long double)upper_n - lower_n + 1) * ((long double)upper_r - lower_r + 1);
+                if (grid > fmin(250000, st_cross_joint_remaining(p->kernel) / 4)) { *known = 0; return st_var_infinite(1); }
+                for (int n = lower_n; ; n++)
+                {
+                    int last = upper_r < n ? upper_r : n;
+                    for (int64_t rr = lower_r; rr <= last; rr++)
+                    {
+                        int r = (int)rr;
+                        if (!st_joint_tick(p->kernel, &p->kernel->utility_work)) { *known = 0; return st_var_infinite(1); }
+                        p->bound_work++;
+                        double kernel_error = 0, a = n == r ? 0 : st_var_kernel(p, n, r, 0, 1, &kernel_error);
+                        if (!R_FINITE(a) || !R_FINITE(kernel_error)) { *known = 0; return st_var_infinite(1); }
+                        maximum = fmax(maximum, nextafter(a + kernel_error, R_PosInf));
+                    }
+                    if (n == upper_n) break;
+                }
+            }
+            long double gain = (long double)accuracy * sqrt(variance[i]) * maximum;
+            value.response = nextafterl(gain + 32 * DBL_EPSILON * fabsl(gain), INFINITY);
+        }
+        if (st_cross_variable_compare(&value, &best) > 0) best = value;
+    }
+    return best;
+}
+
+typedef struct
+{
+    int has, unknown;
+    st_cross_variable_score value, lower, upper, unknown_value;
+} st_var_best;
+
+static void st_var_accept(st_var_problem *s, st_var_best *best, const int *candidate_n, const int *candidate_r,
+    int *out_n, int *out_r, int state)
+{
+    if (state == -1) return;
+    st_cross_variable_score point, lower, upper;
+    st_var_score_counts(s, candidate_n, candidate_r, &point, &lower, &upper);
+    if (state == 1)
+    {
+        if (!best->has || st_cross_variable_compare(&point, &best->value) > 0)
+        {
+            best->has = 1; best->value = point; best->lower = lower; best->upper = upper;
+            memcpy(out_n, candidate_n, (size_t)s->nf * sizeof(int)); memcpy(out_r, candidate_r, (size_t)s->nf * sizeof(int));
+        }
+    }
+    else if (!best->unknown || st_cross_variable_compare(&point, &best->unknown_value) > 0)
+    { best->unknown = 1; best->unknown_value = point; }
+}
+
+static int st_var_seed(st_var_problem *s, int *n, int *r)
+{
+    st_variable_context *p = s->context; int64_t minimum_n = 0, minimum_r = 0;
+    for (int i = 0; i < s->nf; i++)
+    { r[i] = s->min_selected[i]; n[i] = s->lower[i]; minimum_n += n[i]; minimum_r += r[i]; }
+    if (minimum_n > p->p.budget || minimum_r > p->p.selected) return 0;
+    int left_r = p->p.selected - (int)minimum_r, left_n = p->p.budget - (int)minimum_n;
+    for (int i = 0; i < s->nf && left_r; i++)
+    {
+        int cap = s->max_selected[i] < n[i] ? s->max_selected[i] : n[i], add = cap - r[i];
+        if (add > left_r) add = left_r;
+        r[i] += add; left_r -= add;
+    }
+    for (int i = 0; i < s->nf && left_r; i++)
+    {
+        int add = s->max_selected[i] - r[i]; if (add > left_r) add = left_r; if (add > left_n) add = left_n;
+        r[i] += add; n[i] += add; left_r -= add; left_n -= add;
+    }
+    if (left_r) return 0;
+    for (int i = 0; i < s->nf && left_n; i++)
+    { int add = s->upper[i] - n[i]; if (add > left_n) add = left_n; n[i] += add; left_n -= add; }
+    return !left_n && st_var_counts(s, n, r);
+}
+
+typedef struct
+{
+    st_var_problem *s;
+    st_var_best *best;
+    st_cross_variable_score *table;
+    double *coarse, *coarse_error;
+    size_t *offset, *width_r;
+    int *n, *r, *out_n, *out_r;
+    int64_t *suffix_ln, *suffix_un, *suffix_lr, *suffix_ur;
+    st_cross_variable_check check;
+    void *opaque;
+    int fixed_state, coupled, stopped;
+    long double base_error, response_error;
+    double error_floor, uniform_error, best_lower;
+} st_var_enumerator;
+
+static st_cross_variable_score st_var_fast_add(st_cross_variable_score a, st_cross_variable_score b)
+{
+    st_cross_variable_score value = {a.baseline + b.baseline, a.tail + b.tail, a.response + b.response}; return value;
+}
+
+static st_cross_variable_score st_var_enum_value(const st_var_enumerator *q, int i, int n, int r)
+{
+    size_t at = q->offset[i] + (size_t)(n - q->s->lower[i]) * q->width_r[i] + r - q->s->min_selected[i];
+    return q->table[at];
+}
+
+static double st_var_enum_error(long double value)
+{
+    if (!isfinite(value) || value > DBL_MAX) return R_PosInf;
+    if (value == 0) return 0;
+    double out = (double)value;
+    if ((long double)out < value) out = nextafter(out, R_PosInf);
+    return nextafter(out, R_PosInf);
+}
+
+static void st_var_enum_coarse(const st_cross_variable_score *value, double *point, double *error)
+{
+    double a = (double)value->baseline, b = (double)value->tail, c = (double)value->response;
+    *point = (a + b) + c;
+    long double magnitude = fabsl(value->baseline) + fabsl(value->tail) + fabsl(value->response),
+        allowance = 16 * DBL_EPSILON * magnitude + 16 * (long double)nextafter(0.0, R_PosInf);
+    *error = !R_FINITE(*point) ? R_PosInf : st_var_enum_error(allowance);
+}
+
+static double st_var_enum_add(const st_var_enumerator *q, double prefix, double prefix_error,
+    double value, double error, double *out_error)
+{
+    double addition = 4 * DBL_EPSILON * (fabs(prefix) + fabs(value));
+    *out_error = (prefix_error + error + addition) * (1 + 8 * DBL_EPSILON) + q->error_floor;
+    return prefix + value;
+}
+
+static void st_var_enum_best(st_var_enumerator *q)
+{
+    q->best_lower = R_NegInf;
+    if (q->best->has)
+    {
+        double value, error;
+        st_var_enum_coarse(&q->best->value, &value, &error);
+        if (R_FINITE(value) && R_FINITE(error)) q->best_lower = nextafter(value - error, R_NegInf);
+    }
+}
+
+static void st_var_enum_leaf(st_var_enumerator *q, int depth, int n, int r,
+    double prefix, double prefix_error)
+{
+    if (q->stopped) return;
+    st_var_problem *s = q->s;
+    if (n < s->lower[depth] || n > s->upper[depth] || r < s->min_selected[depth] || r > s->max_selected[depth] || r > n) return;
+    if (!st_var_tick(s, 2)) { q->stopped = 1; return; }
+    s->context->enumeration_work++; q->n[depth] = n; q->r[depth] = r;
+    size_t at = q->offset[depth] + (size_t)(n - s->lower[depth]) * q->width_r[depth] + r - s->min_selected[depth];
+    double error = 0, coarse = st_var_enum_add(q, prefix, prefix_error, q->coarse[at], q->coarse_error[at], &error);
+    if (q->best->has && R_FINITE(coarse) && R_FINITE(error) && R_FINITE(q->uniform_error) && R_FINITE(q->best_lower))
+    {
+        double allowance = nextafter(error + q->uniform_error, R_PosInf), upper = nextafter(coarse + allowance, R_PosInf);
+        if (R_FINITE(upper) && upper < q->best_lower) return;
+    }
+    st_cross_variable_score value = {0, 0, 0};
+    for (int i = 0; i < s->nf; i++) value = st_var_fast_add(value, st_var_enum_value(q, i, q->n[i], q->r[i]));
+    int state = q->coupled ? st_var_check(s, q->n, q->r, q->check, q->opaque) : q->fixed_state;
+    if (state == -1) return;
+    if (state == 1 && (!q->best->has || st_cross_variable_compare(&value, &q->best->value) > 0))
+    {
+        q->best->has = 1; q->best->value = value;
+        memcpy(q->out_n, q->n, (size_t)s->nf * sizeof(int)); memcpy(q->out_r, q->r, (size_t)s->nf * sizeof(int));
+        st_var_enum_best(q);
+    }
+    else if (state != 1 && (!q->best->unknown || st_cross_variable_compare(&value, &q->best->unknown_value) > 0))
+    { q->best->unknown = 1; q->best->unknown_value = value; }
+}
+
+static void st_var_enum_visit(st_var_enumerator *q, int depth, int remaining_n, int remaining_r,
+    double prefix, double prefix_error)
+{
+    if (q->stopped) return;
+    st_var_problem *s = q->s; st_variable_context *p = s->context;
+    if (depth + 1 == s->nf)
+    { st_var_enum_leaf(q, depth, remaining_n, remaining_r, prefix, prefix_error); return; }
+    int64_t min_n = (int64_t)remaining_n - q->suffix_un[depth + 1], max_n = (int64_t)remaining_n - q->suffix_ln[depth + 1],
+        min_r = (int64_t)remaining_r - q->suffix_ur[depth + 1], max_r = (int64_t)remaining_r - q->suffix_lr[depth + 1];
+    int first_n = min_n > s->lower[depth] ? (int)min_n : s->lower[depth],
+        last_n = max_n < s->upper[depth] ? (int)max_n : s->upper[depth],
+        first_r = min_r > s->min_selected[depth] ? (int)min_r : s->min_selected[depth],
+        last_r = max_r < s->max_selected[depth] ? (int)max_r : s->max_selected[depth];
+    if (first_n > last_n || first_r > last_r) return;
+    for (int n = first_n; ; n++)
+    {
+        int top = last_r < n ? last_r : n;
+        for (int64_t rr = first_r; rr <= top; rr++)
+        {
+            int r = (int)rr;
+            if (!st_var_tick(s, 2)) { q->stopped = 1; return; }
+            p->enumeration_work++; q->n[depth] = n; q->r[depth] = r;
+            size_t at = q->offset[depth] + (size_t)(n - s->lower[depth]) * q->width_r[depth] + r - s->min_selected[depth];
+            double error = 0, value = st_var_enum_add(q, prefix, prefix_error, q->coarse[at], q->coarse_error[at], &error);
+            if (depth + 2 == s->nf)
+                st_var_enum_leaf(q, depth + 1, remaining_n - n, remaining_r - r, value, error);
+            else st_var_enum_visit(q, depth + 1, remaining_n - n, remaining_r - r, value, error);
+            if (q->stopped) return;
+        }
+        if (n == last_n) break;
+    }
+}
+
+static int st_var_enum(st_var_problem *s, int *candidate_n, int *candidate_r, int *out_n, int *out_r,
+    int coupled, int fixed_state, st_cross_variable_check check, void *opaque,
+    st_var_best *best, st_cross_variable_score *upper)
+{
+    st_variable_context *p = s->context; int nf = s->nf;
+    if (nf > 4) return 0;
+    size_t alternatives = 0;
+    for (int i = 0; i < nf; i++)
+    {
+        size_t a = (size_t)s->upper[i] - s->lower[i] + 1, b = (size_t)s->max_selected[i] - s->min_selected[i] + 1;
+        if (a > SIZE_MAX / b || alternatives > SIZE_MAX - a * b) return 0;
+        alternatives += a * b;
+    }
+    int64_t min_n = 0, min_r = 0;
+    for (int i = 0; i < nf; i++) { min_n += s->lower[i]; min_r += s->min_selected[i]; }
+    long double n_compositions = 1, r_compositions = 1;
+    for (int i = 1; i < nf; i++)
+    {
+        n_compositions *= ((long double)p->p.budget - min_n + i) / i;
+        r_compositions *= ((long double)p->p.selected - min_r + i) / i;
+    }
+    long double work_upper = (long double)nf * n_compositions * r_compositions + alternatives;
+    if (work_upper > st_cross_variable_remaining(p)) return 0;
+    long double cells = (long double)alternatives * (sizeof(st_cross_variable_score) + 2 * sizeof(double)) / sizeof(double) +
+        (long double)nf * (2 * sizeof(size_t)) / sizeof(double) + ((long double)nf + 1) * 4 * sizeof(int64_t) / sizeof(double);
+    if (cells + st_joint_cells(p->kernel, p->kernel->capacity) > p->p.max_cells || alternatives > st_cross_variable_remaining(p)) return 0;
+    if (!st_var_workspace(s, (double)cells)) return 0;
+    void *mark = st_work_mark(); st_var_enumerator q; memset(&q, 0, sizeof(q));
+    q.s = s; q.best = best; q.n = candidate_n; q.r = candidate_r; q.out_n = out_n; q.out_r = out_r;
+    q.check = check; q.opaque = opaque; q.coupled = coupled; q.fixed_state = fixed_state;
+    q.error_floor = 16 * nextafter(0.0, R_PosInf);
+    q.offset = st_work_alloc(nf, sizeof(size_t)); q.width_r = st_work_alloc(nf, sizeof(size_t));
+    q.table = st_work_alloc(alternatives, sizeof(st_cross_variable_score));
+    q.coarse = st_work_alloc(alternatives, sizeof(double)); q.coarse_error = st_work_alloc(alternatives, sizeof(double));
+    q.suffix_ln = st_work_alloc((size_t)nf + 1, sizeof(int64_t)); q.suffix_un = st_work_alloc((size_t)nf + 1, sizeof(int64_t));
+    q.suffix_lr = st_work_alloc((size_t)nf + 1, sizeof(int64_t)); q.suffix_ur = st_work_alloc((size_t)nf + 1, sizeof(int64_t));
+    q.suffix_ln[nf] = q.suffix_un[nf] = q.suffix_lr[nf] = q.suffix_ur[nf] = 0;
+    size_t at = 0; long double absolute_b = 0, absolute_r = 0;
+    for (int i = 0; i < nf; i++)
+    {
+        q.offset[i] = at; q.width_r[i] = (size_t)s->max_selected[i] - s->min_selected[i] + 1;
+        long double max_b_error = 0, max_r_error = 0, max_b = 0, max_r = 0;
+        for (int n = s->lower[i]; ; n++)
+        {
+            for (int r = s->min_selected[i]; ; r++)
+            {
+                if (!st_var_tick(s, 0)) { q.stopped = 1; break; }
+                st_cross_variable_score value = {0, 0, 0}, lower = value, higher = value;
+                if (r <= n)
+                {
+                    st_var_utility(s, i, n, r, &value, &lower, &higher);
+                    st_cross_variable_score a = value, b = lower, c = higher;
+                    a.response = b.response = c.response = 0;
+                    max_b_error = fmaxl(max_b_error, fmaxl(fabsl(st_cross_variable_difference(&a, &b)), fabsl(st_cross_variable_difference(&c, &a))));
+                    max_r_error = fmaxl(max_r_error, fmaxl(fabsl(value.response - lower.response), fabsl(higher.response - value.response)));
+                    max_b = fmaxl(max_b, fabsl(value.baseline) + fabsl(value.tail)); max_r = fmaxl(max_r, fabsl(value.response));
+                }
+                q.table[at] = value; st_var_enum_coarse(&value, q.coarse + at, q.coarse_error + at); at++;
+                if (r == s->max_selected[i]) break;
+            }
+            if (q.stopped || n == s->upper[i]) break;
+        }
+        if (q.stopped) break;
+        q.base_error += max_b_error; q.response_error += max_r_error; absolute_b += max_b; absolute_r += max_r;
+    }
+    if (!q.stopped)
+    {
+        long double gamma = (8 * (long double)nf + 16) * LDBL_EPSILON;
+        q.base_error = nextafterl(q.base_error + gamma * absolute_b, INFINITY);
+        q.response_error = nextafterl(q.response_error + gamma * absolute_r, INFINITY);
+        if (absolute_b == 0 && q.base_error <= nextafterl(0.0L, 1.0L)) q.base_error = 0;
+        if (absolute_r == 0 && q.response_error <= nextafterl(0.0L, 1.0L)) q.response_error = 0;
+        for (int i = nf - 1; i >= 0; i--)
+        {
+            q.suffix_ln[i] = q.suffix_ln[i + 1] + s->lower[i]; q.suffix_un[i] = q.suffix_un[i + 1] + s->upper[i];
+            q.suffix_lr[i] = q.suffix_lr[i + 1] + s->min_selected[i]; q.suffix_ur[i] = q.suffix_ur[i + 1] + s->max_selected[i];
+        }
+        q.uniform_error = st_var_enum_error(q.base_error + q.response_error); st_var_enum_best(&q);
+        st_var_enum_visit(&q, 0, p->p.budget, p->p.selected, 0, 0);
+    }
+    if (!q.stopped)
+    {
+        *upper = best->has ? best->value : st_var_infinite(0);
+        if (best->unknown && st_cross_variable_compare(&best->unknown_value, upper) > 0) *upper = best->unknown_value;
+        if (best->has || best->unknown)
+        { upper->tail += q.base_error; upper->response += q.response_error; }
+    }
+    st_work_reset(mark); st_var_workspace(s, 0);
+    return !q.stopped;
+}
+
+typedef struct
+{
+    int produced_extra, retained_extra;
+    size_t states, choices, trace_entries;
+    double cells, work;
+} st_var_dp_plan;
+
+typedef struct
+{
+    int produced, retained;
+    st_cross_variable_score point, lower, upper;
+} st_var_dp_choice;
+
+static int st_var_dp_product(uint64_t first, uint64_t second, uint64_t *result)
+{
+    if (first && second > UINT64_MAX / first) return 0;
+    *result = first * second;
+    return 1;
+}
+
+static int st_var_dp_payload(uint64_t *total, uint64_t count, size_t size)
+{
+    uint64_t bytes;
+    if (!st_var_dp_product(count, (uint64_t)size, &bytes) || bytes > UINT64_MAX - *total) return 0;
+    *total += bytes;
+    return 1;
+}
+
+static uint64_t st_var_dp_choices(int width_n, int width_r, int separation)
+{
+    uint64_t rows = (uint64_t)width_n + 1, cap = (uint64_t)width_r,
+        height = (uint64_t)separation;
+    if (height >= cap) return rows * (cap + 1);
+    uint64_t ramp = cap - height;
+    if (ramp > rows) ramp = rows;
+    return ramp * (height + 1) + ramp * (ramp - 1) / 2 + (rows - ramp) * (cap + 1);
+}
+
+static int st_var_dp_estimate(int nf, int P, int R, const int *L, const int *U,
+    const int *l, const int *u, st_var_dp_plan *plan)
+{
+    if (!plan || nf < 1 || !L || !U || !l || !u)
+        error("st.cross.plan: invalid variable-count DP specification");
+    memset(plan, 0, sizeof(*plan)); plan->cells = plan->work = R_PosInf;
+    if (P < 0 || R < 0 || R > P) return -1;
+    int64_t minimum_n = 0, maximum_n = 0, minimum_r = 0, maximum_r = 0;
+    for (int e = 0; e < nf; e++)
+    {
+        if (L[e] < 1 || U[e] < L[e] || l[e] < 0 || u[e] < l[e] || l[e] > U[e])
+            error("st.cross.plan: invalid local bounds in variable-count DP");
+        int first = L[e] > l[e] ? L[e] : l[e], last_r = u[e] < U[e] ? u[e] : U[e];
+        minimum_n += first; maximum_n += U[e]; minimum_r += l[e]; maximum_r += last_r;
+    }
+    if (minimum_n > P || maximum_n < P || minimum_r > R || maximum_r < R) return -1;
+    int B = P - (int)minimum_n, S = R - (int)minimum_r;
+    uint64_t states, trace_entries;
+    if (!st_var_dp_product((uint64_t)B + 1, (uint64_t)S + 1, &states) ||
+        !st_var_dp_product(states, (uint64_t)nf, &trace_entries) ||
+        states > SIZE_MAX || trace_entries > SIZE_MAX ||
+        (uint64_t)nf > SIZE_MAX / sizeof(int) || (uint64_t)nf + 1 > SIZE_MAX / sizeof(size_t)) return 0;
+    uint64_t choices = 0, work = 0, reach_n = 0, reach_r = 0;
+    int work_known = 1;
+    for (int e = 0; e < nf; e++)
+    {
+        int first = L[e] > l[e] ? L[e] : l[e], width_n = U[e] - first,
+            last_r = u[e] < U[e] ? u[e] : U[e], width_r = last_r - l[e];
+        if (width_n > B) width_n = B;
+        if (width_r > S) width_r = S;
+        uint64_t count = st_var_dp_choices(width_n, width_r, first - l[e]), prior_states, transitions;
+        if (count > UINT64_MAX - choices) return 0;
+        choices += count;
+        if (work_known)
+        {
+            if (!st_var_dp_product(reach_n + 1, reach_r + 1, &prior_states) ||
+                !st_var_dp_product(prior_states, count, &transitions) || transitions > UINT64_MAX - work)
+                work_known = 0;
+            else
+            {
+                work += transitions;
+                if (count > UINT64_MAX - work) work_known = 0;
+                else work += count;
+            }
+        }
+        reach_n += (uint64_t)width_n; if (reach_n > (uint64_t)B) reach_n = (uint64_t)B;
+        reach_r += (uint64_t)width_r; if (reach_r > (uint64_t)S) reach_r = (uint64_t)S;
+    }
+    if (choices > SIZE_MAX || choices > SIZE_MAX / sizeof(st_var_dp_choice) ||
+        states > SIZE_MAX / sizeof(st_cross_variable_score) || trace_entries > SIZE_MAX / sizeof(int)) return 0;
+    uint64_t bytes = 0;
+    if (!st_var_dp_payload(&bytes, (uint64_t)nf * 4, sizeof(int)) ||
+        !st_var_dp_payload(&bytes, (uint64_t)nf + 1, sizeof(size_t)) ||
+        !st_var_dp_payload(&bytes, choices, sizeof(st_var_dp_choice)) ||
+        !st_var_dp_payload(&bytes, states, 6 * sizeof(st_cross_variable_score)) ||
+        !st_var_dp_payload(&bytes, states, 2 * sizeof(unsigned char)) ||
+        !st_var_dp_payload(&bytes, trace_entries, 2 * sizeof(int))) return 0;
+    uint64_t cells = bytes / sizeof(double) + (bytes % sizeof(double) != 0);
+    plan->produced_extra = B; plan->retained_extra = S;
+    plan->states = (size_t)states; plan->choices = (size_t)choices; plan->trace_entries = (size_t)trace_entries;
+    plan->cells = cells <= UINT64_C(9007199254740991) ? (double)cells : R_PosInf;
+    plan->work = work_known && work <= UINT64_C(9007199254740991) ? (double)work : R_PosInf;
+    return 1;
+}
+
+static int st_var_dp_score_finite(const st_cross_variable_score *value)
+{
+    return isfinite(value->baseline) && isfinite(value->tail) && isfinite(value->response);
+}
+
+static int st_var_dp_score_valid(const st_cross_variable_score *value)
+{
+    return !isnan(value->baseline) && !isnan(value->tail) && !isnan(value->response);
+}
+
+static int st_var_dp(int nf, int P, int R, const int *L, const int *U, const int *l, const int *u,
+    void *opaque, double remaining_work, int (*tick)(void *, int), int (*workspace)(void *, double),
+    void (*utility)(void *, int, int, int, st_cross_variable_score *, st_cross_variable_score *, st_cross_variable_score *),
+    int *outN, int *outR, st_cross_variable_score *point, st_cross_variable_score *lower, st_cross_variable_score *upper)
+{
+    if (!tick || !workspace || !utility || !outN || !outR || !point || !lower || !upper ||
+        !R_FINITE(remaining_work) || remaining_work < 0)
+        error("st.cross.plan: invalid variable-count DP interface");
+    st_cross_variable_score no_point = {-INFINITY, 0, 0}, unknown_upper = {0, 0, INFINITY};
+    *point = *lower = no_point; *upper = unknown_upper;
+    st_var_dp_plan plan; int state = st_var_dp_estimate(nf, P, R, L, U, l, u, &plan);
+    if (state < 0) { *upper = no_point; return -1; }
+    if (!state || !R_FINITE(plan.cells) || !R_FINITE(plan.work) || plan.work > remaining_work) return 0;
+    if (!workspace(opaque, plan.cells)) return 0;
+    void *mark = st_work_mark();
+    int *minimum_n = st_work_alloc(nf, sizeof(int)), *minimum_r = st_work_alloc(nf, sizeof(int)),
+        *width_n = st_work_alloc(nf, sizeof(int)), *width_r = st_work_alloc(nf, sizeof(int));
+    size_t *offset = st_work_alloc((size_t)nf + 1, sizeof(size_t));
+    st_var_dp_choice *choices = st_work_alloc(plan.choices, sizeof(st_var_dp_choice));
+    st_cross_variable_score *previous_point = st_work_alloc(plan.states, sizeof(st_cross_variable_score)),
+        *current_point = st_work_alloc(plan.states, sizeof(st_cross_variable_score)),
+        *previous_lower = st_work_alloc(plan.states, sizeof(st_cross_variable_score)),
+        *current_lower = st_work_alloc(plan.states, sizeof(st_cross_variable_score)),
+        *previous_upper = st_work_alloc(plan.states, sizeof(st_cross_variable_score)),
+        *current_upper = st_work_alloc(plan.states, sizeof(st_cross_variable_score));
+    unsigned char *previous_seen = st_work_alloc(plan.states, sizeof(unsigned char)),
+        *current_seen = st_work_alloc(plan.states, sizeof(unsigned char));
+    int *trace_n = st_work_alloc(plan.trace_entries, sizeof(int)), *trace_r = st_work_alloc(plan.trace_entries, sizeof(int));
+    size_t at = 0; int stopped = 0;
+    for (int e = 0; e < nf && !stopped; e++)
+    {
+        minimum_n[e] = L[e] > l[e] ? L[e] : l[e]; minimum_r[e] = l[e];
+        width_n[e] = U[e] - minimum_n[e]; if (width_n[e] > plan.produced_extra) width_n[e] = plan.produced_extra;
+        int last_r = u[e] < U[e] ? u[e] : U[e];
+        width_r[e] = last_r - minimum_r[e]; if (width_r[e] > plan.retained_extra) width_r[e] = plan.retained_extra;
+        offset[e] = at;
+        int last_n = minimum_n[e] + width_n[e];
+        for (int n = minimum_n[e]; ; n++)
+        {
+            int highest_r = minimum_r[e] + width_r[e]; if (highest_r > n) highest_r = n;
+            for (int r = minimum_r[e]; ; r++)
+            {
+                if (!tick(opaque, 0)) { stopped = 1; break; }
+                if (at >= plan.choices) error("st.cross.plan: variable DP choice estimate was inconsistent");
+                st_var_dp_choice *choice = choices + at++; choice->produced = n; choice->retained = r;
+                if (!r)
+                {
+                    st_cross_variable_score zero = {0, 0, 0};
+                    choice->point = choice->lower = choice->upper = zero;
+                }
+                else utility(opaque, e, n, r, &choice->point, &choice->lower, &choice->upper);
+                if (!st_var_dp_score_finite(&choice->point) || !st_var_dp_score_valid(&choice->lower) ||
+                    !st_var_dp_score_valid(&choice->upper) ||
+                    st_cross_variable_compare(&choice->lower, &choice->point) > 0 ||
+                    st_cross_variable_compare(&choice->point, &choice->upper) > 0)
+                { stopped = 1; break; }
+                if (r == highest_r) break;
+            }
+            if (stopped || n == last_n) break;
+        }
+        offset[e + 1] = at;
+    }
+    if (!stopped && at != plan.choices) error("st.cross.plan: variable DP choices do not match the allocation estimate");
+    if (stopped) { st_work_reset(mark); workspace(opaque, 0); return 0; }
+    memset(previous_seen, 0, plan.states * sizeof(unsigned char));
+    previous_seen[0] = 1;
+    st_cross_variable_score zero = {0, 0, 0};
+    previous_point[0] = previous_lower[0] = previous_upper[0] = zero;
+    int reached_n = 0, reached_r = 0;
+    size_t retained_stride = (size_t)plan.retained_extra + 1;
+    for (int e = 0; e < nf && !stopped; e++)
+    {
+        memset(current_seen, 0, plan.states * sizeof(unsigned char));
+        for (int64_t produced_state = 0; produced_state <= reached_n && !stopped; produced_state++)
+            for (int64_t retained_state = 0; retained_state <= reached_r && !stopped; retained_state++)
+        {
+            int n = (int)produced_state, r = (int)retained_state;
+            size_t previous = (size_t)n * retained_stride + r;
+            if (!previous_seen[previous]) continue;
+            for (size_t choice_index = offset[e]; choice_index < offset[e + 1]; choice_index++)
+            {
+                if (!tick(opaque, 1)) { stopped = 1; break; }
+                const st_var_dp_choice *choice = choices + choice_index;
+                int dn = choice->produced - minimum_n[e], dr = choice->retained - minimum_r[e];
+                if (dn > plan.produced_extra - n || dr > plan.retained_extra - r) continue;
+                size_t current = (size_t)(n + dn) * retained_stride + r + dr;
+                st_cross_variable_score candidate_point = st_var_score_add(previous_point[previous], choice->point),
+                    candidate_lower = st_var_score_add_bound(previous_lower[previous], choice->lower, -1),
+                    candidate_upper = st_var_score_add_bound(previous_upper[previous], choice->upper, 1);
+                if (!st_var_dp_score_finite(&candidate_point) || !st_var_dp_score_valid(&candidate_lower) ||
+                    !st_var_dp_score_valid(&candidate_upper)) { stopped = 1; break; }
+                int known = current_seen[current];
+                if (!known || st_cross_variable_compare(&candidate_point, current_point + current) > 0)
+                {
+                    current_point[current] = candidate_point; current_lower[current] = candidate_lower;
+                    trace_n[(size_t)e * plan.states + current] = choice->produced;
+                    trace_r[(size_t)e * plan.states + current] = choice->retained;
+                }
+                if (!known || st_cross_variable_compare(&candidate_upper, current_upper + current) > 0)
+                    current_upper[current] = candidate_upper;
+                current_seen[current] = 1;
+            }
+        }
+        st_cross_variable_score *score_swap = previous_point; previous_point = current_point; current_point = score_swap;
+        score_swap = previous_lower; previous_lower = current_lower; current_lower = score_swap;
+        score_swap = previous_upper; previous_upper = current_upper; current_upper = score_swap;
+        unsigned char *seen_swap = previous_seen; previous_seen = current_seen; current_seen = seen_swap;
+        reached_n = width_n[e] > plan.produced_extra - reached_n ? plan.produced_extra : reached_n + width_n[e];
+        reached_r = width_r[e] > plan.retained_extra - reached_r ? plan.retained_extra : reached_r + width_r[e];
+    }
+    if (stopped) { st_work_reset(mark); workspace(opaque, 0); return 0; }
+    size_t target = (size_t)plan.produced_extra * retained_stride + plan.retained_extra;
+    if (!previous_seen[target]) { *upper = no_point; st_work_reset(mark); workspace(opaque, 0); return -1; }
+    int left_n = plan.produced_extra, left_r = plan.retained_extra;
+    for (int e = nf - 1; e >= 0; e--)
+    {
+        size_t current = (size_t)left_n * retained_stride + left_r;
+        int n = trace_n[(size_t)e * plan.states + current], r = trace_r[(size_t)e * plan.states + current];
+        if (n < minimum_n[e] || n > minimum_n[e] + width_n[e] || r < minimum_r[e] ||
+            r > minimum_r[e] + width_r[e] || r > n || n - minimum_n[e] > left_n || r - minimum_r[e] > left_r)
+            error("st.cross.plan: invalid variable DP traceback");
+        outN[e] = n; outR[e] = r;
+        left_n -= n - minimum_n[e]; left_r -= r - minimum_r[e];
+    }
+    if (left_n || left_r) error("st.cross.plan: variable DP traceback did not consume both budgets");
+    *point = previous_point[target]; *lower = previous_lower[target]; *upper = previous_upper[target];
+    st_work_reset(mark); workspace(opaque, 0);
+    return 1;
+}
+
+
+static void st_var_production(st_var_problem *s, st_var_best *best, int *candidate_n, int *candidate_r,
+    int *out_n, int *out_r, st_cross_variable_check check, void *opaque)
+{
+    st_variable_context *p = s->context; st_joint_context *k = p->kernel;
+    if (!best->has || !p->p.normal_mode || !p->p.response_criterion || k->limited) return;
+    double cells = (long double)s->nf * (sizeof(int) + sizeof(double)) / sizeof(double);
+    if (st_joint_cells(k, k->capacity) + cells > p->p.max_cells) return;
+    if (!st_var_workspace(s, cells)) return;
+    void *mark = st_work_mark(); int *heap = st_work_alloc(s->nf, sizeof(int)); double *gain = st_work_alloc(s->nf, sizeof(double));
+    int size = 0; int64_t used = 0;
+    for (int i = 0; i < s->nf; i++)
+    {
+        candidate_r[i] = out_r[i]; candidate_n[i] = s->lower[i] > out_r[i] ? s->lower[i] : out_r[i]; used += candidate_n[i];
+        if (candidate_n[i] < s->upper[i])
+        {
+            double kernel_error = 0, weight = ((double)candidate_r[i] / p->p.selected) * s->accuracy * sqrt(s->variance[i]);
+            gain[i] = weight == 0 ? 0 : weight * st_var_kernel(p, candidate_n[i], candidate_r[i], 1, 1, &kernel_error);
+            heap[size++] = i;
+        }
+    }
+    if (used <= p->p.budget)
+    {
+        int left = p->p.budget - (int)used;
+        for (int at = size / 2; at-- > 0;) st_allocate_normal_heap(heap, size, at, gain);
+        while (left && size && st_joint_tick(k, &k->heap_work))
+        {
+            p->production_work++; int i = heap[0]; candidate_n[i]++; left--;
+            if (candidate_n[i] < s->upper[i])
+            {
+                double kernel_error = 0, weight = ((double)candidate_r[i] / p->p.selected) * s->accuracy * sqrt(s->variance[i]);
+                gain[i] = weight == 0 ? 0 : weight * st_var_kernel(p, candidate_n[i], candidate_r[i], 1, 1, &kernel_error);
+            }
+            else heap[0] = heap[--size];
+            if (size) st_allocate_normal_heap(heap, size, 0, gain);
+        }
+        for (int i = 0; i < s->nf && left; i++)
+        { int add = s->upper[i] - candidate_n[i]; if (add > left) add = left; candidate_n[i] += add; left -= add; }
+        if (!left) st_var_accept(s, best, candidate_n, candidate_r, out_n, out_r, st_var_check(s, candidate_n, candidate_r, check, opaque));
+    }
+    st_work_reset(mark); st_var_workspace(s, 0);
+}
+
+static void st_var_retention(st_var_problem *s, st_var_best *best, int *candidate_n, int *candidate_r,
+    int *out_n, int *out_r, st_cross_variable_check check, void *opaque)
+{
+    st_variable_context *p = s->context; st_joint_context *k = p->kernel;
+    if (!best->has || k->limited) return;
+    void *mark = st_work_mark(); double old_call = k->call_cells;
+    k->call_cells += (long double)s->nf * sizeof(int) / sizeof(double);
+    int *upper_r = st_work_alloc(s->nf, sizeof(int));
+    for (int i = 0; i < s->nf; i++) upper_r[i] = s->max_selected[i] < out_n[i] ? s->max_selected[i] : out_n[i];
+    st_var_dp_plan plan; int possible = st_var_dp_estimate(s->nf, p->p.budget, p->p.selected, out_n, out_n, s->min_selected, upper_r, &plan);
+    if (possible == 1 && plan.work <= st_cross_joint_remaining(k) && plan.cells + st_joint_cells(k, k->capacity) <= p->p.max_cells)
+    {
+        st_cross_variable_score point, lower, upper; double before = k->work;
+        int solved = st_var_dp(s->nf, p->p.budget, p->p.selected, out_n, out_n, s->min_selected, upper_r,
+            s, st_cross_joint_remaining(k), st_var_tick, st_var_workspace, st_var_utility, candidate_n, candidate_r, &point, &lower, &upper);
+        p->retention_work += k->work - before;
+        if (solved == 1) st_var_accept(s, best, candidate_n, candidate_r, out_n, out_r, st_var_check(s, candidate_n, candidate_r, check, opaque));
+    }
+    st_work_reset(mark); k->call_cells = old_call;
+}
+
+static void st_var_blocks(st_var_problem *s, st_var_best *best, int *candidate_n, int *candidate_r,
+    int *out_n, int *out_r, st_cross_variable_check check, void *opaque, int mode)
+{
+    st_variable_context *p = s->context; st_joint_context *k = p->kernel;
+    if (!best->has || k->limited) return;
+    for (int a = 0; a < s->nf && !k->limited; a++) for (int b = a + 1; b < s->nf && !k->limited; b++)
+    {
+        int total_n = out_n[a] + out_n[b], total_r = out_r[a] + out_r[b],
+            first_n = s->lower[a] > total_n - s->upper[b] ? s->lower[a] : total_n - s->upper[b],
+            last_n = s->upper[a] < total_n - s->lower[b] ? s->upper[a] : total_n - s->lower[b];
+        if (mode == 1) first_n = last_n = out_n[a];
+        for (int64_t nn = first_n; nn <= last_n && !k->limited; nn++)
+        {
+            int n_a = (int)nn, n_b = total_n - n_a,
+                first_r = s->min_selected[a] > total_r - s->max_selected[b] ? s->min_selected[a] : total_r - s->max_selected[b],
+                last_r = s->max_selected[a] < total_r - s->min_selected[b] ? s->max_selected[a] : total_r - s->min_selected[b];
+            if (first_r < total_r - n_b) first_r = total_r - n_b;
+            if (last_r > n_a) last_r = n_a;
+            if (mode == 0) first_r = last_r = out_r[a];
+            for (int64_t rr = first_r; rr <= last_r && !k->limited; rr++)
+            {
+                if (!st_var_tick(s, 2)) break;
+                p->block_work++;
+                int r_a = (int)rr, r_b = total_r - r_a;
+                if (r_a < s->min_selected[a] || r_a > s->max_selected[a] || r_b < s->min_selected[b] || r_b > s->max_selected[b] || r_a > n_a || r_b > n_b) continue;
+                if (n_a == out_n[a] && n_b == out_n[b] && r_a == out_r[a] && r_b == out_r[b]) continue;
+                st_cross_variable_score old_a, old_b, next_a, next_b, lo, up;
+                st_var_utility(s, a, out_n[a], out_r[a], &old_a, &lo, &up); st_var_utility(s, b, out_n[b], out_r[b], &old_b, &lo, &up);
+                st_var_utility(s, a, n_a, r_a, &next_a, &lo, &up); st_var_utility(s, b, n_b, r_b, &next_b, &lo, &up);
+                st_cross_variable_score old = st_var_score_add(old_a, old_b), next = st_var_score_add(next_a, next_b);
+                if (st_cross_variable_compare(&next, &old) <= 0) continue;
+                memcpy(candidate_n, out_n, (size_t)s->nf * sizeof(int)); memcpy(candidate_r, out_r, (size_t)s->nf * sizeof(int));
+                candidate_n[a] = n_a; candidate_n[b] = n_b; candidate_r[a] = r_a; candidate_r[b] = r_b;
+                st_var_accept(s, best, candidate_n, candidate_r, out_n, out_r, st_var_check(s, candidate_n, candidate_r, check, opaque));
+            }
+        }
+    }
+}
+
+static void st_var_bounded(st_var_problem *s, st_var_best *best, int *candidate_n, int *candidate_r,
+    int *out_n, int *out_r, st_cross_variable_check check, void *opaque)
+{
+    if (!best->has) return;
+    for (int pass = 0; pass < 4 && !s->context->kernel->limited; pass++)
+    {
+        st_cross_variable_score before = best->value;
+        st_var_production(s, best, candidate_n, candidate_r, out_n, out_r, check, opaque);
+        st_var_retention(s, best, candidate_n, candidate_r, out_n, out_r, check, opaque);
+        st_var_blocks(s, best, candidate_n, candidate_r, out_n, out_r, check, opaque, 0);
+        st_var_blocks(s, best, candidate_n, candidate_r, out_n, out_r, check, opaque, 1);
+        st_var_blocks(s, best, candidate_n, candidate_r, out_n, out_r, check, opaque, 2);
+        if (st_cross_variable_compare(&best->value, &before) <= 0) break;
+    }
+}
+
+static int st_var_seed_balanced(st_var_problem *s, int *n, int *r)
+{
+    st_variable_context *p = s->context; int64_t sum = 0;
+    for (int i = 0; i < s->nf; i++) { n[i] = s->lower[i]; r[i] = s->min_selected[i]; sum += n[i]; }
+    if (sum > p->p.budget) return 0;
+    int left = p->p.budget - (int)sum;
+    while (left)
+    {
+        int active = 0; for (int i = 0; i < s->nf; i++) active += n[i] < s->upper[i];
+        if (!active) return 0;
+        int increment = left / active; if (!increment) increment = 1;
+        for (int i = 0; i < s->nf && left; i++) if (n[i] < s->upper[i])
+        { int add = s->upper[i] - n[i]; if (add > increment) add = increment; if (add > left) add = left; n[i] += add; left -= add; }
+    }
+    sum = 0; for (int i = 0; i < s->nf; i++) sum += r[i];
+    if (sum > p->p.selected) return 0;
+    left = p->p.selected - (int)sum;
+    while (left)
+    {
+        int active = 0;
+        for (int i = 0; i < s->nf; i++) active += r[i] < s->max_selected[i] && r[i] < n[i];
+        if (!active) return 0;
+        int increment = left / active; if (!increment) increment = 1;
+        for (int i = 0; i < s->nf && left; i++)
+        {
+            int limit = s->max_selected[i] < n[i] ? s->max_selected[i] : n[i], add = limit - r[i];
+            if (add > increment) add = increment;
+            if (add > left) add = left;
+            r[i] += add; left -= add;
+        }
+    }
+    return st_var_counts(s, n, r);
+}
+
+void st_cross_variable_solve(void *context, const int *family, const double *mu, double anchor,
+    const double *variance, double accuracy, const int *initial_n, const int *initial_r,
+    int *n, int *r, double *intensity, double *intensity_error, double *family_response,
+    int coupled, st_cross_variable_check check, void *opaque, st_cross_variable_solution *solution)
+{
+    st_variable_context *p = context;
+    if (!p || !solution || !n || !r || ((!initial_n) != (!initial_r))) error("st.cross.plan: invalid variable solve request");
+    st_cross_variable_validate(p, coupled); st_joint_context *k = p->kernel;
+    double started = st_joint_cpu(), before_work = k->work, old_call = k->call_cells, old_live = k->live_cells;
+    k->solves++; void *mark = st_work_mark(); st_var_problem s;
+    st_var_problem_prepare(&s, p, family, mu, anchor, variance, accuracy);
+    k->call_cells += s.scratch_cells + (long double)s.nf * 2 * sizeof(int) / sizeof(double);
+    k->peak_cells = fmax(k->peak_cells, st_joint_cells(k, k->capacity));
+    if (st_joint_cells(k, k->capacity) > p->p.max_cells) st_joint_stop(k, "max.cells");
+    memset(solution, 0, sizeof(*solution)); solution->value = solution->lower = st_var_infinite(0); solution->upper = st_var_infinite(1);
+    solution->gap = R_PosInf; solution->reason = "bounded.count.search"; solution->algorithm = "variable.bounded.alternation.blocks";
+    int *candidate_n = st_work_alloc(s.nf, sizeof(int)), *candidate_r = st_work_alloc(s.nf, sizeof(int));
+    st_var_best best; memset(&best, 0, sizeof(best)); best.value = best.unknown_value = st_var_infinite(0);
+    int complete = 0, proof = 0, fixed_state = 1, last_state = -1;
+    st_cross_variable_score upper_local = st_var_infinite(1), upper_global = st_var_infinite(1);
+    if (!st_var_tighten(&s)) { complete = proof = 1; solution->reason = "fixed.family.budgets.infeasible"; }
+    else
+    {
+        if (st_var_counts(&s, initial_n, initial_r))
+        {
+            last_state = st_var_check(&s, initial_n, initial_r, check, opaque);
+            st_var_accept(&s, &best, initial_n, initial_r, n, r, last_state);
+        }
+        for (int seed = 0; seed < 2 && !k->limited; seed++)
+        {
+            if (!st_var_tick(&s, 2)) break;
+            int valid = seed ? st_var_seed_balanced(&s, candidate_n, candidate_r) : st_var_seed(&s, candidate_n, candidate_r);
+            if (!valid) continue;
+            last_state = st_var_check(&s, candidate_n, candidate_r, check, opaque);
+            st_var_accept(&s, &best, candidate_n, candidate_r, n, r, last_state);
+        }
+        if (!coupled && last_state != -1 && last_state != 1) fixed_state = last_state;
+        if (!coupled && last_state == -1 && (best.has || best.unknown)) fixed_state = best.has ? 1 : 0;
+        if (!coupled && last_state == -1 && !best.has && !best.unknown && st_var_seed(&s, candidate_n, candidate_r))
+        {
+            fixed_state = st_var_check(&s, candidate_n, candidate_r, check, opaque);
+            if (fixed_state == -1) { complete = proof = 1; solution->reason = "fixed.family.constraints.infeasible"; }
+        }
+        if (!complete && !k->limited)
+        {
+            if (p->p.algorithm == 0 && s.nf <= 4)
+            {
+                solution->algorithm = "variable.exact.count.enumeration";
+                complete = st_var_enum(&s, candidate_n, candidate_r, n, r, coupled, fixed_state, check, opaque, &best, &upper_local);
+                proof = complete && !best.has && !best.unknown;
+            }
+            if (!complete && !k->limited && (!coupled || p->p.algorithm == 2))
+            {
+                st_var_dp_plan plan; int can = st_var_dp_estimate(s.nf, p->p.budget, p->p.selected,
+                    s.lower, s.upper, s.min_selected, s.max_selected, &plan);
+                if (can < 0) { complete = proof = 1; upper_local = st_var_infinite(0); }
+                else if (can == 1 && plan.work <= st_cross_joint_remaining(k) && plan.cells + st_joint_cells(k, k->capacity) <= p->p.max_cells)
+                {
+                    st_cross_variable_score point, lower, upper;
+                    int solved = st_var_dp(s.nf, p->p.budget, p->p.selected, s.lower, s.upper, s.min_selected, s.max_selected,
+                        &s, st_cross_joint_remaining(k), st_var_tick, st_var_workspace, st_var_utility, candidate_n, candidate_r, &point, &lower, &upper);
+                    solution->algorithm = "variable.two.budget.dp";
+                    if (solved < 0) { complete = proof = 1; upper_local = st_var_infinite(0); }
+                    else if (solved == 1)
+                    {
+                        int state = st_var_check(&s, candidate_n, candidate_r, check, opaque);
+                        st_var_accept(&s, &best, candidate_n, candidate_r, n, r, state);
+                        upper_local = upper; complete = 1; proof = state == -1 && !coupled;
+                    }
+                }
+                else if (p->p.algorithm == 2)
+                    st_joint_stop(k, can != 1 || plan.cells + st_joint_cells(k, k->capacity) > p->p.max_cells ? "max.cells" : "max.transitions");
+            }
+            if (!complete && !k->limited && p->p.algorithm == 0)
+            {
+                solution->algorithm = "variable.bounded.alternation.blocks";
+                st_var_bounded(&s, &best, candidate_n, candidate_r, n, r, check, opaque);
+            }
+        }
+        if (complete) upper_global = proof ? st_var_infinite(0) : st_var_global(&s, upper_local, 1);
+        else
+        {
+            int known = 0; upper_global = st_cross_variable_bound(p, s.nf, family, mu, anchor, variance, accuracy, &known);
+            if (!known) upper_global = st_var_infinite(1);
+        }
+    }
+    if (proof) upper_global = st_var_infinite(0);
+    if (best.has)
+    {
+        if (st_var_check(&s, n, r, check, opaque) != 1) error("st.cross.plan: variable incumbent failed its final original-input check");
+        st_cross_variable_solution summary;
+        st_cross_variable_rescore(p, family, mu, anchor, variance, accuracy, n, r, intensity, intensity_error, family_response, &summary);
+        solution->value = summary.value; solution->lower = summary.lower; solution->selected_response = summary.selected_response;
+        if (st_cross_variable_compare(&upper_global, &summary.value) < 0) upper_global = st_var_infinite(1);
+        solution->upper = upper_global; solution->gap = st_cross_variable_gap(&solution->upper, &solution->lower);
+        solution->unresolved = !R_FINITE(solution->gap) || solution->gap > p->p.tolerance * fmax(1, (double)fabsl(solution->selected_response));
+    }
+    else { solution->upper = upper_global; solution->unresolved = best.unknown || (complete && !proof); }
+    solution->has_incumbent = best.has; solution->complete = complete; solution->proof_infeasible = proof;
+    solution->limited = !complete && k->limited;
+    solution->reason = proof ? "complete.variable.counts.infeasible" : complete ? "complete.variable.counts" : k->limited ?
+        (k->stop_reason ? k->stop_reason : "resource.limit") : "bounded.variable.count.search";
+    solution->work = k->work - before_work; solution->cells = k->peak_cells;
+    st_work_reset(mark); k->call_cells = old_call; k->live_cells = old_live; k->inner_cpu += st_joint_cpu() - started;
+}
+
+SEXP st_cross_variable_normalized(const void *context)
+{
+    const st_variable_context *p = context; if (!p) return R_NilValue;
+    int np = 0; const char *names[] = {"total.progeny", "total.selected", "min.progeny", "max.progeny", "min.selected", "max.selected", "bounds", "selection.method", "control"};
+    SEXP out = st_allocate_list(9, names, &np); int counts[] = {p->p.budget, p->p.selected, p->p.lower, p->p.upper, p->p.min_selected, p->p.max_selected};
+    for (int i = 0; i < 6; i++) SET_VECTOR_ELT(out, i, st_allocate_keep(ScalarInteger(counts[i]), &np));
+    const char *columns[] = {"P1Name", "P2Name", "min.progeny", "max.progeny", "min.selected", "max.selected"};
+    SEXP bounds = st_legacy_marker_frame(6, columns, p->nf, &np);
+    for (int j = 0; j < 6; j++) SET_VECTOR_ELT(bounds, j, st_allocate_keep(allocVector(j < 2 ? STRSXP : INTSXP, p->nf), &np));
+    for (int e = 0; e < p->nf; e++)
+    {
+        SET_STRING_ELT(VECTOR_ELT(bounds, 0), e, STRING_ELT(p->parent_names, p->first[e]));
+        SET_STRING_ELT(VECTOR_ELT(bounds, 1), e, STRING_ELT(p->parent_names, p->second[e]));
+        INTEGER(VECTOR_ELT(bounds, 2))[e] = p->lower[e]; INTEGER(VECTOR_ELT(bounds, 3))[e] = p->upper[e];
+        INTEGER(VECTOR_ELT(bounds, 4))[e] = p->min_selected[e]; INTEGER(VECTOR_ELT(bounds, 5))[e] = p->max_selected[e];
+    }
+    SET_VECTOR_ELT(out, 6, bounds); SET_VECTOR_ELT(out, 7, st_allocate_keep(mkString(p->p.normal_mode ? "order.statistics" : "burrows"), &np));
+    const char *labels[] = {"max.cells", "max.transitions", "tolerance", "algorithm"}; SEXP control = st_allocate_list(4, labels, &np);
+    SET_VECTOR_ELT(control, 0, st_allocate_keep(ScalarReal(p->p.max_cells), &np)); SET_VECTOR_ELT(control, 1, st_allocate_keep(ScalarReal(p->p.max_transitions), &np));
+    SET_VECTOR_ELT(control, 2, st_allocate_keep(ScalarReal(p->p.tolerance), &np)); SET_VECTOR_ELT(control, 3, st_allocate_keep(mkString(p->p.algorithm == 2 ? "dp" : "auto"), &np));
+    SET_VECTOR_ELT(out, 8, control); UNPROTECT(np); return out;
+}
+
+SEXP st_cross_variable_report(const void *context)
+{
+    const st_variable_context *p = context; if (!p) return R_NilValue;
+    int np = 0; SEXP out = st_joint_report_public(p->kernel, 1, &np);
+    const char *names[] = {"production", "retention", "blocks", "upper.bound", "exact.enumeration"};
+    SEXP phases = st_allocate_list(5, names, &np); double values[] = {p->production_work, p->retention_work, p->block_work, p->bound_work, p->enumeration_work};
+    for (int i = 0; i < 5; i++) SET_VECTOR_ELT(phases, i, st_allocate_keep(ScalarReal(values[i]), &np));
+    SET_VECTOR_ELT(out, 20, phases);
+    SET_VECTOR_ELT(out, 21, st_allocate_keep(mkString("variable.retention.two.budgets"), &np));
+    SET_VECTOR_ELT(out, 22, st_allocate_keep(ScalarReal(p->density_kernels), &np));
+    SET_VECTOR_ELT(out, 23, st_allocate_keep(ScalarReal(p->density_fallbacks), &np));
+    SEXP cpu = st_population_get(out, "cpu.seconds");
+    SET_VECTOR_ELT(cpu, 2, st_allocate_keep(ScalarReal(NA_REAL), &np));
+    SET_VECTOR_ELT(out, 24, st_allocate_keep(mkString("Cached hits are counted without individual clock calls; lookup CPU is not measured. Inner total includes all cache work."), &np));
+    SET_VECTOR_ELT(out, 17, st_allocate_keep(mkString("One cumulative allowance for local utility alternatives, DP transitions, enumeration branches, production assignments and tested two-family count blocks; cache/kernel counts are separate."), &np));
+    UNPROTECT(np); return out;
+}
+
+typedef double (*st_cross_genetic_intensity)(void *, int, int, int, double *);
+typedef struct {
+    double mean, variance, covariance, origin_variance, additive_center;
+    int state;
+    const char *reason;
+} st_cross_genetic_moment;
+typedef struct {
+    int version, parents, markers, chromosomes;
+    size_t founder_stride;
+    const unsigned char *founder_bits;
+    const char *const *parent_ids, *const *marker_ids;
+    const char *core_key;
+    const double *effect, *weight, *p0, *switch_probability;
+    const int *chromosome_start;
+    double intercept, trait_anchor, reference_denominator;
+} st_cross_dh_view;
+typedef void *(*st_cross_dh_alloc)(void *, size_t, size_t);
+typedef int (*st_cross_dh_charge)(void *, int, uint64_t);
+typedef struct {
+    int requested, completed, status;
+    const char *reason;
+    int families, parents;
+    double *population, *population_SE;
+    int *population_state, *population_SE_state;
+    double *family, *family_SE;
+    int *family_state, *family_SE_state;
+    double *origin, *origin_SE;
+    int *origin_state, *origin_SE_state;
+    uint64_t seed;
+    const char *bank_protocol;
+} st_cross_dh_result;
+void *st_cross_dh_create(const st_cross_dh_view *, void *, st_cross_dh_alloc, st_cross_dh_charge);
+int st_cross_dh_run(void *, int, const int *, const int *, const int64_t *, const int64_t *,
+    const double *, const double *, const double *, int, uint64_t, st_cross_dh_result *);
+typedef struct {
+    int64_t produced, retained;
+    double accuracy;
+    int training, evaluation;
+    uint64_t training_seed, evaluation_seed;
+    int request_training, request_evaluation;
+} st_cross_future_parameters;
+
+typedef struct {
+    int rows, direction_known, operations_known;
+    const int *seed, *pollen, *family_hint;
+    const int64_t *produced, *retained, *operations;
+} st_cross_future_operations;
+
+typedef struct {
+    int families;
+    const int *first, *second;
+    const int64_t *produced, *retained;
+    const double *accuracy;
+    const st_cross_future_operations *operation_view;
+} st_cross_future_design;
+
+typedef int (*st_cross_future_design_check)(void *opaque,
+    const st_cross_future_design *design, int mandatory);
+
+typedef struct {
+    int families, planned_points, automatic_references;
+    int64_t produced, retained;
+    st_cross_future_design_check check;
+    void *opaque;
+} st_cross_future_contract;
+
+typedef struct {
+    long double baseline, tail, g1_response, g2_response;
+} st_cross_future_score;
+
+typedef struct {
+    int complete, g1_state, limited, numerical;
+    int requested, completed;
+    st_cross_future_score score;
+    double work, cells;
+    const char *reason;
+} st_cross_future_value;
+
+void *st_cross_future_prepare(void *genetic, SEXP inherited_policy,
+    SEXP request, int criterion_future);
+void st_cross_future_parameters_get(const void *future,
+    st_cross_future_parameters *parameters);
+void st_cross_future_bind(void *future,
+    const st_cross_future_contract *contract);
+int st_cross_future_validate(void *future,
+    const st_cross_future_design *design, int optimization);
+int st_cross_future_training(void *future,
+    const st_cross_future_design *design, st_cross_future_value *value);
+int st_cross_future_compare(const st_cross_future_score *a,
+    const st_cross_future_score *b);
+double st_cross_future_total(const void *future,
+    const st_cross_future_score *score, int horizon);
+int st_cross_future_limited(const void *future);
+int st_cross_future_final(void *future, int designs,
+    const st_cross_future_design *design, const char *const *names);
+SEXP st_cross_future_policy(const void *future);
+SEXP st_cross_future_report(const void *future);
+
+typedef struct {
+    int complete, requested, completed, status;
+    st_cross_future_score score;
+    const char *reason;
+} st_cross_future_engine_value;
+
+typedef struct {
+    int designs, requested, completed, status;
+    const char *reason;
+    st_cross_future_score *score;
+    double *population, *population_SE;
+    int *population_state, *population_SE_state;
+    double *pair_moments, *pair_moments_SE;
+    int *pair_moments_state, *pair_moments_SE_state;
+    double *contrast, *contrast_SE;
+    int *contrast_state, *contrast_SE_state;
+} st_cross_future_final_result;
+
+void *st_cross_future_engine_create(const st_cross_dh_view *view,
+    const st_cross_future_parameters *parameters,
+    void *budget, st_cross_dh_alloc allocate,
+    st_cross_dh_charge charge);
+int st_cross_future_engine_score(void *engine,
+    const st_cross_future_design *design,
+    st_cross_future_engine_value *value);
+int st_cross_future_engine_final(void *engine, int designs,
+    const st_cross_future_design *design,
+    st_cross_future_final_result *result);
+
+typedef struct {
+    int first, second;
+    st_cross_genetic_moment value;
+    double covariance_error, sd_error;
+} st_genetic_cache;
+typedef struct st_genetic_block {
+    void *data;
+    struct st_genetic_block *next;
+} st_genetic_block;
+typedef struct {
+    st_cross_dh_view view;
+    const char **caller_ids, **chromosome_ids, **reference_ids;
+    int caller_n, reference_n, *caller_map, *effect_allele, *complement_allele;
+    double *position, *rw, *delta, *parent_T;
+    const char *source;
+    char signature[64];
+    st_population_matrix K;
+    int *K_map, cap_active, method, requested, seed, assessed, limited, mandatory;
+    double cap, max_cells, max_work, origin_variance;
+    long double work, category[10], mandatory_work;
+    size_t bytes, peak_bytes, output_bytes, reserve_bytes, reserve_peak;
+    const char *reason;
+    st_genetic_cache *cache;
+    size_t cache_size, cache_used;
+    int nf, capacity, check_state;
+    int *first, *second;
+    int64_t *n, *r;
+    double *accuracy, *mu, *variance, *covariance, *intensity, *raw, *fraction, *error;
+    int *state;
+    const char **family_reason;
+    double *aggregate, *raw_aggregate, *aggregate_error;
+    double proxy, proxy_error;
+    int prediction_state;
+    const char *prediction_reason;
+    st_cross_dh_result scenarios;
+    int scenario_ran, no_incumbent, refinement;
+    st_genetic_block *blocks;
+} st_genetic_context;
+typedef struct {
+    st_genetic_block block;
+    void *future;
+    int base_cap_active;
+    double base_cap;
+} st_genetic_future_owner;
+static void *st_genetic_future_get(const st_genetic_context *p)
+{
+    if (!p) return NULL;
+    for (st_genetic_block *block = p->blocks; block; block = block->next)
+        if (!block->data) return ((st_genetic_future_owner *)block)->future;
+    return NULL;
+}
+static void st_genetic_future_set(st_genetic_context *p, void *future)
+{
+    if (!future) return;
+    size_t bytes = sizeof(st_genetic_future_owner);
+    if (bytes > SIZE_MAX - p->bytes || p->output_bytes > SIZE_MAX - p->bytes - bytes ||
+        p->reserve_bytes > SIZE_MAX - p->bytes - bytes - p->output_bytes ||
+        ceill(((long double)p->bytes + bytes + p->output_bytes + p->reserve_bytes) / sizeof(double)) > p->max_cells)
+        error("genetic.model$future: resource.limit (metadata owner)");
+    st_genetic_future_owner *owner = malloc(bytes);
+    if (!owner) error("genetic.model$future: cannot allocate metadata owner");
+    owner->block.data = NULL; owner->block.next = p->blocks; owner->future = future;
+    owner->base_cap_active = p->cap_active; owner->base_cap = p->cap;
+    p->blocks = &owner->block; p->bytes += bytes;
+    if (p->bytes > p->peak_bytes) p->peak_bytes = p->bytes;
+}
+static void st_genetic_destroy(void *opaque)
+{
+    st_genetic_context *p = opaque;
+    if (!p) return;
+    while (p->blocks) {
+        st_genetic_block *block = p->blocks;
+        p->blocks = block->next;
+        free(block->data); free(block);
+    }
+    free(p);
+}
+static SEXP st_genetic_get(SEXP x, const char *name)
+{ return st_population_get(x, name); }
+static void st_genetic_names(SEXP x, const char *what)
+{
+    if (TYPEOF(x) != VECSXP || Rf_isObject(x) || XLENGTH(x) > 64) error("genetic.model: %s must be a supported named list", what);
+    SEXP names = getAttrib(x, R_NamesSymbol);
+    if (XLENGTH(x) && (TYPEOF(names) != STRSXP || XLENGTH(names) != XLENGTH(x)))
+        error("genetic.model: %s must have names", what);
+    for (R_xlen_t i = 0; i < XLENGTH(x); i++) {
+        if (STRING_ELT(names, i) == NA_STRING || !CHAR(STRING_ELT(names, i))[0])
+            error("genetic.model: invalid %s name", what);
+        for (R_xlen_t j = 0; j < i; j++)
+            if (!strcmp(CHAR(STRING_ELT(names, i)), CHAR(STRING_ELT(names, j))))
+                error("genetic.model: repeated %s name", what);
+    }
+}
+static double st_genetic_number(SEXP x, const char *what)
+{
+    if (!st_allocate_numeric(x) || Rf_isObject(x) || XLENGTH(x) != 1)
+        error("genetic.model: %s must be a numeric scalar", what);
+    double out = st_legacy_marker_number(x, 0);
+    if (!R_FINITE(out)) error("genetic.model: %s must be finite", what);
+    return out;
+}
+static int st_genetic_charge(void *opaque, int category, uint64_t units)
+{
+    st_genetic_context *p = opaque;
+    if (!units) return 1;
+    if (category < 1 || category > 10) error("genetic.model: invalid work category");
+    if (p->mandatory) { p->mandatory_work += (long double)units; return 1; }
+    if (p->limited || (long double)units > (long double)p->max_work - p->work) {
+        p->limited = 1; p->reason = "max.work"; return 0;
+    }
+    p->work += (long double)units; p->category[category - 1] += (long double)units;
+    if (units >= 4096 || fmodl(p->work, 4096) < units) R_CheckUserInterrupt();
+    return 1;
+}
+static void st_genetic_reserve_add(size_t *total, size_t count, size_t size)
+{
+    if ((size && count > SIZE_MAX / size) || count * size > SIZE_MAX - *total)
+        error("genetic.model: final payload reserve overflow");
+    *total += count * size;
+}
+static size_t st_genetic_reserve_length(const char *text)
+{
+    if (!text) return 0;
+    size_t length = strlen(text);
+    if (length == SIZE_MAX) error("genetic.model: final string reserve overflow");
+    return length + 1;
+}
+static void st_genetic_reserve_final(st_genetic_context *p, int nf)
+{
+    if (p->output_bytes) return;
+    if (nf < 0 || (p->requested && nf > INT_MAX / 7)) error("genetic.model: final family output is too large");
+    size_t total = 65536, largest_id = 0, parents = (size_t)p->view.parents,
+        markers = (size_t)p->view.markers, chromosomes = (size_t)p->view.chromosomes,
+        reference = (size_t)p->reference_n, basis = p->K.n ? (size_t)p->K.n : parents;
+    st_genetic_reserve_add(&total, parents, p->view.founder_stride);
+    st_genetic_reserve_add(&total, markers, 8 * sizeof(double) + 2 * sizeof(SEXP) + 4 * sizeof(int));
+    st_genetic_reserve_add(&total, parents, 2 * sizeof(SEXP));
+    st_genetic_reserve_add(&total, reference, 2 * sizeof(SEXP));
+    st_genetic_reserve_add(&total, chromosomes, 2 * sizeof(SEXP) + 2 * sizeof(int));
+    st_genetic_reserve_add(&total, 1, 2 * sizeof(int));
+    for (size_t i = 0; i < parents; i++) {
+        size_t length = st_genetic_reserve_length(p->view.parent_ids[i]);
+        st_genetic_reserve_add(&total, 1, length);
+        if (length > largest_id) largest_id = length;
+    }
+    for (size_t i = 0; i < markers; i++) st_genetic_reserve_add(&total, 1, st_genetic_reserve_length(p->view.marker_ids[i]));
+    for (size_t i = 0; i < chromosomes; i++) st_genetic_reserve_add(&total, 1, st_genetic_reserve_length(p->chromosome_ids[i]));
+    for (size_t i = 0; i < reference; i++) st_genetic_reserve_add(&total, 1, st_genetic_reserve_length(p->reference_ids[i]));
+    st_genetic_reserve_add(&total, 1, st_genetic_reserve_length(p->source));
+    if (p->cap_active) {
+        size_t n = (size_t)p->K.n;
+        if (n && n > SIZE_MAX / n) error("genetic.model: final K reserve overflow");
+        st_genetic_reserve_add(&total, n * n, sizeof(double));
+        st_genetic_reserve_add(&total, n, 2 * sizeof(SEXP));
+    }
+    st_genetic_reserve_add(&total, basis, 2 * sizeof(double) + 2 * sizeof(SEXP));
+    if (p->requested) st_genetic_reserve_add(&total, basis, 1024);
+    for (size_t i = 0; i < basis; i++) {
+        const char *id = p->K.n ? p->K.ids[i] : p->view.parent_ids[i];
+        st_genetic_reserve_add(&total, 1 + (p->requested != 0) + (p->cap_active != 0), st_genetic_reserve_length(id));
+    }
+    size_t per_family = 2048;
+    st_genetic_reserve_add(&per_family, 2, largest_id);
+    if (p->requested) { st_genetic_reserve_add(&per_family, 1, 8192); st_genetic_reserve_add(&per_family, 14, largest_id); }
+    st_genetic_reserve_add(&total, (size_t)nf, per_family);
+    if (total <= p->reserve_bytes) return;
+    if (p->output_bytes > SIZE_MAX - p->bytes || total > SIZE_MAX - p->bytes - p->output_bytes ||
+        ceill(((long double)p->bytes + p->output_bytes + total) / sizeof(double)) > p->max_cells) {
+        p->limited = 1; p->reason = "max.cells.public.reserve";
+        error("genetic.model: resource.limit (final public payload reserve)");
+    }
+    p->reserve_bytes = total;
+    if (total > p->reserve_peak) p->reserve_peak = total;
+}
+static void st_genetic_public_begin(st_genetic_context *p)
+{ p->reserve_bytes = 0; }
+
+void *st_cross_genetic_scratch(void *opaque, size_t count, size_t size)
+{
+    st_genetic_context *p = opaque;
+    if (!count || !size) return NULL;
+    if (count > SIZE_MAX / size || count * size > SIZE_MAX - p->bytes)
+        error("genetic.model: allocation size overflow");
+    size_t payload = count * size;
+    if (payload > SIZE_MAX - sizeof(st_genetic_block)) error("genetic.model: ownership record size overflow");
+    size_t bytes = payload + sizeof(st_genetic_block);
+    if (bytes > SIZE_MAX - p->bytes) error("genetic.model: owned allocation size overflow");
+    if (p->output_bytes > SIZE_MAX - p->bytes - bytes ||
+        p->reserve_bytes > SIZE_MAX - p->bytes - bytes - p->output_bytes)
+        error("genetic.model: reserved allocation size overflow");
+    if (ceill(((long double)p->bytes + bytes + p->output_bytes + p->reserve_bytes) / sizeof(double)) > p->max_cells) {
+        p->limited = 1; p->reason = "max.cells"; return NULL;
+    }
+    st_genetic_block *block = malloc(sizeof(*block));
+    if (!block) error("genetic.model: cannot allocate ownership record");
+    void *out = malloc(payload);
+    if (!out) { free(block); error("genetic.model: cannot allocate owned workspace"); }
+    block->data = out; block->next = p->blocks; p->blocks = block;
+    p->bytes += bytes;
+    if (p->bytes > p->peak_bytes) p->peak_bytes = p->bytes;
+    return out;
+}
+static void *st_genetic_alloc(st_genetic_context *p, size_t n, size_t size)
+{
+    void *out = st_cross_genetic_scratch(p, n, size);
+    if (n && size && !out) error("genetic.model: resource.limit (%s)", p->reason);
+    return out;
+}
+static char *st_genetic_copy(st_genetic_context *p, const char *s)
+{
+    if (!s || !s[0]) error("genetic.model: empty identifier");
+    size_t n = strlen(s);
+    if (n == SIZE_MAX) error("genetic.model: string size overflow");
+    if (!st_genetic_charge(p, 1, (uint64_t)n + 1)) error("genetic.model: resource.limit (%s)", p->reason);
+    char *out = st_genetic_alloc(p, n + 1, 1); memcpy(out, s, n + 1); return out;
+}
+static int st_genetic_cmp_string(const void *a, const void *b)
+{ return strcmp(*(const char *const *)a, *(const char *const *)b); }
+static const char **st_genetic_strings(st_genetic_context *p, SEXP x, const char *what, int sorted)
+{
+    if (TYPEOF(x) != STRSXP || XLENGTH(x) < 1 || XLENGTH(x) > INT_MAX)
+        error("genetic.model: invalid %s", what);
+    int n = (int)XLENGTH(x); const char **out = st_genetic_alloc(p, n, sizeof(*out));
+    for (int i = 0; i < n; i++) {
+        if (STRING_ELT(x, i) == NA_STRING) error("genetic.model: missing %s", what);
+        out[i] = st_genetic_copy(p, Rf_translateCharUTF8(STRING_ELT(x, i)));
+        if (sorted && i && strcmp(out[i - 1], out[i]) >= 0) error("genetic.model: noncanonical %s", what);
+    }
+    if (!sorted) {
+        const char **ordered = st_genetic_alloc(p, n, sizeof(*ordered));
+        memcpy(ordered, out, (size_t)n * sizeof(*ordered));
+        int levels = 0;
+        for (unsigned int count = (unsigned)n; count; count >>= 1) levels++;
+        if (!st_genetic_charge(p, 1, (uint64_t)n * levels)) error("genetic.model: resource.limit (%s)", p->reason);
+        qsort(ordered, n, sizeof(*ordered), st_genetic_cmp_string);
+        for (int j = 1; j < n; j++) if (!strcmp(ordered[j - 1], ordered[j])) error("genetic.model: duplicate %s", what);
+    }
+    return out;
+}
+static double *st_genetic_reals(st_genetic_context *p, SEXP x, size_t n, const char *what)
+{
+    if (!st_allocate_numeric(x) || Rf_isObject(x) ||
+        (uint64_t)XLENGTH(x) != (uint64_t)n)
+        error("genetic.model: invalid %s", what);
+    if (!st_genetic_charge(p, 1, (uint64_t)n)) error("genetic.model: resource.limit (%s)", p->reason);
+    double *out = st_genetic_alloc(p, n, sizeof(*out));
+    for (size_t j = 0; j < n; j++) {
+        out[j] = st_legacy_marker_number(x, j);
+        if (!R_FINITE(out[j])) error("genetic.model: nonfinite %s", what);
+        if (out[j] == 0) out[j] = 0;
+    }
+    return out;
+}
+static int st_genetic_bit(const st_genetic_context *p, int parent, int marker)
+{ return (p->view.founder_bits[(size_t)parent * p->view.founder_stride + (size_t)marker / 8] >> (marker % 8)) & 1; }
+static uint64_t st_genetic_hash_byte(uint64_t h, unsigned char b)
+{ return (h ^ b) * UINT64_C(1099511628211); }
+static uint64_t st_genetic_hash_u64(uint64_t h, uint64_t x)
+{
+    for (int j = 0; j < 8; j++) { h = st_genetic_hash_byte(h, (unsigned char)x); x >>= 8; }
+    return h;
+}
+static uint64_t st_genetic_hash_header(uint64_t h, int tag, uint64_t n)
+{ return st_genetic_hash_u64(st_genetic_hash_byte(h, (unsigned char)tag), n); }
+static uint64_t st_genetic_hash_text(st_genetic_context *p, uint64_t h, const char *s)
+{
+    size_t n = strlen(s);
+    if (n > UINT64_MAX - 8 || !st_genetic_charge(p, 4, (uint64_t)n + 8)) error("genetic.model: resource.limit (snapshot key bytes)");
+    h = st_genetic_hash_u64(h, (uint64_t)n);
+    for (size_t j = 0; j < n; j++) h = st_genetic_hash_byte(h, (unsigned char)s[j]);
+    return h;
+}
+static uint64_t st_genetic_hash_real(uint64_t h, double x)
+{
+    uint64_t b = 0;
+    if (sizeof(x) != sizeof(b) || FLT_RADIX != 2 || DBL_MANT_DIG != 53 || DBL_MAX_EXP != 1024 || !R_FINITE(x)) error("genetic.model: unsupported snapshot number encoding");
+    double one = 1;
+    memcpy(&b, &one, sizeof(b));
+    if (b != UINT64_C(0x3ff0000000000000)) error("genetic.model: unsupported binary64 byte representation");
+    if (x == 0) x = 0;
+    memcpy(&b, &x, sizeof(b)); return st_genetic_hash_u64(h, b);
+}
+static void st_genetic_signature(st_genetic_context *p)
+{
+    const char prefix[] = "cp12.additive.dh.snapshot.v1";
+    uint64_t fixed_bytes = sizeof(prefix) + UINT64_C(22) * 9 + 64 +
+        UINT64_C(8) * ((uint64_t)p->view.chromosomes + 1) + UINT64_C(48) * p->view.markers;
+    size_t bit_bytes = (size_t)p->view.parents * p->view.founder_stride;
+    if ((uint64_t)bit_bytes > UINT64_MAX - fixed_bytes || !st_genetic_charge(p, 4, fixed_bytes + (uint64_t)bit_bytes))
+        error("genetic.model: resource.limit (snapshot key bytes)");
+    uint64_t h = UINT64_C(14695981039346656037);
+    for (size_t j = 0; j < sizeof(prefix); j++) h = st_genetic_hash_byte(h, (unsigned char)prefix[j]);
+    h = st_genetic_hash_u64(st_genetic_hash_header(h, 1, 1), 1);
+    h = st_genetic_hash_header(h, 2, (uint64_t)p->view.parents);
+    for (int j = 0; j < p->view.parents; j++) h = st_genetic_hash_text(p, h, p->view.parent_ids[j]);
+    h = st_genetic_hash_header(h, 3, (uint64_t)p->view.markers);
+    for (int j = 0; j < p->view.markers; j++) h = st_genetic_hash_text(p, h, p->view.marker_ids[j]);
+    size_t bits = (size_t)p->view.parents * p->view.founder_stride;
+    h = st_genetic_hash_header(h, 4, (uint64_t)bits);
+    for (size_t j = 0; j < bits; j++) h = st_genetic_hash_byte(h, p->view.founder_bits[j]);
+    h = st_genetic_hash_u64(st_genetic_hash_header(h, 5, 1), (uint64_t)p->view.founder_stride);
+    for (int tag = 6; tag <= 7; tag++) {
+        h = st_genetic_hash_header(h, tag, (uint64_t)p->view.markers);
+        const int *a = tag == 6 ? p->effect_allele : p->complement_allele;
+        for (int j = 0; j < p->view.markers; j++) h = st_genetic_hash_u64(h, (uint64_t)(int64_t)a[j]);
+    }
+    h = st_genetic_hash_header(h, 8, (uint64_t)p->view.markers);
+    for (int j = 0; j < p->view.markers; j++) h = st_genetic_hash_real(h, p->view.effect[j]);
+    h = st_genetic_hash_real(st_genetic_hash_header(h, 9, 1), p->view.intercept);
+    h = st_genetic_hash_header(h, 10, 3);
+    for (int j = 0; j < 3; j++) h = st_genetic_hash_real(h, (double)j);
+    h = st_genetic_hash_header(h, 11, (uint64_t)p->view.chromosomes);
+    for (int j = 0; j < p->view.chromosomes; j++) h = st_genetic_hash_text(p, h, p->chromosome_ids[j]);
+    h = st_genetic_hash_header(h, 12, (uint64_t)p->view.chromosomes + 1);
+    for (size_t j = 0; j <= (size_t)p->view.chromosomes; j++) h = st_genetic_hash_u64(h, (uint64_t)p->view.chromosome_start[j]);
+    h = st_genetic_hash_header(h, 13, (uint64_t)p->view.markers);
+    for (int j = 0; j < p->view.markers; j++) h = st_genetic_hash_real(h, p->position[j]);
+    h = st_genetic_hash_header(h, 14, (uint64_t)p->view.markers);
+    for (int j = 0; j < p->view.markers; j++) h = st_genetic_hash_real(h, p->view.weight[j]);
+    h = st_genetic_hash_header(h, 15, (uint64_t)p->reference_n);
+    for (int j = 0; j < p->reference_n; j++) h = st_genetic_hash_text(p, h, p->reference_ids[j]);
+    h = st_genetic_hash_header(h, 16, (uint64_t)p->view.markers);
+    for (int j = 0; j < p->view.markers; j++) h = st_genetic_hash_real(h, p->view.p0[j]);
+    h = st_genetic_hash_real(st_genetic_hash_header(h, 17, 1), p->view.reference_denominator);
+    const char *s[] = {"weighted.vanraden.A.over.2.fixed.reference", "DH", "Haldane", "trait.independent.noise"};
+    h = st_genetic_hash_text(p, st_genetic_hash_header(h, 18, 1), s[0]);
+    h = st_genetic_hash_text(p, st_genetic_hash_header(h, 19, 1), s[1]);
+    h = st_genetic_hash_u64(st_genetic_hash_header(h, 20, 1), 0);
+    h = st_genetic_hash_text(p, st_genetic_hash_header(h, 21, 1), s[2]);
+    h = st_genetic_hash_text(p, st_genetic_hash_header(h, 22, 1), s[3]);
+    int n = snprintf(p->signature, sizeof(p->signature), "%s:%016llx", prefix, (unsigned long long)h);
+    if (n < 0 || (size_t)n >= sizeof(p->signature)) error("genetic.model: signature formatting failed");
+    p->view.core_key = p->signature;
+}
+typedef struct { int index, source_chromosome; double position; const char *chromosome, *name; } st_genetic_map_row;
+static int st_genetic_source_chromosome_compare(const void *a, const void *b)
+{
+    const st_genetic_map_row *x = a, *y = b;
+    if (x->source_chromosome < y->source_chromosome) return -1;
+    if (x->source_chromosome > y->source_chromosome) return 1;
+    return strcmp(x->name, y->name);
+}
+static int st_genetic_map_compare(const void *a, const void *b)
+{
+    const st_genetic_map_row *x = a, *y = b;
+    int c = strcmp(x->chromosome, y->chromosome);
+    if (c) return c;
+    if (x->position < y->position) return -1;
+    if (x->position > y->position) return 1;
+    return strcmp(x->name, y->name);
+}
+static void st_genetic_core_fields(SEXP request)
+{
+    const char *allowed[] = {"data.set", "population", "t", "map.function", "index.model", "marker.weights",
+        "selected.founder.theta", "scenarios", "control", "future"};
+    if (isNull(request)) return;
+    st_genetic_names(request, "request"); SEXP names = getAttrib(request, R_NamesSymbol);
+    for (R_xlen_t i = 0; i < XLENGTH(request); i++) {
+        int found = 0;
+        for (int j = 0; j < 10; j++) if (!strcmp(CHAR(STRING_ELT(names, i)), allowed[j])) found = 1;
+        if (!found) error("genetic.model: unknown request field '%s'", CHAR(STRING_ELT(names, i)));
+    }
+    const char *keys[] = {"population", "map.function", "index.model"};
+    const char *values[] = {"DH", "Haldane", "trait.independent.noise"};
+    for (int j = 0; j < 3; j++) {
+        SEXP value = st_genetic_get(request, keys[j]);
+        if (!isNull(value) && strcmp(st_legacy_marker_string(value, keys[j]), values[j]))
+            error("genetic.model: unsupported %s", keys[j]);
+    }
+    SEXP t = st_genetic_get(request, "t");
+    if (!isNull(t) && st_genetic_number(t, "t") != 0) error("genetic.model: only t=0 is supported");
+}
+static void st_genetic_controls(st_genetic_context *p, SEXP control)
+{
+    if (isNull(control)) return;
+    st_genetic_names(control, "control"); SEXP names = getAttrib(control, R_NamesSymbol);
+    for (R_xlen_t i = 0; i < XLENGTH(control); i++) {
+        const char *name = CHAR(STRING_ELT(names, i));
+        double x = st_genetic_number(VECTOR_ELT(control, i), name);
+        if (x <= 0) error("genetic.model: control values must be positive");
+        if (!strcmp(name, "max.cells")) p->max_cells = x;
+        else if (!strcmp(name, "max.work")) p->max_work = x;
+        else error("genetic.model: unknown control '%s'", name);
+    }
+}
+static void st_genetic_weights(st_genetic_context *p, SEXP weights, int inherited)
+{
+    int m = p->view.markers;
+    if (inherited && isNull(weights)) return;
+    double *w = st_genetic_alloc(p, m, sizeof(*w));
+    if (isNull(weights)) for (int j = 0; j < m; j++) w[j] = 1.0 / m;
+    else {
+        if (!st_allocate_numeric(weights) || Rf_isObject(weights) || XLENGTH(weights) != m)
+            error("genetic.model: marker.weights must identify every marker");
+        SEXP names = getAttrib(weights, R_NamesSymbol);
+        if (TYPEOF(names) != STRSXP || XLENGTH(names) != m) error("genetic.model: marker.weights require unique names");
+        long double total = 0;
+        for (int j = 0; j < m; j++) {
+            int found = -1;
+            for (int k = 0; k < m; k++) {
+                if (STRING_ELT(names, k) == NA_STRING) error("genetic.model: missing marker weight name");
+                if (!strcmp(p->view.marker_ids[j], Rf_translateCharUTF8(STRING_ELT(names, k)))) {
+                    if (found >= 0) error("genetic.model: duplicate marker weight");
+                    found = k;
+                }
+            }
+            if (found < 0) error("genetic.model: marker weight does not match the model");
+            w[j] = st_legacy_marker_number(weights, found);
+            if (!R_FINITE(w[j]) || w[j] < 0) error("genetic.model: marker weights must be finite and nonnegative");
+            total += w[j];
+        }
+        if (!(total > 0) || !isfinite(total)) error("genetic.model: invalid marker weight total");
+        for (int j = 0; j < m; j++) {
+            double original = w[j];
+            w[j] = (double)((long double)original / total);
+            if (original > 0 && w[j] == 0) error("genetic.model: numeric.range (marker.weights)");
+        }
+    }
+    if (inherited) {
+        for (int j = 0; j < m; j++) if (w[j] != p->view.weight[j])
+            error("genetic.model: marker.weights conflict with the frozen core");
+    } else p->view.weight = w;
+}
+static void st_genetic_fresh(st_genetic_context *p, SEXP request)
+{
+    SEXP dataset = st_genetic_get(request, "data.set");
+    if (isNull(dataset)) error("genetic.model: a fresh core requires data.set");
+    const char *name = st_legacy_marker_string(dataset, "data.set");
+    gs_varset_type *gv = st_marker_find(name);
+    if (!gv) error("genetic.model: data.set does not exist");
+    if (!gv->NoInd || !gv->NoMar || gv->NoInd > INT_MAX || gv->NoMar > INT_MAX ||
+        !gv->IndName || !gv->MarName || !st_allele_present(gv) || !gs_restrict_marker_effects_valid(gv))
+        error("genetic.model: complete markers and aligned fitted effects are required");
+    if (gv->aa != 0 || gv->aA != 1 || gv->AA != 2) error("genetic.model: dosage coding must be 0/1/2");
+    if (gv->NLoc != gv->NoMar || !gv->map_S || !gv->map || !gv->mdl)
+        error("genetic.model: a complete linkage map is required");
+    int m = (int)gv->NoMar, nref = (int)gv->NoInd;
+    p->view.markers = m; p->view.intercept = gv->u[0];
+    if (!R_FINITE(p->view.intercept)) error("genetic.model: nonfinite intercept");
+    p->source = st_genetic_copy(p, name);
+    p->reference_n = nref; p->reference_ids = st_genetic_alloc(p, nref, sizeof(*p->reference_ids));
+    for (int i = 0; i < nref; i++) p->reference_ids[i] = st_genetic_copy(p, gv->IndName[i]);
+    qsort(p->reference_ids, nref, sizeof(*p->reference_ids), st_genetic_cmp_string);
+    for (int i = 1; i < nref; i++) if (!strcmp(p->reference_ids[i - 1], p->reference_ids[i]))
+        error("genetic.model: duplicate reference individual");
+    st_genetic_map_row *rows = st_genetic_alloc(p, m, sizeof(*rows));
+    int *seen = st_genetic_alloc(p, m, sizeof(*seen)); memset(seen, 0, (size_t)m * sizeof(*seen));
+    for (int j = 0; j < m; j++) {
+        if (!st_genetic_charge(p, 1, 8)) error("genetic.model: resource.limit (%s)", p->reason);
+        gs_mappoint_type *r = gv->map[j];
+        if (!r || gv->mdl[j] >= gv->NoMar || r->nr != gv->mdl[j] || seen[gv->mdl[j]]++)
+            error("genetic.model: invalid map mapping");
+        int index = (int)gv->mdl[j];
+        if (!r->name || !r->chrom || strcmp(r->name, gv->MarName[index]) || !R_FINITE(r->pos))
+            error("genetic.model: marker/map names or positions conflict");
+        rows[j].index = index; rows[j].position = r->pos; rows[j].name = gv->MarName[index];
+        rows[j].source_chromosome = r->chrom; rows[j].chromosome = NULL;
+
+    }
+    const char **unique_markers = st_genetic_alloc(p, m, sizeof(*unique_markers));
+    for (int j = 0; j < m; j++) unique_markers[j] = rows[j].name;
+    int levels = 0;
+    for (unsigned int count = (unsigned)m; count; count >>= 1) levels++;
+    if (!st_genetic_charge(p, 1, (uint64_t)m * levels * 2)) error("genetic.model: resource.limit (%s)", p->reason);
+    qsort(unique_markers, m, sizeof(*unique_markers), st_genetic_cmp_string);
+    for (int j = 1; j < m; j++) if (!strcmp(unique_markers[j - 1], unique_markers[j])) error("genetic.model: duplicate marker");
+    if (!st_genetic_charge(p, 1, (uint64_t)m * levels)) error("genetic.model: resource.limit (%s)", p->reason);
+    qsort(rows, m, sizeof(*rows), st_genetic_source_chromosome_compare);
+    for (int lo = 0; lo < m;) {
+        int hi = lo + 1;
+        while (hi < m && rows[hi].source_chromosome == rows[lo].source_chromosome) hi++;
+        size_t length = strlen(rows[lo].name);
+        if (length > SIZE_MAX - 8) error("genetic.model: chromosome key overflow");
+        char *key = st_genetic_alloc(p, length + 8, 1);
+        memcpy(key, "marker:", 7); memcpy(key + 7, rows[lo].name, length + 1);
+        for (int j = lo; j < hi; j++) rows[j].chromosome = key;
+        lo = hi;
+    }
+    qsort(rows, m, sizeof(*rows), st_genetic_map_compare);
+    const char **markers = st_genetic_alloc(p, m, sizeof(*markers));
+    p->chromosome_ids = st_genetic_alloc(p, m, sizeof(*p->chromosome_ids));
+    int *start = st_genetic_alloc(p, (size_t)m + 1, sizeof(*start));
+    double *effect = st_genetic_alloc(p, m, sizeof(*effect)), *p0 = st_genetic_alloc(p, m, sizeof(*p0));
+    p->position = st_genetic_alloc(p, m, sizeof(*p->position));
+    p->effect_allele = st_genetic_alloc(p, m, sizeof(*p->effect_allele));
+    p->complement_allele = st_genetic_alloc(p, m, sizeof(*p->complement_allele));
+    p->view.founder_stride = ((size_t)m + 7) / 8;
+    unsigned char *bits = st_genetic_alloc(p, p->view.parents, p->view.founder_stride);
+    memset(bits, 0, (size_t)p->view.parents * p->view.founder_stride); p->view.founder_bits = bits;
+    int *parent_index = st_genetic_alloc(p, p->view.parents, sizeof(*parent_index));
+    for (int i = 0; i < p->view.parents; i++) {
+        int at = -1;
+        for (int k = 0; k < nref; k++) if (!strcmp(p->view.parent_ids[i], gv->IndName[k])) at = k;
+        if (at < 0) error("genetic.model: candidate parent is absent from data.set");
+        parent_index[i] = at;
+    }
+    for (int j = 0; j < m; j++) {
+        int index = rows[j].index; markers[j] = st_genetic_copy(p, rows[j].name);
+        if (!j || strcmp(rows[j - 1].chromosome, rows[j].chromosome)) {
+            start[p->view.chromosomes] = j;
+            p->chromosome_ids[p->view.chromosomes++] = st_genetic_copy(p, rows[j].chromosome);
+        }
+        effect[j] = gv->u[index + 1]; p->position[j] = rows[j].position;
+        int ea = gv->EffAll[index + 1], ca = gv->CmpAll[index + 1];
+        if (!R_FINITE(effect[j]) || ea < 0 || ca < 0 || ea > GS_ALLELE_MAX || ca > GS_ALLELE_MAX)
+            error("genetic.model: invalid effect/complement allele or effect");
+        p->effect_allele[j] = ea; p->complement_allele[j] = ca;
+        int64_t copies = 0;
+        for (int i = 0; i < nref; i++) {
+            if (!st_genetic_charge(p, 1, 2)) error("genetic.model: resource.limit (%s)", p->reason);
+            size_t at = (size_t)index * nref + i;
+            int a = st_allele_get(gv, at, 0), b = st_allele_get(gv, at, 1);
+            if ((a != ea && a != ca) || (b != ea && b != ca)) error("genetic.model: missing or third reference allele");
+            copies += (a == ea) + (b == ea);
+        }
+        p0[j] = (double)((long double)copies / (2.0L * nref));
+        for (int i = 0; i < p->view.parents; i++) {
+            if (!st_genetic_charge(p, 1, 2)) error("genetic.model: resource.limit (%s)", p->reason);
+            size_t at = (size_t)index * nref + parent_index[i];
+            int a = st_allele_get(gv, at, 0), b = st_allele_get(gv, at, 1);
+            if (a != b) error("genetic.model: candidate founders must be homozygous");
+            if (a == ea) bits[(size_t)i * p->view.founder_stride + (size_t)j / 8] |= (unsigned char)(1u << (j % 8));
+        }
+    }
+    start[p->view.chromosomes] = m; p->view.chromosome_start = start;
+    p->view.marker_ids = markers; p->view.effect = effect; p->view.p0 = p0;
+    st_genetic_weights(p, st_genetic_get(request, "marker.weights"), 0);
+    long double D = 0;
+    int positive_reference = 0;
+    for (int j = 0; j < m; j++) {
+        if (p->view.weight[j] > 0 && p0[j] > 0 && p0[j] < 1) positive_reference = 1;
+        D += (long double)p->view.weight[j] * p0[j] * (1 - p0[j]);
+    }
+    p->view.reference_denominator = (double)D;
+    if (positive_reference && (!(D > 0) || p->view.reference_denominator == 0))
+        error("genetic.model: numeric.range (reference D)");
+    if (D > 0 && fabsl(D - (long double)p->view.reference_denominator) > 64 * DBL_EPSILON * D)
+        error("genetic.model: numeric.range (reference D precision)");
+}
+static void st_genetic_exact_fields(SEXP x, const char *const *fields, int n, const char *what)
+{
+    st_genetic_names(x, what);
+    if (XLENGTH(x) != n) error("genetic.model: invalid %s fields", what);
+    for (int j = 0; j < n; j++) if (isNull(st_genetic_get(x, fields[j]))) error("genetic.model: missing %s field %s", what, fields[j]);
+}
+static void st_genetic_import(st_genetic_context *p, SEXP snapshot)
+{
+    const char *fields[] = {"version", "signature", "parents", "markers", "founder.bits", "founder.stride", "effect.allele",
+        "complement.allele", "effect", "intercept", "coding", "map", "weight", "reference", "population", "t", "map.function", "index.model", "source"};
+    st_genetic_exact_fields(snapshot, fields, 19, "snapshot");
+    if (st_genetic_number(st_genetic_get(snapshot, "version"), "version") != 1 ||
+        st_genetic_number(st_genetic_get(snapshot, "t"), "t") != 0 ||
+        strcmp(st_legacy_marker_string(st_genetic_get(snapshot, "population"), "population"), "DH") ||
+        strcmp(st_legacy_marker_string(st_genetic_get(snapshot, "map.function"), "map.function"), "Haldane") ||
+        strcmp(st_legacy_marker_string(st_genetic_get(snapshot, "index.model"), "index.model"), "trait.independent.noise"))
+        error("genetic.model: unsupported snapshot model/version");
+    SEXP parents = st_genetic_get(snapshot, "parents"), markers = st_genetic_get(snapshot, "markers");
+    p->view.parent_ids = st_genetic_strings(p, parents, "snapshot parents", 1);
+    p->view.marker_ids = st_genetic_strings(p, markers, "snapshot markers", 0);
+    p->view.parents = (int)XLENGTH(parents); p->view.markers = (int)XLENGTH(markers);
+    int m = p->view.markers;
+    double stride = st_genetic_number(st_genetic_get(snapshot, "founder.stride"), "founder.stride");
+    if (stride != (double)(((size_t)m + 7) / 8)) error("genetic.model: invalid founder stride");
+    p->view.founder_stride = (size_t)stride;
+    if ((size_t)p->view.parents > SIZE_MAX / p->view.founder_stride) error("genetic.model: founder payload overflow");
+    size_t bytes = (size_t)p->view.parents * p->view.founder_stride;
+    SEXP bits = st_genetic_get(snapshot, "founder.bits");
+    if (TYPEOF(bits) != RAWSXP || (uint64_t)XLENGTH(bits) != (uint64_t)bytes) error("genetic.model: invalid founder payload");
+    if (!st_genetic_charge(p, 1, (uint64_t)bytes)) error("genetic.model: resource.limit (%s)", p->reason);
+    unsigned char *copy = st_genetic_alloc(p, bytes, 1); memcpy(copy, RAW(bits), bytes); p->view.founder_bits = copy;
+    if (m % 8) for (int i = 0; i < p->view.parents; i++)
+        if (copy[(size_t)(i + 1) * p->view.founder_stride - 1] >> (m % 8)) error("genetic.model: nonzero bit padding");
+    p->view.effect = st_genetic_reals(p, st_genetic_get(snapshot, "effect"), m, "effect");
+    p->view.weight = st_genetic_reals(p, st_genetic_get(snapshot, "weight"), m, "weight");
+    p->view.intercept = st_genetic_number(st_genetic_get(snapshot, "intercept"), "intercept");
+    SEXP ea = st_genetic_get(snapshot, "effect.allele"), ca = st_genetic_get(snapshot, "complement.allele");
+    double *e = st_genetic_reals(p, ea, m, "effect.allele"), *c = st_genetic_reals(p, ca, m, "complement.allele");
+    p->effect_allele = st_genetic_alloc(p, m, sizeof(int)); p->complement_allele = st_genetic_alloc(p, m, sizeof(int));
+    long double sum = 0;
+    for (int j = 0; j < m; j++) {
+        if (e[j] < 0 || e[j] > GS_ALLELE_MAX || e[j] != floor(e[j]) || c[j] < 0 || c[j] > GS_ALLELE_MAX || c[j] != floor(c[j]))
+            error("genetic.model: invalid snapshot allele code");
+        p->effect_allele[j] = (int)e[j]; p->complement_allele[j] = (int)c[j];
+        if (p->view.weight[j] < 0) error("genetic.model: negative snapshot weight");
+        sum += p->view.weight[j];
+    }
+    if (!(sum > 0) || fabsl(sum - 1) > 64 * DBL_EPSILON * m) error("genetic.model: snapshot weights are not normalized");
+    SEXP coding = st_genetic_get(snapshot, "coding"), cnames = getAttrib(coding, R_NamesSymbol);
+    if (!st_allocate_numeric(coding) || XLENGTH(coding) != 3 || TYPEOF(cnames) != STRSXP || XLENGTH(cnames) != 3)
+        error("genetic.model: invalid snapshot coding");
+    const char *codes[] = {"aa", "aA", "AA"};
+    for (int j = 0; j < 3; j++) if (st_legacy_marker_number(coding, j) != j || STRING_ELT(cnames, j) == NA_STRING || strcmp(CHAR(STRING_ELT(cnames, j)), codes[j]))
+        error("genetic.model: unsupported snapshot coding");
+    SEXP map = st_genetic_get(snapshot, "map"); const char *map_fields[] = {"chromosomes", "start", "position.cm"};
+    st_genetic_exact_fields(map, map_fields, 3, "snapshot map");
+    SEXP chromosomes = st_genetic_get(map, "chromosomes");
+    p->chromosome_ids = st_genetic_strings(p, chromosomes, "chromosomes", 1); p->view.chromosomes = (int)XLENGTH(chromosomes);
+    if (p->view.chromosomes > m) error("genetic.model: too many chromosomes");
+    double *starts = st_genetic_reals(p, st_genetic_get(map, "start"), (size_t)p->view.chromosomes + 1, "map start");
+    int *start = st_genetic_alloc(p, (size_t)p->view.chromosomes + 1, sizeof(int));
+    for (size_t j = 0; j <= (size_t)p->view.chromosomes; j++) {
+        if (starts[j] < 0 || starts[j] > m || starts[j] != floor(starts[j]) || (j && starts[j] <= starts[j - 1]))
+            error("genetic.model: invalid chromosome boundaries");
+        start[j] = (int)starts[j];
+    }
+    if (start[0] || start[p->view.chromosomes] != m) error("genetic.model: incomplete chromosome boundaries");
+    p->view.chromosome_start = start;
+    for (int k = 0; k < p->view.chromosomes; k++) {
+        const char *minimum = p->view.marker_ids[start[k]];
+        for (int j = start[k] + 1; j < start[k + 1]; j++)
+            if (strcmp(p->view.marker_ids[j], minimum) < 0) minimum = p->view.marker_ids[j];
+        if (strncmp(p->chromosome_ids[k], "marker:", 7) || strcmp(p->chromosome_ids[k] + 7, minimum))
+            error("genetic.model: chromosome partition key conflicts with its markers");
+    }
+    p->position = st_genetic_reals(p, st_genetic_get(map, "position.cm"), m, "position.cm");
+    for (int k = 0; k < p->view.chromosomes; k++) for (int j = start[k] + 1; j < start[k + 1]; j++)
+        if (p->position[j] < p->position[j - 1] || (p->position[j] == p->position[j - 1] && strcmp(p->view.marker_ids[j - 1], p->view.marker_ids[j]) >= 0))
+            error("genetic.model: noncanonical marker map order");
+    SEXP reference = st_genetic_get(snapshot, "reference"); const char *reference_fields[] = {"ids", "p0", "D", "metric"};
+    st_genetic_exact_fields(reference, reference_fields, 4, "snapshot reference");
+    SEXP reference_ids = st_genetic_get(reference, "ids");
+    p->reference_ids = st_genetic_strings(p, reference_ids, "reference IDs", 1); p->reference_n = (int)XLENGTH(reference_ids);
+    p->view.p0 = st_genetic_reals(p, st_genetic_get(reference, "p0"), m, "reference p0");
+    for (int i = 0; i < p->view.parents; i++)
+        if (st_allocate_find(p->view.parent_ids[i], p->reference_ids, p->reference_n) < 0)
+            error("genetic.model: candidate is absent from frozen reference IDs");
+    long double D = 0;
+    int positive_reference = 0;
+    for (int j = 0; j < m; j++) {
+        double f = p->view.p0[j];
+        if (f < 0 || f > 1) error("genetic.model: invalid reference allele frequency");
+        if (p->view.weight[j] > 0 && f > 0 && f < 1) positive_reference = 1;
+        int64_t known_copies = 0;
+        for (int i = 0; i < p->view.parents; i++) known_copies += 2 * st_genetic_bit(p, i, j);
+        long double copies = (long double)f * (2.0L * p->reference_n);
+        long double nearest = roundl(copies), allowance = 16 * DBL_EPSILON * (2.0L * p->reference_n);
+        if (fabsl(copies - nearest) > allowance || nearest < known_copies ||
+            nearest > known_copies + 2.0L * (p->reference_n - p->view.parents))
+            error("genetic.model: reference frequency conflicts with frozen candidate alleles");
+        long double reference_copies = 2.0L * p->reference_n;
+        double expected_frequency = (double)(nearest / reference_copies);
+        if ((nearest == 0 && f != 0) || (nearest == reference_copies && f != 1) ||
+            (nearest > 0 && nearest < reference_copies &&
+             fabsl((long double)f - expected_frequency) > 8 * DBL_EPSILON * fabsl(expected_frequency)))
+            error("genetic.model: reference frequency is outside the complete diploid copy grid");
+        D += (long double)p->view.weight[j] * f * (1 - f);
+        if (p->effect_allele[j] == p->complement_allele[j]) {
+            if (f != 1) error("genetic.model: equal allele codes require a constant effect allele");
+            for (int i = 0; i < p->view.parents; i++) if (!st_genetic_bit(p, i, j))
+                error("genetic.model: equal allele codes cannot segregate");
+        }
+    }
+    p->view.reference_denominator = st_genetic_number(st_genetic_get(reference, "D"), "reference D");
+    if (positive_reference && (!(D > 0) || (double)D == 0 || p->view.reference_denominator == 0))
+        error("genetic.model: numeric.range (reference D)");
+    if (p->view.reference_denominator < 0 || fabsl(D - p->view.reference_denominator) > 64 * DBL_EPSILON * fmaxl(D, LDBL_MIN) ||
+        strcmp(st_legacy_marker_string(st_genetic_get(reference, "metric"), "reference metric"), "weighted.vanraden.A.over.2.fixed.reference"))
+        error("genetic.model: inconsistent reference metric");
+    SEXP source = st_genetic_get(snapshot, "source");
+    p->source = st_genetic_copy(p, st_legacy_marker_string(st_genetic_get(source, "data.set"), "source data.set"));
+    st_genetic_signature(p);
+    if (strcmp(p->signature, st_legacy_marker_string(st_genetic_get(snapshot, "signature"), "signature"))) error("genetic.model: snapshot checksum mismatch");
+}
+static void st_genetic_sum_add(long double *sum, long double *error, long double value)
+{
+    long double next = *sum + value;
+    if (fabsl(*sum) >= fabsl(value)) *error += (*sum - next) + value;
+    else *error += (value - next) + *sum;
+    *sum = next;
+}
+static void st_genetic_precompute(st_genetic_context *p)
+{
+    int m = p->view.markers, n = p->view.parents;
+    double *q = st_genetic_alloc(p, m, sizeof(*q)), *sw = st_genetic_alloc(p, m, sizeof(*sw));
+    p->rw = st_genetic_alloc(p, m, sizeof(*p->rw));
+    long double *f = st_genetic_alloc(p, m, sizeof(*f));
+    long double origin = 0;
+    for (int k = 0; k < p->view.chromosomes; k++) {
+        int lo = p->view.chromosome_start[k], hi = p->view.chromosome_start[k + 1];
+        long double prev = 0;
+        for (int j = lo; j < hi; j++) {
+            if (!st_genetic_charge(p, 2, 1)) error("genetic.model: resource.limit (%s)", p->reason);
+            long double gap = j == lo ? 0 : ((long double)p->position[j] - p->position[j - 1]) / 100;
+            q[j] = j == lo ? 0 : (double)expl(-2 * gap); sw[j] = j == lo ? 0 : (double)(-expm1l(-2 * gap) / 2);
+            if (j > lo && p->position[j] > p->position[j - 1] && (gap == 0 || sw[j] == 0))
+                error("genetic.model: numeric.range (positive map switch)");
+            f[j] = p->view.weight[j] + q[j] * prev; prev = f[j];
+        }
+        prev = 0;
+        for (int j = hi - 1; j >= lo; j--) {
+            if (!st_genetic_charge(p, 2, 1)) error("genetic.model: resource.limit (%s)", p->reason);
+            prev = p->view.weight[j] + (j + 1 < hi ? q[j + 1] * prev : 0);
+            p->rw[j] = (double)(f[j] + prev - p->view.weight[j]);
+            origin += (long double)p->view.weight[j] * p->rw[j] / 4;
+        }
+    }
+    p->view.switch_probability = sw; p->origin_variance = (double)origin;
+    p->delta = st_genetic_alloc(p, n, sizeof(*p->delta)); p->parent_T = st_genetic_alloc(p, n, sizeof(*p->parent_T));
+    long double anchor = p->view.intercept, anchor_error = 0;
+    for (int j = 0; j < m; j++) {
+        if (!st_genetic_charge(p, 2, 1)) error("genetic.model: resource.limit (%s)", p->reason);
+        if (st_genetic_bit(p, 0, j)) st_genetic_sum_add(&anchor, &anchor_error, 2.0L * p->view.effect[j]);
+    }
+    anchor += anchor_error;
+    if (!isfinite(anchor) || fabsl(anchor) > DBL_MAX) error("genetic.model: numeric.range (trait anchor)");
+    p->view.trait_anchor = (double)anchor;
+    for (int i = 0; i < n; i++) {
+        long double delta = 0, delta_error = 0, T = 0, T_error = 0;
+        for (int j = 0; j < m; j++) {
+            if (!st_genetic_charge(p, 2, 1)) error("genetic.model: resource.limit (%s)", p->reason);
+            int x = st_genetic_bit(p, i, j), x0 = st_genetic_bit(p, 0, j);
+            st_genetic_sum_add(&delta, &delta_error, 2.0L * p->view.effect[j] * (x - x0));
+            st_genetic_sum_add(&T, &T_error, (long double)p->rw[j] * p->view.effect[j] * x);
+        }
+        delta += delta_error; T += T_error;
+        if (!isfinite(delta) || fabsl(delta) > DBL_MAX) error("genetic.model: numeric.range (centered predictor)");
+        p->delta[i] = (double)delta; p->parent_T[i] = fabsl(T) <= DBL_MAX ? (double)T : NA_REAL;
+    }
+}
+static void st_genetic_matrix(st_genetic_context *p, SEXP matrix)
+{
+    if (isNull(matrix)) return;
+    SEXP dim = getAttrib(matrix, R_DimSymbol), dn = getAttrib(matrix, R_DimNamesSymbol);
+    if ((TYPEOF(matrix) != REALSXP && TYPEOF(matrix) != INTSXP) || TYPEOF(dim) != INTSXP || XLENGTH(dim) != 2 || INTEGER(dim)[0] < 1 || INTEGER(dim)[0] != INTEGER(dim)[1])
+        error("genetic.model: K must be a square numeric matrix");
+    int n = INTEGER(dim)[0];
+    if ((size_t)n > SIZE_MAX / (size_t)n) error("genetic.model: K size overflow");
+    p->K.n = n; p->K.original = matrix;
+    const char **ids = st_genetic_alloc(p, n, sizeof(*ids));
+    if (isNull(dn)) {
+        if (n != p->caller_n) error("genetic.model: unnamed K needs original candidate order");
+        for (int i = 0; i < n; i++) ids[i] = p->caller_ids[i];
+    } else {
+        if (TYPEOF(dn) != VECSXP || XLENGTH(dn) != 2) error("genetic.model: invalid K names");
+        SEXP a = VECTOR_ELT(dn, 0), b = VECTOR_ELT(dn, 1);
+        if (TYPEOF(a) != STRSXP || TYPEOF(b) != STRSXP || XLENGTH(a) != n || XLENGTH(b) != n)
+            error("genetic.model: K requires complete dimension names");
+        for (int i = 0; i < n; i++) {
+            if (STRING_ELT(a, i) == NA_STRING || STRING_ELT(b, i) == NA_STRING) error("genetic.model: missing K name");
+            ids[i] = st_genetic_copy(p, Rf_translateCharUTF8(STRING_ELT(a, i)));
+            if (strcmp(ids[i], Rf_translateCharUTF8(STRING_ELT(b, i)))) error("genetic.model: K axes must have the same order");
+            for (int j = 0; j < i; j++) if (!strcmp(ids[i], ids[j])) error("genetic.model: duplicate K name");
+        }
+    }
+    p->K.ids = ids;
+    p->K.value = st_genetic_alloc(p, (size_t)n * n, sizeof(double));
+    for (size_t j = 0; j < (size_t)n * n; j++) {
+        double x = st_legacy_marker_number(matrix, j);
+        if (!R_FINITE(x)) error("genetic.model: K must be finite");
+        p->K.value[j] = x; p->K.scale = fmax(p->K.scale, fabs(x));
+    }
+    p->K.tolerance = 1e-10 * fmax(1, p->K.scale);
+    for (int j = 0; j < n; j++) for (int i = 0; i < j; i++)
+        if (fabs(p->K.value[i + (size_t)n * j] - p->K.value[j + (size_t)n * i]) > p->K.tolerance)
+            error("genetic.model: K must be symmetric");
+    double *copy = st_genetic_alloc(p, (size_t)n * n, sizeof(double)), *eigen = st_genetic_alloc(p, n, sizeof(double)), query;
+    memcpy(copy, p->K.value, (size_t)n * n * sizeof(double));
+    int lwork = -1, info = 0;
+    F77_CALL(dsyev)("N", "U", &n, copy, &n, eigen, &query, &lwork, &info FCONE FCONE);
+    if (info || !R_FINITE(query) || query > INT_MAX) error("genetic.model: K eigendecomposition failed");
+    lwork = (int)query; if (lwork < 1) lwork = 1;
+    double *work = st_genetic_alloc(p, lwork, sizeof(double));
+    F77_CALL(dsyev)("N", "U", &n, copy, &n, eigen, work, &lwork, &info FCONE FCONE);
+    if (info || eigen[0] < -1e-8 * fmax(1, p->K.scale)) error("genetic.model: K must be positive semidefinite");
+    p->K_map = st_genetic_alloc(p, p->view.parents, sizeof(int));
+    for (int i = 0; i < p->view.parents; i++) {
+        p->K_map[i] = st_allocate_find(p->view.parent_ids[i], ids, n);
+        if (p->K_map[i] < 0) error("genetic.model: K omits a candidate parent");
+    }
+}
+static void *st_genetic_prepare_ids(SEXP inherited, SEXP request, int n, const char **ids, SEXP matrix)
+{
+    if (isNull(inherited) && isNull(request)) return NULL;
+    st_genetic_core_fields(request);
+    st_genetic_context *p = calloc(1, sizeof(*p));
+    if (!p) error("genetic.model: cannot allocate model context");
+    st_work_adopt(p, st_genetic_destroy);
+    p->max_cells = 1e7; p->max_work = 1e8; p->method = -1; p->cap = NA_REAL; p->proxy = NA_REAL; p->proxy_error = NA_REAL;
+    if (!isNull(inherited)) {
+        st_genetic_names(inherited, "normalized model");
+        SEXP normalized_names = getAttrib(inherited, R_NamesSymbol);
+        for (R_xlen_t j = 0; j < XLENGTH(inherited); j++) {
+            const char *key = CHAR(STRING_ELT(normalized_names, j));
+            if (strcmp(key, "snapshot") && strcmp(key, "cap") && strcmp(key, "control") && strcmp(key, "future"))
+                error("genetic.model: unknown normalized model field");
+        }
+        if ((XLENGTH(inherited) != 3 && XLENGTH(inherited) != 4) || (XLENGTH(inherited) == 4 && isNull(st_genetic_get(inherited, "future"))) || isNull(st_genetic_get(inherited, "snapshot")) || isNull(st_genetic_get(inherited, "control")))
+            error("genetic.model: malformed normalized model");
+        st_genetic_controls(p, st_genetic_get(inherited, "control"));
+    }
+    st_genetic_controls(p, st_genetic_get(request, "control")); p->bytes = sizeof(*p) + sizeof(st_work_block); p->peak_bytes = p->bytes;
+    if (ceill((long double)p->bytes / sizeof(double)) > p->max_cells) error("genetic.model: resource.limit (max.cells)");
+    if (n < 1) error("genetic.model: candidate universe is empty");
+    p->caller_n = n; p->caller_ids = st_genetic_alloc(p, n, sizeof(*p->caller_ids));
+    const char **canonical = st_genetic_alloc(p, n, sizeof(*canonical));
+    for (int i = 0; i < n; i++) p->caller_ids[i] = canonical[i] = st_genetic_copy(p, ids[i]);
+    qsort(canonical, n, sizeof(*canonical), st_genetic_cmp_string);
+    for (int i = 1; i < n; i++) if (!strcmp(canonical[i - 1], canonical[i])) error("genetic.model: duplicate candidate ID");
+    p->view.version = 1; p->view.parents = n; p->view.parent_ids = canonical;
+    if (isNull(inherited)) st_genetic_fresh(p, request);
+    else {
+        st_genetic_import(p, st_genetic_get(inherited, "snapshot"));
+        if (p->view.parents != n) error("genetic.model: candidate universe conflicts with frozen model");
+        for (int i = 0; i < n; i++) if (strcmp(canonical[i], p->view.parent_ids[i])) error("genetic.model: candidate universe conflicts with frozen model");
+        SEXP data = st_genetic_get(request, "data.set");
+        if (!isNull(data) && strcmp(st_legacy_marker_string(data, "data.set"), p->source)) error("genetic.model: data.set conflicts with frozen provenance");
+        st_genetic_weights(p, st_genetic_get(request, "marker.weights"), 1);
+    }
+    p->caller_map = st_genetic_alloc(p, n, sizeof(int));
+    for (int i = 0; i < n; i++) p->caller_map[i] = st_allocate_find(p->caller_ids[i], p->view.parent_ids, n);
+    st_genetic_precompute(p);
+    if (isNull(inherited)) st_genetic_signature(p);
+    SEXP oldcap = st_genetic_get(inherited, "cap");
+    if (!isNull(oldcap)) {
+        const char *fields[] = {"metric", "theta", "K"}; st_genetic_exact_fields(oldcap, fields, 3, "cap");
+        if (strcmp(st_legacy_marker_string(st_genetic_get(oldcap, "metric"), "cap metric"), "ucpc.founder.proxy")) error("genetic.model: unsupported cap metric");
+        p->cap = st_genetic_number(st_genetic_get(oldcap, "theta"), "cap theta");
+        if (p->cap < 0) error("genetic.model: cap must be nonnegative");
+        p->cap_active = 1;
+        if (isNull(matrix)) matrix = st_genetic_get(oldcap, "K");
+    }
+    SEXP cap = st_genetic_get(request, "selected.founder.theta");
+    if (!isNull(cap)) {
+        double x = st_genetic_number(cap, "selected.founder.theta");
+        if (x < 0) error("genetic.model: selected.founder.theta must be nonnegative");
+        if (!p->cap_active || x < p->cap) p->cap = x;
+        p->cap_active = 1;
+    }
+    if (p->cap_active && isNull(matrix)) error("genetic.model: selected.founder.theta requires original K");
+    st_genetic_matrix(p, matrix);
+    if (!isNull(oldcap) && !isNull(matrix)) {
+        SEXP oldmatrix = st_genetic_get(oldcap, "K"), dim = getAttrib(oldmatrix, R_DimSymbol), dn = getAttrib(oldmatrix, R_DimNamesSymbol);
+        if ((TYPEOF(oldmatrix) != REALSXP && TYPEOF(oldmatrix) != INTSXP) || TYPEOF(dim) != INTSXP || XLENGTH(dim) != 2 || INTEGER(dim)[0] != p->K.n || INTEGER(dim)[1] != p->K.n)
+            error("genetic.model: original cap K conflicts with current K");
+        for (int j = 0; j < p->K.n; j++) for (int i = 0; i < p->K.n; i++) {
+            int a = i, b = j;
+            if (!isNull(dn)) {
+                if (TYPEOF(dn) != VECSXP || XLENGTH(dn) != 2) error("genetic.model: invalid cap K names");
+                SEXP names = VECTOR_ELT(dn, 0), names2 = VECTOR_ELT(dn, 1);
+                if (TYPEOF(names) != STRSXP || TYPEOF(names2) != STRSXP || XLENGTH(names) != p->K.n || XLENGTH(names2) != p->K.n)
+                    error("genetic.model: invalid cap K names");
+                a = b = -1;
+                for (int k = 0; k < p->K.n; k++) {
+                    if (!strcmp(p->K.ids[i], st_population_id(names, k))) a = k;
+                    if (!strcmp(p->K.ids[j], st_population_id(names2, k))) b = k;
+                }
+            }
+            if (a < 0 || b < 0 || st_legacy_marker_number(oldmatrix, a + (size_t)p->K.n * b) != p->K.value[i + (size_t)p->K.n * j])
+                error("genetic.model: original cap K conflicts with current K");
+        }
+    }
+    SEXP scenarios = st_genetic_get(request, "scenarios");
+    if (!isNull(scenarios)) {
+        st_genetic_names(scenarios, "scenarios"); SEXP names = getAttrib(scenarios, R_NamesSymbol);
+        for (R_xlen_t i = 0; i < XLENGTH(scenarios); i++) if (strcmp(CHAR(STRING_ELT(names, i)), "replicates") && strcmp(CHAR(STRING_ELT(names, i)), "seed"))
+            error("genetic.model: unknown scenario option");
+        double s = st_genetic_number(st_genetic_get(scenarios, "replicates"), "replicates");
+        double seed = isNull(st_genetic_get(scenarios, "seed")) ? 0 : st_genetic_number(st_genetic_get(scenarios, "seed"), "seed");
+        if (s < 1 || s > INT_MAX || s != floor(s) || seed < 0 || seed > INT_MAX || seed != floor(seed)) error("genetic.model: invalid scenario counts or seed");
+        p->requested = (int)s; p->seed = (int)seed;
+    }
+    p->prediction_state = -2; p->check_state = -2; p->prediction_reason = "not.evaluated";
+    st_genetic_reserve_final(p, 0);
+    st_cross_future_prepare(p, st_genetic_get(inherited, "future"), st_genetic_get(request, "future"), 0);
+    return p;
+}
+void *st_cross_genetic_prepare(SEXP inherited, SEXP request, SEXP candidate_names, SEXP matrix)
+{
+    if (isNull(inherited) && isNull(request)) return NULL;
+    if (TYPEOF(candidate_names) != STRSXP || XLENGTH(candidate_names) < 1 || XLENGTH(candidate_names) > INT_MAX) error("genetic.model: invalid candidate names");
+    int n = (int)XLENGTH(candidate_names); const char **ids = st_work_alloc(n, sizeof(*ids));
+    for (int i = 0; i < n; i++) ids[i] = st_population_id(candidate_names, i);
+    return st_genetic_prepare_ids(inherited, request, n, ids, matrix);
+}
+int st_cross_genetic_requirements(const void *opaque)
+{ const st_genetic_context *p = opaque; return p ? p->cap_active + (p->requested ? 2 : 0) : 0; }
+int st_cross_genetic_limited(const void *opaque)
+{ return opaque && ((const st_genetic_context *)opaque)->limited; }
+void st_cross_genetic_method_set(void *opaque, int mode)
+{
+    st_genetic_context *p = opaque; if (!p) return;
+    if ((mode != 0 && mode != 1) || (p->method >= 0 && p->method != mode)) error("genetic.model: conflicting selection.method");
+    p->method = mode;
+}
+static const char **st_genetic_caller_ids(const void *opaque, int *n)
+{ const st_genetic_context *p = opaque; *n = p->caller_n; return p->caller_ids; }
+static void *st_genetic_consumer_alloc(void *opaque, size_t n, size_t size)
+{ return st_genetic_alloc(opaque, n, size); }
+static void st_genetic_external_bytes(void *opaque, size_t bytes)
+{
+    st_genetic_context *p = opaque;
+    if (bytes > SIZE_MAX - p->bytes || p->output_bytes > SIZE_MAX - p->bytes - bytes ||
+        p->reserve_bytes > SIZE_MAX - p->bytes - bytes - p->output_bytes ||
+        ceill(((long double)p->bytes + bytes + p->output_bytes + p->reserve_bytes) / sizeof(double)) > p->max_cells)
+        error("genetic.model: resource.limit (max.cells)");
+    p->bytes += bytes; if (p->bytes > p->peak_bytes) p->peak_bytes = p->bytes;
+}
+static void st_genetic_output_bytes(void *opaque, size_t bytes)
+{
+    st_genetic_context *p = opaque;
+    if (bytes > SIZE_MAX - p->output_bytes || bytes + p->output_bytes > SIZE_MAX - p->bytes ||
+        ceill(((long double)p->bytes + p->output_bytes + bytes) / sizeof(double)) > p->max_cells)
+        error("genetic.model: resource.limit (public payload max.cells)");
+    p->output_bytes += bytes;
+}
+double st_cross_variable_kernel(void *opaque, int n, int r, int quality, double *error_estimate)
+{ return st_var_kernel(opaque, n, r, 0, quality, error_estimate); }
+void st_cross_joint_external_limit(void *opaque)
+{ st_joint_stop(opaque, "genetic.max.work"); }
+void st_cross_variable_external_limit(void *opaque)
+{ st_joint_stop(((st_variable_context *)opaque)->kernel, "genetic.max.work"); }
+static size_t st_genetic_family_hash(int a, int b)
+{ return (size_t)(((uint64_t)(unsigned)a * UINT64_C(11400714819323198485)) ^ (unsigned)b); }
+int st_cross_genetic_moments(void *opaque, int first, int second, st_cross_genetic_moment *out)
+{
+    st_genetic_context *p = opaque;
+    if (!p || first < 0 || second < 0 || first >= p->caller_n || second >= p->caller_n || first == second)
+        error("genetic.model: invalid family parent indices");
+    if (!st_genetic_charge(p, 2, 1)) {
+        memset(out, 0, sizeof(*out)); out->state = -2; out->reason = "max.work"; return -2;
+    }
+    int a = p->caller_map[first], b = p->caller_map[second], flip = a > b;
+    if (flip) { int t = a; a = b; b = t; }
+    if (!p->cache_size || (p->cache_used + 1) * 2 > p->cache_size) {
+        size_t capacity = p->cache_size ? p->cache_size * 2 : 64;
+        if (capacity < p->cache_size) error("genetic.model: moment cache size overflow");
+        if (!st_genetic_charge(p, 2, (uint64_t)capacity)) {
+            memset(out, 0, sizeof(*out)); out->state = -2; out->reason = "max.work"; return -2;
+        }
+        st_genetic_cache *cache = st_cross_genetic_scratch(p, capacity, sizeof(*cache));
+        if (!cache) { memset(out, 0, sizeof(*out)); out->state = -2; out->reason = "max.cells"; return -2; }
+        memset(cache, 0, capacity * sizeof(*cache));
+        for (size_t j = 0; j < p->cache_size; j++) if (p->cache[j].value.reason) {
+            size_t at = st_genetic_family_hash(p->cache[j].first, p->cache[j].second) & (capacity - 1);
+            while (cache[at].value.reason) at = (at + 1) & (capacity - 1);
+            cache[at] = p->cache[j];
+        }
+        p->cache = cache; p->cache_size = capacity;
+    }
+    size_t at = st_genetic_family_hash(a, b) & (p->cache_size - 1);
+    while (p->cache[at].value.reason && (p->cache[at].first != a || p->cache[at].second != b)) at = (at + 1) & (p->cache_size - 1);
+    if (!p->cache[at].value.reason) {
+        st_genetic_cache *entry = p->cache + at; entry->first = a; entry->second = b;
+        st_cross_genetic_moment *m = &entry->value; m->state = 1; m->reason = "qualified.model.moments";
+        long double center = (long double)p->delta[a] / 2 + (long double)p->delta[b] / 2;
+        long double mean = p->view.trait_anchor + center, scale = 0;
+        int markers = p->view.markers;
+        long double contrast_norm = 0;
+        for (int j = 0; j < markers; j++) {
+            if (!st_genetic_charge(p, 2, 1)) { m->state = -2; m->reason = "max.work"; break; }
+            if (st_genetic_bit(p, a, j) != st_genetic_bit(p, b, j)) {
+                scale = fmaxl(scale, fabsl(p->view.effect[j]));
+                contrast_norm += fabsl(p->view.effect[j]);
+            }
+        }
+        long double variance = 0, covariance = 0, covariance_tail = 0, accumulation_lost = 0, normalized_sd = 0;
+        if (scale > 0) for (int k = 0; k < p->view.chromosomes; k++) {
+            int lo = p->view.chromosome_start[k], hi = p->view.chromosome_start[k + 1]; long double F = 0, F_tail = 0;
+            for (int j = lo; j < hi; j++) {
+                if (!st_genetic_charge(p, 2, 1)) { m->state = -2; m->reason = "max.work"; break; }
+                long double d = (long double)p->view.effect[j] * (st_genetic_bit(p, a, j) - st_genetic_bit(p, b, j));
+                long double gap = j == lo ? 0 : ((long double)p->position[j] - p->position[j - 1]) / 100;
+                long double decay = j == lo ? 0 : expl(-2 * gap);
+                F *= decay; F_tail *= decay;
+                st_var_accumulate(&F, &F_tail, d, &accumulation_lost);
+                long double forward = F + F_tail;
+                st_var_accumulate(&covariance, &covariance_tail, (long double)p->rw[j] * d / 2, &accumulation_lost);
+                if (j + 1 == hi) normalized_sd = hypotl(normalized_sd, forward);
+                else {
+                    long double next_gap = ((long double)p->position[j + 1] - p->position[j]) / 100;
+                    long double innovation = sqrtl(-expm1l(-4 * next_gap));
+                    long double component = innovation * forward;
+                    if (innovation > 0 && forward != 0 && component == 0) { m->state = -2; m->reason = "numeric.range"; }
+                    normalized_sd = hypotl(normalized_sd, component);
+                }
+            }
+        }
+        int positive_variance = normalized_sd > 0;
+        long double sd = normalized_sd; variance = sd * sd; covariance += covariance_tail;
+        if (!positive_variance && accumulation_lost > 0) { m->state = 0; m->reason = "moment.arithmetic.unresolved"; }
+        else if (!positive_variance && m->state == 1) covariance = 0;
+        if (!isfinite(center) || fabsl(center) > DBL_MAX || !isfinite(mean) || fabsl(mean) > DBL_MAX ||
+            !isfinite(variance) || variance > DBL_MAX || (positive_variance && (sd == 0 || variance == 0 || (double)variance == 0)) ||
+            !isfinite(covariance) || fabsl(covariance) > DBL_MAX) { m->state = -2; m->reason = "numeric.range"; }
+        m->mean = (double)mean; m->additive_center = (double)center; m->variance = (double)variance;
+        m->covariance = (double)covariance; m->origin_variance = p->origin_variance;
+        long double arithmetic_error = 64 * DBL_EPSILON * ((long double)markers + 1) * contrast_norm;
+        entry->covariance_error = arithmetic_error <= DBL_MAX ? (double)arithmetic_error : R_PosInf;
+        entry->sd_error = entry->covariance_error;
+        long double bound = sd * sqrtl(p->origin_variance);
+        if (m->state == 1 && fabsl(covariance) > bound + 128 * DBL_EPSILON * fmaxl(bound, scale * DBL_EPSILON)) {
+            m->state = 0; m->reason = "covariance.arithmetic.unresolved";
+        }
+        p->cache_used++;
+    }
+    *out = p->cache[at].value;
+    if (flip) out->covariance = -out->covariance;
+    return out->state;
+}
+static void st_genetic_validate_scores(void *opaque, int nf, const int *first, const int *second, const double *mu, const double *variance)
+{
+    if (!opaque) return;
+    st_genetic_context *p = opaque;
+    for (int e = 0; e < nf; e++) {
+        st_cross_genetic_moment m;
+        if (st_cross_genetic_moments(p, first[e], second[e], &m) != 1) error("genetic.model: %s", m.reason);
+        int a = p->caller_map[first[e]], b = p->caller_map[second[e]];
+        long double mean_scale = 0, contrast_norm = 0;
+        for (int j = 0; j < p->view.markers; j++) {
+            if (!st_genetic_charge(p, 2, 1)) error("genetic.model: resource.limit (%s)", p->reason);
+            long double u = fabsl(p->view.effect[j]);
+            int xa = st_genetic_bit(p, a, j), xb = st_genetic_bit(p, b, j);
+            mean_scale += u * (xa + xb);
+            contrast_norm += u * abs(xa - xb);
+        }
+        long double variance_scale = fmaxl(fabsl(variance[e]), m.variance);
+        variance_scale = fmaxl(variance_scale, contrast_norm * contrast_norm);
+        if (!isfinite(mean_scale) || !isfinite(variance_scale)) error("genetic.model: numeric.range (model comparison)");
+        long double minimum = 8.0L * DBL_MIN * DBL_EPSILON;
+        long double mean_tol = fmaxl(minimum, 256 * DBL_EPSILON * mean_scale);
+        long double ulp_tol = 4 * DBL_EPSILON * fmaxl(fabsl(mu[e]), fabsl(m.mean));
+        long double var_tol = fmaxl(minimum, 1024 * DBL_EPSILON * variance_scale);
+        if (!R_FINITE(mu[e]) || !R_FINITE(variance[e]) || fabsl((long double)mu[e] - m.mean) > fmaxl(mean_tol, ulp_tol) || fabsl((long double)variance[e] - m.variance) > var_tol)
+            error("genetic.model: source mu/va conflicts with the frozen additive DH model");
+    }
+}
+void st_cross_genetic_validate_scores(void *opaque, int nf, const int *first, const int *second, const double *mu, const double *variance)
+{ st_genetic_validate_scores(opaque, nf, first, second, mu, variance); }
+static void st_genetic_current(st_genetic_context *p, int nf)
+{
+    if (nf > p->capacity) {
+        st_genetic_reserve_final(p, nf);
+        p->first = st_genetic_alloc(p, nf, sizeof(int)); p->second = st_genetic_alloc(p, nf, sizeof(int));
+        p->n = st_genetic_alloc(p, nf, sizeof(int64_t)); p->r = st_genetic_alloc(p, nf, sizeof(int64_t));
+        p->accuracy = st_genetic_alloc(p, nf, sizeof(double)); p->mu = st_genetic_alloc(p, nf, sizeof(double));
+        p->variance = st_genetic_alloc(p, nf, sizeof(double)); p->covariance = st_genetic_alloc(p, nf, sizeof(double));
+        p->intensity = st_genetic_alloc(p, nf, sizeof(double)); p->raw = st_genetic_alloc(p, nf, sizeof(double));
+        p->fraction = st_genetic_alloc(p, nf, sizeof(double)); p->error = st_genetic_alloc(p, nf, sizeof(double));
+        p->state = st_genetic_alloc(p, nf, sizeof(int)); p->family_reason = st_genetic_alloc(p, nf, sizeof(*p->family_reason));
+        p->capacity = nf;
+    }
+    if (!p->aggregate) {
+        p->aggregate = st_genetic_alloc(p, p->view.parents, sizeof(double));
+        p->raw_aggregate = st_genetic_alloc(p, p->view.parents, sizeof(double));
+        p->aggregate_error = st_genetic_alloc(p, p->view.parents, sizeof(double));
+    }
+    p->nf = nf;
+}
+static int st_genetic_check_impl(st_genetic_context *p, int nf, const int *first, const int *second,
+    const int64_t *n, const int64_t *r, const double *accuracy, st_cross_genetic_intensity kernel, void *count)
+{
+    if (p->method < 0) error("genetic.model: selection.method is not set");
+    st_genetic_current(p, nf); p->refinement = 0; p->proxy = p->proxy_error = NA_REAL; p->prediction_state = 1; p->prediction_reason = "joint.normal.regression.approximation";
+    memset(p->aggregate, 0, (size_t)p->view.parents * sizeof(double));
+    memset(p->raw_aggregate, 0, (size_t)p->view.parents * sizeof(double));
+    memset(p->aggregate_error, 0, (size_t)p->view.parents * sizeof(double));
+    int64_t total = 0;
+    for (int e = 0; e < nf; e++) {
+        if (n[e] < 0 || r[e] < 0 || r[e] > n[e] || r[e] > INT64_MAX - total || !R_FINITE(accuracy[e]) || accuracy[e] < 0 || accuracy[e] > 1)
+            error("genetic.model: invalid actual count or accuracy");
+        total += r[e];
+        for (int j = 0; j < e; j++) if ((first[j] == first[e] && second[j] == second[e]) || (first[j] == second[e] && second[j] == first[e]))
+            error("genetic.model: biological families must be pooled");
+    }
+    if (total > INT64_C(9007199254740991)) error("genetic.model: retained total exceeds exact public count domain");
+    for (int e = 0; e < nf; e++) {
+        p->first[e] = first[e]; p->second[e] = second[e]; p->n[e] = n[e]; p->r[e] = r[e]; p->accuracy[e] = accuracy[e];
+        p->raw[e] = p->fraction[e] = p->intensity[e] = p->error[e] = NA_REAL;
+        st_cross_genetic_moment m; int state = st_cross_genetic_moments(p, first[e], second[e], &m);
+        p->mu[e] = m.mean; p->variance[e] = m.variance; p->covariance[e] = m.covariance;
+        p->state[e] = state; p->family_reason[e] = m.reason;
+        if (!r[e]) { p->state[e] = -2; p->family_reason[e] = "empty.retained.family"; continue; }
+        double a = 0, err = 0, shift = 0;
+        if (state == 1 && r[e] != n[e] && accuracy[e] > 0 && m.variance > 0) {
+            if (n[e] > INT_MAX || r[e] > INT_MAX || !kernel) { state = -2; p->family_reason[e] = "count.kernel.unavailable"; }
+            else {
+                p->refinement = 1; a = kernel(count, (int)n[e], (int)r[e], 1, &err);
+                if (!R_FINITE(a) || !R_FINITE(err) || err < 0) { state = 0; p->family_reason[e] = "intensity.numerically.unresolved"; }
+                else shift = accuracy[e] * a * (m.covariance / sqrt(m.variance));
+            }
+        }
+        int exact_shift = r[e] == n[e] || accuracy[e] == 0 || m.variance == 0;
+        p->intensity[e] = state == 1 && (!exact_shift || r[e] == n[e]) ? a : NA_REAL;
+        p->raw[e] = state == 1 ? .5 + shift : NA_REAL;
+        p->error[e] = state == 1 ? exact_shift ? 0 : 16 * DBL_EPSILON * fmax(1, fabs(shift)) : R_PosInf;
+        if (state == 1 && accuracy[e] > 0 && r[e] != n[e] && m.variance > 0) {
+            int ca = p->caller_map[first[e]], cb = p->caller_map[second[e]];
+            if (ca > cb) { int t = ca; ca = cb; cb = t; }
+            size_t slot = st_genetic_family_hash(ca, cb) & (p->cache_size - 1);
+            while (p->cache[slot].first != ca || p->cache[slot].second != cb) slot = (slot + 1) & (p->cache_size - 1);
+            double sd = sqrt(m.variance), sd_error = p->cache[slot].sd_error;
+            double h_error = p->cache[slot].covariance_error;
+            if (!R_FINITE(sd_error) || !R_FINITE(h_error) || sd_error >= sd) {
+                state = 0; p->family_reason[e] = "moment.arithmetic.unresolved"; p->error[e] = R_PosInf;
+            } else {
+                double gamma = m.covariance / sd;
+                double gamma_error = h_error / (sd - sd_error) + fabs(gamma) * sd_error / (sd - sd_error);
+                p->error[e] += accuracy[e] * (fabs(a) * gamma_error + fabs(gamma) * err + gamma_error * err);
+            }
+        }
+        if (state == 1 && (p->raw[e] < 0 || p->raw[e] > 1 || !R_FINITE(p->raw[e]))) { state = 0; p->family_reason[e] = "out.of.bounds.approximation"; }
+        p->state[e] = state;
+        if (state == 1) { p->fraction[e] = p->raw[e]; p->family_reason[e] = exact_shift ? "exact.no.selection.shift" : "joint.normal.regression.approximation"; }
+        else { p->prediction_state = state; p->prediction_reason = p->family_reason[e]; }
+        int ia = p->caller_map[first[e]], ib = p->caller_map[second[e]];
+        double weight = (double)((long double)r[e] / total);
+        if (R_FINITE(p->raw[e])) { p->raw_aggregate[ia] += weight * p->raw[e]; p->raw_aggregate[ib] += weight * (1 - p->raw[e]); }
+        else { p->raw_aggregate[ia] = p->raw_aggregate[ib] = NA_REAL; }
+        if (state == 1) {
+            p->aggregate[ia] += weight * p->fraction[e]; p->aggregate[ib] += weight * (1 - p->fraction[e]);
+            p->aggregate_error[ia] += weight * p->error[e]; p->aggregate_error[ib] += weight * p->error[e];
+        }
+        if (!st_genetic_charge(p, 3, 2)) { p->prediction_state = -2; p->prediction_reason = p->reason; }
+    }
+    if (!total) { p->prediction_state = -2; p->prediction_reason = "empty.retained.population"; }
+    if (p->prediction_state == 1 && p->K.n) {
+        long double q = 0, error_estimate = 0, arithmetic = 0;
+        for (int j = 0; j < p->view.parents; j++) for (int i = 0; i < p->view.parents; i++) {
+            if (!st_genetic_charge(p, 3, 1)) { p->prediction_state = -2; p->prediction_reason = p->reason; break; }
+            double K = p->K.value[p->K_map[i] + (size_t)p->K.n * p->K_map[j]];
+            long double term = (long double)p->aggregate[i] * K * p->aggregate[j]; q += term; arithmetic += fabsl(term);
+            error_estimate += fabsl((long double)K) * (p->aggregate_error[i] * fabs(p->aggregate[j]) + p->aggregate_error[j] * fabs(p->aggregate[i]) + p->aggregate_error[i] * p->aggregate_error[j]);
+        }
+        error_estimate += 32 * DBL_EPSILON * arithmetic;
+        if (p->prediction_state == 1 && isfinite(q) && fabsl(q) <= DBL_MAX && isfinite(error_estimate) && error_estimate <= DBL_MAX) {
+            p->proxy = (double)q; p->proxy_error = (double)error_estimate;
+        } else { p->prediction_state = 0; p->prediction_reason = "proxy.numerically.unresolved"; }
+    }
+    if (p->prediction_state != 1) for (int i = 0; i < p->view.parents; i++) p->aggregate[i] = NA_REAL;
+    int state = 1;
+    if (p->cap_active) {
+        if (p->prediction_state != 1 || !R_FINITE(p->proxy)) state = p->prediction_state == 0 ? 0 : -2;
+        else {
+            double allowance = 1e-10 * fmax(1, fmax(fabs(p->cap), fabs(p->proxy)));
+            if (p->proxy + p->proxy_error <= p->cap + allowance) state = 1;
+            else if (p->proxy - p->proxy_error > p->cap + allowance) state = -1;
+            else state = 0;
+        }
+    }
+    p->check_state = state; return state;
+}
+int st_cross_genetic_check(void *opaque, int nf, const int *first, const int *second,
+    const int64_t *n, const int64_t *r, const double *accuracy, st_cross_genetic_intensity kernel, void *count)
+{
+    st_genetic_context *p = opaque; if (!p || !p->cap_active) return 1;
+    return st_genetic_check_impl(p, nf, first, second, n, r, accuracy, kernel, count);
+}
+int st_cross_genetic_check_mode(void *opaque, int nf, const int *first, const int *second,
+    const int64_t *n, const int64_t *r, const double *accuracy, st_cross_genetic_intensity kernel, void *count, int mandatory)
+{
+    st_genetic_context *p = opaque;
+    if (!p) return 1;
+    int previous = p->mandatory; p->mandatory = mandatory != 0;
+    int result = st_cross_genetic_check(p, nf, first, second, n, r, accuracy, kernel, count);
+    p->mandatory = previous; return result;
+}
+void st_cross_genetic_no_incumbent(void *opaque)
+{
+    st_genetic_context *p = opaque; if (!p) return;
+    p->nf = 0; p->assessed = 0; p->no_incumbent = 1; p->prediction_state = -2; p->check_state = -2;
+    p->prediction_reason = "not.evaluated"; p->proxy = p->proxy_error = NA_REAL;
+}
+static int st_genetic_scenario_storage(st_genetic_context *p, int nf)
+{
+    st_cross_dh_result storage = p->scenarios;
+    st_cross_dh_result *s = &storage;
+    s->population = st_cross_genetic_scratch(p, 7, sizeof(double));
+    s->population_SE = st_cross_genetic_scratch(p, 7, sizeof(double));
+    s->population_state = st_cross_genetic_scratch(p, 7, sizeof(int));
+    s->population_SE_state = st_cross_genetic_scratch(p, 7, sizeof(int));
+    s->family = st_cross_genetic_scratch(p, (size_t)nf * 7, sizeof(double));
+    s->family_SE = st_cross_genetic_scratch(p, (size_t)nf * 7, sizeof(double));
+    s->family_state = st_cross_genetic_scratch(p, (size_t)nf * 7, sizeof(int));
+    s->family_SE_state = st_cross_genetic_scratch(p, (size_t)nf * 7, sizeof(int));
+    s->origin = st_cross_genetic_scratch(p, p->view.parents, sizeof(double));
+    s->origin_SE = st_cross_genetic_scratch(p, p->view.parents, sizeof(double));
+    s->origin_state = st_cross_genetic_scratch(p, p->view.parents, sizeof(int));
+    s->origin_SE_state = st_cross_genetic_scratch(p, p->view.parents, sizeof(int));
+    if (!s->population || !s->population_SE || !s->population_state || !s->population_SE_state ||
+        (nf && (!s->family || !s->family_SE || !s->family_state || !s->family_SE_state)) ||
+        !s->origin || !s->origin_SE || !s->origin_state || !s->origin_SE_state) return 0;
+    for (int j = 0; j < 7; j++) {
+        s->population[j] = s->population_SE[j] = NA_REAL; s->population_state[j] = s->population_SE_state[j] = 0;
+    }
+    for (size_t j = 0; j < (size_t)nf * 7; j++) {
+        s->family[j] = s->family_SE[j] = NA_REAL; s->family_state[j] = s->family_SE_state[j] = 0;
+    }
+    for (int j = 0; j < p->view.parents; j++) {
+        s->origin[j] = s->origin_SE[j] = NA_REAL; s->origin_state[j] = s->origin_SE_state[j] = 0;
+    }
+    p->scenarios = storage;
+    return 1;
+}
+int st_cross_genetic_assess(void *opaque, int nf, const int *first, const int *second,
+    const int64_t *n, const int64_t *r, const double *accuracy, st_cross_genetic_intensity kernel, void *count)
+{
+    st_genetic_context *p = opaque; if (!p) return 1;
+    if (p->no_incumbent) return p->cap_active ? -2 : 1;
+    int previous_mandatory = p->mandatory; p->mandatory = 1;
+    int state = st_genetic_check_impl(p, nf, first, second, n, r, accuracy, kernel, count);
+    p->mandatory = previous_mandatory; p->assessed = 1;
+    if (!p->requested || p->scenario_ran) return state;
+    p->mandatory = 0; p->scenario_ran = 1; st_cross_dh_result *s = &p->scenarios;
+    memset(s, 0, sizeof(*s)); s->requested = p->requested; s->seed = (uint64_t)p->seed; s->families = nf; s->parents = p->view.parents;
+    s->bank_protocol = "dh.haldane.markov.xorshift64star.v1"; s->status = -1; s->reason = "max.cells";
+    if (!st_genetic_scenario_storage(p, nf)) { p->mandatory = previous_mandatory; return state; }
+    int *a = st_cross_genetic_scratch(p, nf, sizeof(int)), *b = st_cross_genetic_scratch(p, nf, sizeof(int));
+    double *center = st_cross_genetic_scratch(p, nf, sizeof(double));
+    if (nf && (!a || !b || !center)) { p->mandatory = previous_mandatory; return state; }
+    for (int e = 0; e < nf; e++) {
+        a[e] = p->caller_map[first[e]]; b[e] = p->caller_map[second[e]];
+        st_cross_genetic_moment m; p->mandatory = 1;
+        int good = st_cross_genetic_moments(p, first[e], second[e], &m); p->mandatory = 0;
+        if (good != 1) { s->status = -2; s->reason = m.reason; p->mandatory = previous_mandatory; return state; } center[e] = m.additive_center;
+    }
+    void *engine = st_cross_dh_create(&p->view, p, st_cross_genetic_scratch, st_genetic_charge);
+    if (!engine) { p->mandatory = previous_mandatory; return state; }
+    st_cross_dh_run(engine, nf, a, b, n, r, accuracy, center, p->variance, p->requested, (uint64_t)p->seed, s);
+    p->mandatory = previous_mandatory; return state;
+}
+static int st_genetic_final_enter(void *opaque)
+{ st_genetic_context *p = opaque; int previous = p->mandatory; p->mandatory = 1; return previous; }
+static void st_genetic_final_leave(void *opaque, int previous)
+{ ((st_genetic_context *)opaque)->mandatory = previous; }
+static int st_genetic_check_int(void *opaque, int nf, const int *first, const int *second,
+    const int *n, const int *r, const double *accuracy, st_cross_genetic_intensity kernel, void *count, int mandatory)
+{
+    st_genetic_context *p = opaque; if (!p) return 1;
+    if (p->no_incumbent) return p->cap_active ? -2 : 1;
+    st_genetic_current(p, nf);
+    for (int e = 0; e < nf; e++) { p->n[e] = n[e]; p->r[e] = r[e]; }
+    return mandatory ? st_cross_genetic_assess(p, nf, first, second, p->n, p->r, accuracy, kernel, count) :
+        st_cross_genetic_check(p, nf, first, second, p->n, p->r, accuracy, kernel, count);
+}
+
+static void st_genetic_public_bytes(st_genetic_context *p, size_t count, size_t size)
+{
+    if (size && count > SIZE_MAX / size) error("genetic.model: public payload overflow");
+    st_genetic_output_bytes(p, count * size);
+}
+static SEXP st_genetic_public_vector(st_genetic_context *p, int type, size_t n, int *np)
+{
+    if ((uint64_t)n > (uint64_t)R_XLEN_T_MAX) error("genetic.model: public vector is too long");
+    size_t size = type == REALSXP ? sizeof(double) : type == INTSXP || type == LGLSXP ? sizeof(int) :
+        type == RAWSXP ? 1 : sizeof(SEXP);
+    st_genetic_public_bytes(p, n, size);
+    return st_allocate_keep(allocVector(type, (R_xlen_t)n), np);
+}
+static void st_genetic_public_string(st_genetic_context *p, SEXP vector, R_xlen_t i, const char *value)
+{
+    if (!value) { SET_STRING_ELT(vector, i, NA_STRING); return; }
+    size_t n = strlen(value);
+    if (n == SIZE_MAX) error("genetic.model: public string overflow");
+    st_genetic_output_bytes(p, n + 1);
+    SET_STRING_ELT(vector, i, mkCharCE(value, CE_UTF8));
+}
+static SEXP st_genetic_public_text(st_genetic_context *p, const char *text, int *np)
+{
+    SEXP out = st_genetic_public_vector(p, STRSXP, 1, np);
+    st_genetic_public_string(p, out, 0, text); return out;
+}
+static SEXP st_genetic_public_real(st_genetic_context *p, double value, int *np)
+{
+    SEXP out = st_genetic_public_vector(p, REALSXP, 1, np); REAL(out)[0] = value; return out;
+}
+static SEXP st_genetic_public_int(st_genetic_context *p, int value, int logical, int *np)
+{
+    SEXP out = st_genetic_public_vector(p, logical ? LGLSXP : INTSXP, 1, np);
+    if (logical) LOGICAL(out)[0] = value; else INTEGER(out)[0] = value;
+    return out;
+}
+static SEXP st_genetic_public_list(st_genetic_context *p, int n, const char *const *names, int *np)
+{
+    SEXP out = st_genetic_public_vector(p, VECSXP, n, np), labels = st_genetic_public_vector(p, STRSXP, n, np);
+    for (int i = 0; i < n; i++) st_genetic_public_string(p, labels, i, names[i]);
+    setAttrib(out, R_NamesSymbol, labels); return out;
+}
+static SEXP st_genetic_public_frame(st_genetic_context *p, int columns, const char *const *names, int rows, int *np)
+{
+    if (rows < 0) error("genetic.model: invalid public row count");
+    SEXP out = st_genetic_public_list(p, columns, names, np), row_names = st_genetic_public_vector(p, INTSXP, 2, np);
+    INTEGER(row_names)[0] = NA_INTEGER; INTEGER(row_names)[1] = -rows;
+    setAttrib(out, R_RowNamesSymbol, row_names);
+    setAttrib(out, R_ClassSymbol, st_genetic_public_text(p, "data.frame", np)); return out;
+}
+static SEXP st_genetic_public_names(st_genetic_context *p, int n, const char *const *names, int *np)
+{
+    SEXP out = st_genetic_public_vector(p, STRSXP, n, np);
+    for (int i = 0; i < n; i++) st_genetic_public_string(p, out, i, names[i]);
+    return out;
+}
+static SEXP st_genetic_public_reals(st_genetic_context *p, int n, const double *values, int *np)
+{
+    if (n && !values) error("genetic.model: missing public numeric payload");
+    SEXP out = st_genetic_public_vector(p, REALSXP, n, np);
+    for (int i = 0; i < n; i++) REAL(out)[i] = values[i] == 0 ? 0 : values[i];
+    return out;
+}
+static SEXP st_genetic_public_set(st_genetic_context *p, SEXP object, const char *name, SEXP value, int *np)
+{
+    (void)p; (void)np;
+    st_public_set(object, name, value);
+    return object;
+}
+
+static int st_genetic_public_fields(const void *opaque, const char **names, int count)
+{
+    const st_genetic_context *p = opaque;
+    if (!p) return count;
+    names[count++] = "genetic.model";
+    names[count++] = "selected.contributions";
+    if (p->requested) names[count++] = "scenarios";
+    if (st_genetic_future_get(p)) names[count++] = "future";
+    return count;
+}
+
+static double st_genetic_public_count(int64_t value)
+{
+    if (value < 0 || value > INT64_C(9007199254740991)) error("genetic.model: public count exceeds exact domain");
+    return (double)value;
+}
+static int st_genetic_public_nonempty(const st_genetic_context *p)
+{
+    if (!p->assessed || p->no_incumbent) return 0;
+    for (int e = 0; e < p->nf; e++) if (p->r[e] > 0) return 1;
+    return 0;
+}
+static const char *st_genetic_public_method(const st_genetic_context *p)
+{ return p->method == 1 ? "order.statistics" : p->method == 0 ? "burrows" : "not.set"; }
+static SEXP st_genetic_public_K(st_genetic_context *p, int *np)
+{
+    int n = p->K.n;
+    if (n < 1) return R_NilValue;
+    if ((size_t)n > SIZE_MAX / (size_t)n) error("genetic.model: public K size overflow");
+    SEXP out = st_genetic_public_vector(p, REALSXP, (size_t)n * n, np), dim = st_genetic_public_vector(p, INTSXP, 2, np);
+    INTEGER(dim)[0] = INTEGER(dim)[1] = n; setAttrib(out, R_DimSymbol, dim);
+    for (size_t j = 0; j < (size_t)n * n; j++) REAL(out)[j] = p->K.value[j];
+    SEXP names = st_genetic_public_names(p, n, p->K.ids, np), axes = st_genetic_public_vector(p, VECSXP, 2, np);
+    SET_VECTOR_ELT(axes, 0, names); SET_VECTOR_ELT(axes, 1, names); setAttrib(out, R_DimNamesSymbol, axes); return out;
+}
+SEXP st_cross_genetic_normalized(const void *opaque)
+{
+    st_genetic_context *p = (st_genetic_context *)opaque;
+    if (!p) return R_NilValue;
+    st_genetic_public_begin(p);
+    int np = 0, m = p->view.markers, n = p->view.parents, chromosomes = p->view.chromosomes;
+    const char *model_names[] = {"snapshot", "cap", "control", "future"};
+    SEXP out = st_genetic_public_list(p, st_genetic_future_get(p) ? 4 : 3, model_names, &np);
+    const char *snapshot_names[] = {"version", "signature", "parents", "markers", "founder.bits", "founder.stride", "effect.allele",
+        "complement.allele", "effect", "intercept", "coding", "map", "weight", "reference", "population", "t", "map.function", "index.model", "source"};
+    SEXP snapshot = st_genetic_public_list(p, 19, snapshot_names, &np);
+    SET_VECTOR_ELT(snapshot, 0, st_genetic_public_int(p, 1, 0, &np));
+    SET_VECTOR_ELT(snapshot, 1, st_genetic_public_text(p, p->signature, &np));
+    SET_VECTOR_ELT(snapshot, 2, st_genetic_public_names(p, n, p->view.parent_ids, &np));
+    SET_VECTOR_ELT(snapshot, 3, st_genetic_public_names(p, m, p->view.marker_ids, &np));
+    if (p->view.founder_stride && (size_t)n > SIZE_MAX / p->view.founder_stride) error("genetic.model: public founder size overflow");
+    size_t bytes = (size_t)n * p->view.founder_stride;
+    SEXP bits = st_genetic_public_vector(p, RAWSXP, bytes, &np);
+    if (bytes) memcpy(RAW(bits), p->view.founder_bits, bytes);
+    SET_VECTOR_ELT(snapshot, 4, bits);
+    SET_VECTOR_ELT(snapshot, 5, st_genetic_public_real(p, (double)p->view.founder_stride, &np));
+    SEXP effect_allele = st_genetic_public_vector(p, INTSXP, m, &np), complement = st_genetic_public_vector(p, INTSXP, m, &np);
+    for (int j = 0; j < m; j++) { INTEGER(effect_allele)[j] = p->effect_allele[j]; INTEGER(complement)[j] = p->complement_allele[j]; }
+    SET_VECTOR_ELT(snapshot, 6, effect_allele); SET_VECTOR_ELT(snapshot, 7, complement);
+    SET_VECTOR_ELT(snapshot, 8, st_genetic_public_reals(p, m, p->view.effect, &np));
+    SET_VECTOR_ELT(snapshot, 9, st_genetic_public_real(p, p->view.intercept, &np));
+    const char *coding_names[] = {"aa", "aA", "AA"};
+    SEXP coding = st_genetic_public_vector(p, REALSXP, 3, &np), coding_labels = st_genetic_public_names(p, 3, coding_names, &np);
+    for (int j = 0; j < 3; j++) REAL(coding)[j] = j;
+    setAttrib(coding, R_NamesSymbol, coding_labels); SET_VECTOR_ELT(snapshot, 10, coding);
+    const char *map_names[] = {"chromosomes", "start", "position.cm"};
+    SEXP map = st_genetic_public_list(p, 3, map_names, &np), start = st_genetic_public_vector(p, INTSXP, (size_t)chromosomes + 1, &np);
+    for (size_t j = 0; j <= (size_t)chromosomes; j++) INTEGER(start)[j] = p->view.chromosome_start[j];
+    SET_VECTOR_ELT(map, 0, st_genetic_public_names(p, chromosomes, p->chromosome_ids, &np));
+    SET_VECTOR_ELT(map, 1, start); SET_VECTOR_ELT(map, 2, st_genetic_public_reals(p, m, p->position, &np)); SET_VECTOR_ELT(snapshot, 11, map);
+    SET_VECTOR_ELT(snapshot, 12, st_genetic_public_reals(p, m, p->view.weight, &np));
+    const char *reference_names[] = {"ids", "p0", "D", "metric"};
+    SEXP reference = st_genetic_public_list(p, 4, reference_names, &np);
+    SET_VECTOR_ELT(reference, 0, st_genetic_public_names(p, p->reference_n, p->reference_ids, &np));
+    SET_VECTOR_ELT(reference, 1, st_genetic_public_reals(p, m, p->view.p0, &np));
+    SET_VECTOR_ELT(reference, 2, st_genetic_public_real(p, p->view.reference_denominator, &np));
+    SET_VECTOR_ELT(reference, 3, st_genetic_public_text(p, "weighted.vanraden.A.over.2.fixed.reference", &np)); SET_VECTOR_ELT(snapshot, 13, reference);
+    SET_VECTOR_ELT(snapshot, 14, st_genetic_public_text(p, "DH", &np)); SET_VECTOR_ELT(snapshot, 15, st_genetic_public_int(p, 0, 0, &np));
+    SET_VECTOR_ELT(snapshot, 16, st_genetic_public_text(p, "Haldane", &np));
+    SET_VECTOR_ELT(snapshot, 17, st_genetic_public_text(p, "trait.independent.noise", &np));
+    const char *source_names[] = {"data.set"}; SEXP source = st_genetic_public_list(p, 1, source_names, &np);
+    SET_VECTOR_ELT(source, 0, st_genetic_public_text(p, p->source, &np)); SET_VECTOR_ELT(snapshot, 18, source);
+    SET_VECTOR_ELT(out, 0, snapshot);
+    if (p->cap_active) {
+        const char *cap_names[] = {"metric", "theta", "K"}; SEXP cap = st_genetic_public_list(p, 3, cap_names, &np);
+        SET_VECTOR_ELT(cap, 0, st_genetic_public_text(p, "ucpc.founder.proxy", &np));
+        SET_VECTOR_ELT(cap, 1, st_genetic_public_real(p, p->cap, &np)); SET_VECTOR_ELT(cap, 2, st_genetic_public_K(p, &np)); SET_VECTOR_ELT(out, 1, cap);
+    }
+    const char *control_names[] = {"max.cells", "max.work"}; SEXP control = st_genetic_public_list(p, 2, control_names, &np);
+    SET_VECTOR_ELT(control, 0, st_genetic_public_real(p, p->max_cells, &np)); SET_VECTOR_ELT(control, 1, st_genetic_public_real(p, p->max_work, &np));
+    SET_VECTOR_ELT(out, 2, control);
+    if (st_genetic_future_get(p)) SET_VECTOR_ELT(out, 3, st_allocate_keep(st_cross_future_policy(st_genetic_future_get(p)), &np));
+    UNPROTECT(np); return out;
+}
+static const char *st_genetic_metric_reason(int state)
+{
+    switch (state) {
+        case 1: return "available";
+        case 0: return "no.completed.replicate";
+        case -1: return "empty.retained.population";
+        case -2: return "sample.denominator.zero";
+        case -3: return "reference.D.zero";
+        case -4: return "multiple.replicates.required";
+        case -5: return "numeric.range";
+        case -6: return "SE.not.implemented";
+        default: error("genetic.model: invalid scenario metric state");
+    }
+    return "unavailable";
+}
+static double st_genetic_metric_value(const st_genetic_context *p, int mean, double value, int *state)
+{
+    if (*state != 1) return NA_REAL;
+    long double result = value;
+    if (mean) result += p->view.trait_anchor;
+    if (!isfinite(result) || fabsl(result) > DBL_MAX) { *state = -5; return NA_REAL; }
+    return (double)result;
+}
+static void st_genetic_metric_row(st_genetic_context *p, SEXP frame, int offset, int row,
+    const char *metric, double value, double SE, int state, int SE_state, int mean)
+{
+    value = st_genetic_metric_value(p, mean, value, &state);
+    if (SE_state == 1 && (!R_FINITE(SE) || SE < 0)) { SE_state = -5; SE = NA_REAL; }
+    st_genetic_public_string(p, VECTOR_ELT(frame, offset), row, metric);
+    REAL(VECTOR_ELT(frame, offset + 1))[row] = value;
+    REAL(VECTOR_ELT(frame, offset + 2))[row] = SE_state == 1 ? SE : NA_REAL;
+    INTEGER(VECTOR_ELT(frame, offset + 3))[row] = state; INTEGER(VECTOR_ELT(frame, offset + 4))[row] = SE_state;
+    st_genetic_public_string(p, VECTOR_ELT(frame, offset + 5), row, st_genetic_metric_reason(state));
+    st_genetic_public_string(p, VECTOR_ELT(frame, offset + 6), row, st_genetic_metric_reason(SE_state));
+}
+typedef struct {
+    st_cross_future_design design;
+    st_cross_future_operations operations;
+    const char *name, *reason;
+    int state;
+    SEXP source;
+    void *scope;
+    int source_cap_prepared, source_cap_state;
+    st_population_matrix source_K;
+    int *source_K_map;
+} st_future_comparator;
+typedef struct {
+    st_genetic_context *genetic;
+    st_cross_future_parameters parameters;
+    st_cross_future_contract contract;
+    void *engine, *count_context;
+    st_cross_genetic_intensity intensity;
+    int active, criterion, bound, phase, phase_limited, final_ran, unavailable, remaining_points, training_limited, evaluation_limited;
+    const char *reason;
+    long double reservation, reservation_per_point, training_ceiling, training_work, evaluation_work, preparation_work;
+    long double reservation_initial, reservation_estimate, evaluation_ceiling;
+    int comparator_count, design_capacity, mapped_capacity;
+    st_future_comparator *comparators;
+    st_cross_future_design *final_design, *mapped;
+    int *mapped_first, *mapped_second, *final_state;
+    const char **final_names, **final_reason;
+    int final_count;
+    st_cross_future_final_result result;
+    st_cross_future_value best;
+    st_cross_future_design best_design;
+    int *best_first, *best_second;
+    int64_t *best_n, *best_r;
+    double *best_accuracy;
+} st_future_context;
+static int st_future_own_source_check(st_future_context *, st_future_comparator *);
+static int st_future_own_source_cap_check(st_future_context *, st_future_comparator *);
+void st_cross_future_engine_counters(const void *, uint64_t *, uint64_t *, uint64_t *);
+static int64_t st_future_count(SEXP input, const char *what, int64_t lower, int64_t upper)
+{
+    double value = st_genetic_number(input, what);
+    if (value < lower || value > upper || value != floor(value)) error("genetic.model$future: invalid %s", what);
+    return (int64_t)value;
+}
+static void st_future_fields(SEXP input, const char *const *allowed, int n, const char *what)
+{
+    st_genetic_names(input, what);
+    SEXP names = getAttrib(input, R_NamesSymbol);
+    for (R_xlen_t i = 0; i < XLENGTH(input); i++) {
+        int found = 0;
+        for (int j = 0; j < n; j++) if (!strcmp(CHAR(STRING_ELT(names, i)), allowed[j])) found = 1;
+        if (!found) error("genetic.model$future: unknown %s field '%s'", what, CHAR(STRING_ELT(names, i)));
+    }
+}
+static void st_future_policy_parse(st_future_context *p, SEXP input, int inherited)
+{
+    if (isNull(input)) return;
+    const char *fields[] = {"policy", "n.progeny", "n.selected", "accuracy", "training", "evaluation", "comparators"};
+    st_future_fields(input, fields, inherited ? 4 : 7, inherited ? "inherited future policy" : "future");
+    if (inherited && XLENGTH(input) != 4) error("genetic.model$future: malformed inherited policy");
+    SEXP x = st_genetic_get(input, "policy");
+    if (!isNull(x) && strcmp(st_legacy_marker_string(x, "future policy"), "random.disjoint"))
+        error("genetic.model$future: policy must be random.disjoint");
+    x = st_genetic_get(input, "n.progeny");
+    if (!isNull(x)) p->parameters.produced = st_future_count(x, "n.progeny", 1, INT_MAX);
+    x = st_genetic_get(input, "n.selected");
+    if (!isNull(x)) p->parameters.retained = st_future_count(x, "n.selected", 1, INT_MAX);
+    x = st_genetic_get(input, "accuracy");
+    if (!isNull(x)) {
+        p->parameters.accuracy = st_genetic_number(x, "future accuracy");
+        if (p->parameters.accuracy < 0 || p->parameters.accuracy > 1) error("genetic.model$future: accuracy must be in [0,1]");
+    }
+    const char *bank_names[] = {"training", "evaluation"}, *bank_fields[] = {"replicates", "seed"};
+    for (int role = 0; role < 2 && !inherited; role++) {
+        SEXP bank = st_genetic_get(input, bank_names[role]);
+        if (isNull(bank)) continue;
+        st_future_fields(bank, bank_fields, 2, bank_names[role]);
+        x = st_genetic_get(bank, "replicates");
+        if (!isNull(x)) {
+            int S = (int)st_future_count(x, "replicates", 1, INT_MAX);
+            if (role) p->parameters.evaluation = S; else p->parameters.training = S;
+        }
+        x = st_genetic_get(bank, "seed");
+        if (!isNull(x)) {
+            uint64_t seed = (uint64_t)st_future_count(x, "seed", 0, INT_MAX);
+            if (role) p->parameters.evaluation_seed = seed; else p->parameters.training_seed = seed;
+        }
+    }
+}
+static int st_future_input_count(SEXP x, int row, int nr, int64_t *value)
+{
+    if (!st_allocate_numeric(x) || Rf_isObject(x) || (XLENGTH(x) != nr && XLENGTH(x) != 1)) return 0;
+    double v = st_legacy_marker_number(x, XLENGTH(x) == 1 ? 0 : row);
+    if (!R_FINITE(v) || v < 0 || v > 9007199254740991.0 || v != floor(v)) return 0;
+    *value = (int64_t)v; return 1;
+}
+static int st_future_parent(st_genetic_context *p, SEXP x, int row)
+{
+    if (TYPEOF(x) != STRSXP || row < 0 || row >= XLENGTH(x) || STRING_ELT(x, row) == NA_STRING) return -1;
+    return st_allocate_find(Rf_translateCharUTF8(STRING_ELT(x, row)), p->caller_ids, p->caller_n);
+}
+static int st_future_names_unique(st_genetic_context *p, SEXP object)
+{
+    if (TYPEOF(object) != VECSXP || XLENGTH(object) > INT_MAX) return 0;
+    SEXP names = getAttrib(object, R_NamesSymbol);
+    if (TYPEOF(names) != STRSXP || XLENGTH(names) != XLENGTH(object)) return XLENGTH(object) == 0;
+    for (R_xlen_t i = 0; i < XLENGTH(object); i++)
+    {
+        if (STRING_ELT(names, i) == NA_STRING || !CHAR(STRING_ELT(names, i))[0]) return 0;
+        for (R_xlen_t j = 0; j < i; j++)
+        {
+            if (!st_genetic_charge(p, 1, 1)) return 0;
+            if (!strcmp(CHAR(STRING_ELT(names, i)), CHAR(STRING_ELT(names, j)))) return 0;
+        }
+    }
+    return 1;
+}
+
+static int st_future_source_names(st_genetic_context *p, SEXP source, int depth)
+{
+    if (depth > 1 || !st_future_names_unique(p, source)) return 0;
+    const char *fields[] = {"crosses", "inputs", "constraints", "control", "parents", "directions", "operations", "genetic.model"};
+    for (int i = 0; i < 8; i++)
+    {
+        SEXP value = st_genetic_get(source, fields[i]);
+        if (!isNull(value) && !st_future_names_unique(p, value)) return 0;
+    }
+    if (inherits(source, "st.cross.allocation"))
+    {
+        SEXP original = st_genetic_get(st_genetic_get(source, "inputs"), "plan");
+        if (!isNull(original) && inherits(original, "st.cross.plan") && !st_future_source_names(p, original, depth + 1)) return 0;
+    }
+    return 1;
+}
+
+static void st_future_comparator_parse(st_future_context *f, st_future_comparator *out, SEXP source, const char *name)
+{
+    st_genetic_context *p = f->genetic;
+    memset(out, 0, sizeof(*out)); out->name = st_genetic_copy(p, name); out->source = source;
+    out->state = -1; out->reason = "invalid.comparator";
+    int object = inherits(source, "st.cross.plan") || inherits(source, "st.cross.allocation") || inherits(source, "st.cross.population");
+    if (object && !st_future_source_names(p, source, 0)) return;
+    SEXP table = object ? st_genetic_get(source, "crosses") : source;
+    if (!inherits(table, "data.frame") || !st_future_names_unique(p, table)) return;
+    SEXP a = st_genetic_get(table, "P1Name"), b = st_genetic_get(table, "P2Name"),
+        n = st_genetic_get(table, "n.progeny"), r = st_genetic_get(table, "n.selected"), rho = st_genetic_get(table, "accuracy");
+    if (isNull(rho) && object) rho = st_genetic_get(source, "accuracy");
+    if (TYPEOF(a) != STRSXP || TYPEOF(b) != STRSXP || XLENGTH(a) < 1 || XLENGTH(a) > INT_MAX || XLENGTH(a) != XLENGTH(b)) return;
+    int nr = (int)XLENGTH(a);
+    int *first = st_genetic_alloc(p, nr, sizeof(int)), *second = st_genetic_alloc(p, nr, sizeof(int)),
+        *seed = st_genetic_alloc(p, nr, sizeof(int)), *pollen = st_genetic_alloc(p, nr, sizeof(int)), *family = st_genetic_alloc(p, nr, sizeof(int));
+    int64_t *produced = st_genetic_alloc(p, nr, sizeof(int64_t)), *retained = st_genetic_alloc(p, nr, sizeof(int64_t)),
+        *raw_n = st_genetic_alloc(p, nr, sizeof(int64_t)), *raw_r = st_genetic_alloc(p, nr, sizeof(int64_t)), *operations = st_genetic_alloc(p, nr, sizeof(int64_t));
+    double *accuracy = st_genetic_alloc(p, nr, sizeof(double));
+    int nf = 0, known_operations = 1;
+    SEXP raw_operations = st_genetic_get(table, "n.operations"), directions = object ? st_genetic_get(source, "directions") : R_NilValue;
+    int known_direction = !isNull(st_genetic_get(table, "seed")) || !object || !isNull(directions);
+    for (int row = 0; row < nr; row++) {
+        int left = st_future_parent(p, a, row), right = st_future_parent(p, b, row);
+        if (left < 0 || right < 0 || left == right || !st_future_input_count(n, row, nr, raw_n + row) ||
+            !st_future_input_count(r, row, nr, raw_r + row) || raw_r[row] > raw_n[row]) return;
+        if (!raw_n[row]) { out->reason = "zero.produced.comparator.record"; return; }
+        double q = 1;
+        if (!isNull(rho)) {
+            if (!st_allocate_numeric(rho) || (XLENGTH(rho) != 1 && XLENGTH(rho) != nr)) return;
+            q = st_legacy_marker_number(rho, XLENGTH(rho) == 1 ? 0 : row);
+            if (!R_FINITE(q) || q < 0 || q > 1) return;
+        }
+        int at = -1;
+        for (int j = 0; j < nf; j++) if ((first[j] == left && second[j] == right) || (first[j] == right && second[j] == left)) { at = j; break; }
+        if (at < 0) { at = nf++; first[at] = left; second[at] = right; produced[at] = retained[at] = 0; accuracy[at] = q; }
+        if (accuracy[at] != q || raw_n[row] > INT64_C(9007199254740991) - produced[at] || raw_r[row] > INT64_C(9007199254740991) - retained[at]) return;
+        produced[at] += raw_n[row]; retained[at] += raw_r[row];
+        seed[row] = left; pollen[row] = right; family[row] = at;
+        SEXP table_seed = st_genetic_get(table, "seed"), table_pollen = st_genetic_get(table, "pollen");
+        if (!isNull(table_seed) || !isNull(table_pollen)) {
+            seed[row] = st_future_parent(p, table_seed, row); pollen[row] = st_future_parent(p, table_pollen, row);
+            if (!((seed[row] == left && pollen[row] == right) || (seed[row] == right && pollen[row] == left))) return;
+        }
+        if (!isNull(directions)) {
+            SEXP ds = st_genetic_get(directions, "seed"), dp = st_genetic_get(directions, "pollen");
+            if (TYPEOF(ds) != STRSXP || TYPEOF(dp) != STRSXP || XLENGTH(ds) != nr || XLENGTH(dp) != nr) return;
+            seed[row] = st_future_parent(p, ds, row); pollen[row] = st_future_parent(p, dp, row);
+            if (!((seed[row] == left && pollen[row] == right) || (seed[row] == right && pollen[row] == left))) return;
+        }
+        if (!st_future_input_count(raw_operations, row, nr, operations + row)) { known_operations = 0; operations[row] = 0; }
+    }
+    out->design.families = nf; out->design.first = first; out->design.second = second; out->design.produced = produced;
+    out->design.retained = retained; out->design.accuracy = accuracy;
+    out->operations.rows = nr; out->operations.direction_known = known_direction; out->operations.operations_known = known_operations;
+    out->operations.seed = seed; out->operations.pollen = pollen; out->operations.family_hint = family;
+    out->operations.produced = raw_n; out->operations.retained = raw_r; out->operations.operations = operations;
+    out->design.operation_view = &out->operations; out->state = 1; out->reason = "parsed.current.counts";
+    SEXP records = object ? st_genetic_get(source, "operations") : R_NilValue;
+    if (!isNull(records)) {
+        SEXP sa = st_genetic_get(records, "seed"), sb = st_genetic_get(records, "pollen"),
+            rn = st_genetic_get(records, "n.progeny"), rr = st_genetic_get(records, "n.selected"), rm = st_genetic_get(records, "n.operations");
+        int directed = !isNull(sa) && !isNull(sb);
+        if (isNull(sa)) sa = st_genetic_get(records, "P1Name");
+        if (isNull(sb)) sb = st_genetic_get(records, "P2Name");
+        if (!inherits(records, "data.frame") || TYPEOF(sa) != STRSXP || TYPEOF(sb) != STRSXP ||
+            XLENGTH(sa) < 1 || XLENGTH(sa) > INT_MAX || XLENGTH(sa) != XLENGTH(sb) || isNull(rn) != isNull(rr)) {
+            out->state = -1; out->reason = "invalid.comparator.operations"; return;
+        }
+        int rows = (int)XLENGTH(sa), counts = !isNull(rn), all_m = 1;
+        int *os = st_genetic_alloc(p, rows, sizeof(int)), *op = st_genetic_alloc(p, rows, sizeof(int)), *of = st_genetic_alloc(p, rows, sizeof(int));
+        int64_t *on = st_genetic_alloc(p, rows, sizeof(int64_t)), *orr = st_genetic_alloc(p, rows, sizeof(int64_t)), *om = st_genetic_alloc(p, rows, sizeof(int64_t));
+        for (int row = 0; row < rows; row++) {
+            os[row] = st_future_parent(p, sa, row); op[row] = st_future_parent(p, sb, row); of[row] = -1;
+            for (int e = 0; e < nf; e++) if ((os[row] == first[e] && op[row] == second[e]) || (os[row] == second[e] && op[row] == first[e])) { of[row] = e; break; }
+            if (of[row] < 0 || (counts && (!st_future_input_count(rn, row, rows, on + row) || !st_future_input_count(rr, row, rows, orr + row) || orr[row] > on[row]))) {
+                out->state = -1; out->reason = "invalid.comparator.operations"; return;
+            }
+            if (!counts) {
+                if (rows != nf) { out->state = -1; out->reason = "ambiguous.comparator.operations"; return; }
+                for (int j = 0; j < row; j++) if (of[j] == of[row]) { out->state = -1; out->reason = "repeated.comparator.operations"; return; }
+                on[row] = produced[of[row]]; orr[row] = retained[of[row]];
+            }
+            if (!st_future_input_count(rm, row, rows, om + row)) { all_m = 0; om[row] = 0; }
+        }
+        out->operations.rows = rows; out->operations.direction_known = directed;
+        out->operations.operations_known = all_m; out->operations.seed = os; out->operations.pollen = op; out->operations.family_hint = of;
+        out->operations.produced = on; out->operations.retained = orr; out->operations.operations = om;
+    }
+    SEXP inherited_model = object ? st_genetic_get(source, "genetic.model") : R_NilValue;
+    if (!isNull(inherited_model)) {
+        SEXP signature = st_genetic_get(st_genetic_get(inherited_model, "snapshot"), "signature");
+        if (TYPEOF(signature) != STRSXP || XLENGTH(signature) != 1 || STRING_ELT(signature, 0) == NA_STRING ||
+            strcmp(CHAR(STRING_ELT(signature, 0)), p->signature)) { out->state = -1; out->reason = "comparator.model.conflict"; }
+    }
+}
+void *st_cross_future_prepare(void *opaque, SEXP inherited_policy, SEXP request, int criterion_future)
+{
+    st_genetic_context *p = opaque;
+    if (!p) { if (criterion_future || !isNull(request) || !isNull(inherited_policy)) error("genetic.model$future requires an additive DH model"); return NULL; }
+    st_future_context *f = st_genetic_future_get(p);
+    if (!f && isNull(inherited_policy) && isNull(request) && !criterion_future) return NULL;
+    if (!f) {
+        f = st_genetic_alloc(p, 1, sizeof(*f)); memset(f, 0, sizeof(*f)); f->genetic = p;
+        f->parameters.produced = 20; f->parameters.retained = 2; f->parameters.accuracy = 1;
+        f->parameters.training = 32; f->parameters.evaluation = 256; f->parameters.evaluation_seed = 1;
+        f->reason = "not.requested";
+        st_future_policy_parse(f, inherited_policy, 1); st_future_policy_parse(f, request, 0);
+        if (f->parameters.retained > f->parameters.produced) error("genetic.model$future: n.selected exceeds n.progeny");
+        SEXP comparisons = st_genetic_get(request, "comparators");
+        if (!isNull(comparisons)) {
+            st_genetic_names(comparisons, "comparators"); f->comparator_count = (int)XLENGTH(comparisons);
+            f->comparators = st_genetic_alloc(p, f->comparator_count, sizeof(*f->comparators));
+            SEXP names = getAttrib(comparisons, R_NamesSymbol);
+            for (int i = 0; i < f->comparator_count; i++) {
+                const char *name = Rf_translateCharUTF8(STRING_ELT(names, i));
+                if (!strcmp(name, "selected") || !strcmp(name, "G1.reference")) error("genetic.model$future: reserved comparator name");
+                st_future_comparator_parse(f, f->comparators + i, VECTOR_ELT(comparisons, i), name);
+                if (f->comparators[i].state == 1) st_future_own_source_check(f, f->comparators + i);
+            }
+        }
+        if (!isNull(request)) { f->active = 1; f->parameters.request_evaluation = 1; f->reason = "not.evaluated"; }
+        st_genetic_future_set(p, f);
+    }
+    if (criterion_future) {
+        f->active = f->criterion = 1; f->parameters.request_training = f->parameters.request_evaluation = 1;
+        f->reason = "not.evaluated";
+    }
+    return f;
+}
+void st_cross_future_kernel_set(void *opaque, st_cross_genetic_intensity intensity, void *count_context)
+{
+    st_future_context *f = opaque; if (!f) return;
+    f->intensity = intensity; f->count_context = count_context;
+}
+void st_cross_future_parameters_get(const void *opaque, st_cross_future_parameters *out)
+{
+    const st_future_context *f = opaque;
+    if (!out) error("future: missing parameter output");
+    if (f) *out = f->parameters; else memset(out, 0, sizeof(*out));
+}
+static int st_future_charge(void *opaque, int category, uint64_t units)
+{
+    st_future_context *f = opaque; st_genetic_context *p = f->genetic;
+    if (f->phase == 1 && (long double)units > f->training_ceiling - p->work) {
+        f->phase_limited = f->training_limited = 1; return 0;
+    }
+    if (f->phase == 2 && (long double)units > f->evaluation_ceiling - p->work) {
+        f->phase_limited = f->evaluation_limited = 1; return 0;
+    }
+    int mandatory = p->mandatory; p->mandatory = 0;
+    int good = st_genetic_charge(p, category, units); p->mandatory = mandatory;
+    if (good) { if (f->phase == 1) f->training_work += units; else if (f->phase == 2) f->evaluation_work += units; else f->preparation_work += units; }
+    return good;
+}
+static void *st_future_alloc(void *opaque, size_t count, size_t size)
+{ return st_cross_genetic_scratch(((st_future_context *)opaque)->genetic, count, size); }
+static int st_future_engine(st_future_context *f)
+{
+    if (!f->engine) {
+        int phase = f->phase; f->phase = 0;
+        f->engine = st_cross_future_engine_create(&f->genetic->view, &f->parameters, f, st_future_alloc, st_future_charge);
+        f->phase = phase;
+    }
+    return f->engine != NULL;
+}
+void st_cross_future_bind(void *opaque, const st_cross_future_contract *contract)
+{
+    st_future_context *f = opaque; if (!f || !f->active) return;
+    if (!contract || contract->families < 1 || contract->produced < 1 || contract->retained < 0 || contract->planned_points < 1 || contract->automatic_references < 0)
+        error("future: invalid main population contract");
+    f->contract = *contract; f->bound = 1; f->final_ran = 0; f->final_count = 0; f->unavailable = 0; f->phase_limited = 0;
+    memset(&f->best, 0, sizeof(f->best)); f->best.reason = "not.evaluated";
+    if (contract->retained < 2 || contract->retained % 2) {
+        if (f->criterion) error("criterion=future requires an even G1 retained total of at least two");
+        f->unavailable = 1; f->reason = "G1.retained.must.be.even.and.at.least.two"; return;
+    }
+    if (contract->retained / 2 > INT64_C(9007199254740991) / f->parameters.produced ||
+        contract->retained / 2 > INT64_C(9007199254740991) / f->parameters.retained) {
+        f->unavailable = 1; f->reason = "derived.G2.count.range"; return;
+    }
+    if (!f->remaining_points) {
+        f->remaining_points = contract->planned_points;
+        long double candidates = (long double)contract->produced + (long double)(contract->retained / 2) * f->parameters.produced,
+            selected = (long double)contract->retained + (long double)(contract->retained / 2) * f->parameters.retained;
+        long double per_replicate = (candidates * (64.0L + 4.0L * f->genetic->view.markers + 192.0L * f->genetic->view.chromosomes) +
+            selected * (64.0L + 4.0L * f->genetic->view.markers));
+        f->reservation_estimate = per_replicate * f->parameters.evaluation * (1.0L + contract->automatic_references + f->comparator_count) * contract->planned_points;
+        long double available = fmaxl(0, f->genetic->max_work - f->genetic->work);
+        f->reservation = fminl(available * (f->criterion ? .75L : 1), f->reservation_estimate);
+        f->reservation_initial = f->reservation;
+        f->reservation_per_point = f->reservation / contract->planned_points;
+    }
+    long double available = fmaxl(0, f->genetic->max_work - f->genetic->work - f->reservation);
+    f->training_ceiling = f->genetic->work + available / fmax(1, f->remaining_points);
+    f->evaluation_ceiling = f->genetic->max_work - f->reservation_per_point * fmax(0, f->remaining_points - 1);
+    f->reason = "not.evaluated";
+}
+int st_cross_future_validate(void *opaque, const st_cross_future_design *d, int optimization)
+{
+    st_future_context *f = opaque; if (!f || !f->active) return 1;
+    if (!f->bound || !d || d->families < 1 || !d->first || !d->second || !d->produced || !d->retained || !d->accuracy) return -1;
+    int64_t n = 0, r = 0;
+    for (int e = 0; e < d->families; e++) {
+        if (d->first[e] < 0 || d->second[e] < 0 || d->first[e] >= f->genetic->caller_n || d->second[e] >= f->genetic->caller_n || d->first[e] == d->second[e] ||
+            d->produced[e] < 1 || d->retained[e] < 0 || d->retained[e] > d->produced[e] ||
+            !R_FINITE(d->accuracy[e]) || d->accuracy[e] < 0 || d->accuracy[e] > 1 ||
+            d->produced[e] > INT64_C(9007199254740991) - n || d->retained[e] > INT64_C(9007199254740991) - r) return -1;
+        n += d->produced[e]; r += d->retained[e];
+        for (int j = 0; j < e; j++) if ((d->first[e] == d->first[j] && d->second[e] == d->second[j]) ||
+            (d->first[e] == d->second[j] && d->second[e] == d->first[j])) return -1;
+    }
+    if (d->operation_view) {
+        const st_cross_future_operations *op = d->operation_view;
+        if (op->rows < 1 || !op->seed || !op->pollen || !op->produced || !op->retained ||
+            (op->operations_known && !op->operations)) return -1;
+        for (int row = 0; row < op->rows; row++) {
+            int found = 0;
+            if (op->produced[row] < 0 || op->retained[row] < 0 || op->retained[row] > op->produced[row] ||
+                (op->operations_known && (op->operations[row] < 0 || op->operations[row] > INT64_C(9007199254740991) ||
+                (op->produced[row] > 0 && !op->operations[row])))) return -1;
+            for (int e = 0; e < d->families; e++) if ((op->seed[row] == d->first[e] && op->pollen[row] == d->second[e]) ||
+                (op->seed[row] == d->second[e] && op->pollen[row] == d->first[e])) { found = 1; break; }
+            if (!found) return -1;
+        }
+        for (int e = 0; e < d->families; e++) {
+            int64_t sn = 0, sr = 0;
+            for (int row = 0; row < op->rows; row++) if ((op->seed[row] == d->first[e] && op->pollen[row] == d->second[e]) ||
+                (op->seed[row] == d->second[e] && op->pollen[row] == d->first[e])) {
+                if (op->produced[row] > INT64_C(9007199254740991) - sn || op->retained[row] > INT64_C(9007199254740991) - sr) return -1;
+                sn += op->produced[row]; sr += op->retained[row];
+            }
+            if (sn != d->produced[e] || sr != d->retained[e]) return -1;
+        }
+    }
+    if (d->families != f->contract.families || n != f->contract.produced || r != f->contract.retained) return -1;
+    if (r < 2 || r % 2) { if (optimization) error("criterion=future requires even G1 retention of at least two"); return -2; }
+    return f->unavailable ? -2 : 1;
+}
+static int st_future_map(st_future_context *f, int count, const st_cross_future_design *design)
+{
+    if (count < 1 || !design || count > INT_MAX / f->contract.families) return 0;
+    int total = count * f->contract.families;
+    int capacity = 2 + f->comparator_count;
+    if (capacity > f->design_capacity) {
+        if (f->design_capacity) return 0;
+        f->mapped = st_cross_genetic_scratch(f->genetic, capacity, sizeof(*f->mapped));
+        f->mapped_first = st_cross_genetic_scratch(f->genetic, (size_t)capacity * f->contract.families, sizeof(int));
+        f->mapped_second = st_cross_genetic_scratch(f->genetic, (size_t)capacity * f->contract.families, sizeof(int));
+        if (!f->mapped || !f->mapped_first || !f->mapped_second) return 0;
+        f->design_capacity = capacity; f->mapped_capacity = total;
+    }
+    for (int i = 0; i < count; i++) {
+        f->mapped[i] = design[i]; f->mapped[i].operation_view = NULL;
+        f->mapped[i].first = f->mapped_first + (size_t)i * f->contract.families;
+        f->mapped[i].second = f->mapped_second + (size_t)i * f->contract.families;
+        for (int e = 0; e < design[i].families; e++) {
+            f->mapped_first[(size_t)i * f->contract.families + e] = f->genetic->caller_map[design[i].first[e]];
+            f->mapped_second[(size_t)i * f->contract.families + e] = f->genetic->caller_map[design[i].second[e]];
+        }
+    }
+    return 1;
+}
+int st_cross_future_compare(const st_cross_future_score *a, const st_cross_future_score *b)
+{
+    long double d = (a->baseline - b->baseline) + (a->tail - b->tail) + (a->g1_response - b->g1_response) + (a->g2_response - b->g2_response);
+    return d > 0 ? 1 : d < 0 ? -1 : 0;
+}
+double st_cross_future_total(const void *opaque, const st_cross_future_score *score, int horizon)
+{
+    const st_future_context *f = opaque;
+    if (!f || !score || (horizon != 1 && horizon != 2)) return NA_REAL;
+    long double value = (long double)f->genetic->view.trait_anchor + score->baseline + score->tail + score->g1_response;
+    if (horizon == 2) value += score->g2_response;
+    return isfinite(value) && fabsl(value) <= DBL_MAX ? (double)value : NA_REAL;
+}
+static int st_future_best_copy(st_future_context *f, const st_cross_future_design *design)
+{
+    int n = design->families;
+    if (n < 1 || n > f->contract.families) return 0;
+    if (!f->best_first) f->best_first = st_cross_genetic_scratch(f->genetic, n, sizeof(int));
+    if (!f->best_second) f->best_second = st_cross_genetic_scratch(f->genetic, n, sizeof(int));
+    if (!f->best_n) f->best_n = st_cross_genetic_scratch(f->genetic, n, sizeof(int64_t));
+    if (!f->best_r) f->best_r = st_cross_genetic_scratch(f->genetic, n, sizeof(int64_t));
+    if (!f->best_accuracy) f->best_accuracy = st_cross_genetic_scratch(f->genetic, n, sizeof(double));
+    if (!f->best_first || !f->best_second || !f->best_n || !f->best_r || !f->best_accuracy) return 0;
+    memcpy(f->best_first, design->first, (size_t)n * sizeof(int)); memcpy(f->best_second, design->second, (size_t)n * sizeof(int));
+    memcpy(f->best_n, design->produced, (size_t)n * sizeof(int64_t)); memcpy(f->best_r, design->retained, (size_t)n * sizeof(int64_t));
+    memcpy(f->best_accuracy, design->accuracy, (size_t)n * sizeof(double));
+    f->best_design = *design; f->best_design.first = f->best_first; f->best_design.second = f->best_second;
+    f->best_design.produced = f->best_n; f->best_design.retained = f->best_r; f->best_design.accuracy = f->best_accuracy;
+    f->best_design.operation_view = NULL; return 1;
+}
+int st_cross_future_training(void *opaque, const st_cross_future_design *design, st_cross_future_value *value)
+{
+    st_future_context *f = opaque;
+    if (!f || !value) error("future: invalid training boundary");
+    memset(value, 0, sizeof(*value)); value->requested = f->parameters.training; value->reason = "not.evaluated";
+    int valid = st_cross_future_validate(f, design, 1); value->g1_state = valid;
+    if (valid != 1) { value->reason = valid == -1 ? "invalid.current.design" : f->reason; return valid == -1 ? -1 : 0; }
+    if (f->contract.check) value->g1_state = f->contract.check(f->contract.opaque, design, 0);
+    if (value->g1_state != 1) { value->reason = "G1.constraints.not.qualified"; return value->g1_state == -1 ? -1 : 0; }
+    f->phase = 1; f->phase_limited = 0;
+    if (!st_future_map(f, 1, design) || !st_future_engine(f)) {
+        value->limited = 1; value->reason = "max.cells"; return 0;
+    }
+    st_cross_future_engine_value result; memset(&result, 0, sizeof(result));
+    int good = st_cross_future_engine_score(f->engine, f->mapped, &result);
+    value->complete = good && result.complete; value->completed = result.completed; value->score = result.score;
+    value->reason = result.reason ? result.reason : "future.engine.unavailable";
+    value->limited = f->phase_limited || f->genetic->limited;
+    value->numerical = result.status == -2; value->work = (double)f->genetic->work;
+    value->cells = (double)ceill((long double)f->genetic->peak_bytes / sizeof(double));
+    if (value->complete && (!f->best.complete || st_cross_future_compare(&value->score, &f->best.score) > 0)) {
+        if (!st_future_best_copy(f, design)) { value->complete = 0; value->limited = 1; value->reason = "max.cells"; return 0; }
+        f->best = *value;
+    }
+    return value->complete ? 1 : 0;
+}
+void st_cross_future_chosen(void *opaque, const st_cross_future_design *design, const st_cross_future_value *value)
+{
+    st_future_context *f = opaque;
+    if (!f || !design || !value || !value->complete || value->completed != f->parameters.training || value->g1_state != 1)
+        error("future: invalid accepted training result");
+    if (st_cross_future_validate(f, design, 0) != 1) error("future: accepted training design conflicts with current resources");
+    if (!st_future_best_copy(f, design)) { memset(&f->best, 0, sizeof(f->best)); f->best.reason = "max.cells"; return; }
+    f->best = *value;
+}
+int st_cross_future_limited(const void *opaque)
+{
+    const st_future_context *f = opaque;
+    return f && (f->genetic->limited || f->phase_limited || (f->phase == 1 && f->genetic->work >= f->training_ceiling));
+}
+static void st_future_finish_point(st_future_context *f)
+{
+    if (f->remaining_points > 0) f->remaining_points--;
+    f->reservation = fminl(fmaxl(0, f->genetic->max_work - f->genetic->work), f->reservation_per_point * f->remaining_points);
+    long double available = fmaxl(0, f->genetic->max_work - f->genetic->work - f->reservation);
+    f->training_ceiling = f->genetic->work + available / fmax(1, f->remaining_points);
+    f->phase = 0;
+}
+static int st_future_same_design(const st_cross_future_design *a, const st_cross_future_design *b)
+{
+    if (!a || !b || a->families != b->families) return 0;
+    for (int i = 0; i < a->families; i++) {
+        int found = 0;
+        for (int j = 0; j < b->families; j++) if (((a->first[i] == b->first[j] && a->second[i] == b->second[j]) ||
+            (a->first[i] == b->second[j] && a->second[i] == b->first[j])) && a->produced[i] == b->produced[j] &&
+            a->retained[i] == b->retained[j] && a->accuracy[i] == b->accuracy[j]) { found = 1; break; }
+        if (!found) return 0;
+    }
+    return 1;
+}
+static int st_future_final_storage(st_future_context *f, int capacity)
+{
+    st_genetic_context *p = f->genetic;
+    if (capacity < 1 || capacity > 2 + f->comparator_count) return 0;
+    if (!f->final_design) f->final_design = st_cross_genetic_scratch(p, capacity, sizeof(*f->final_design));
+    if (!f->final_names) f->final_names = st_cross_genetic_scratch(p, capacity, sizeof(*f->final_names));
+    if (!f->final_reason) f->final_reason = st_cross_genetic_scratch(p, capacity, sizeof(*f->final_reason));
+    if (!f->final_state) f->final_state = st_cross_genetic_scratch(p, capacity, sizeof(int));
+    st_cross_future_final_result *r = &f->result;
+    if (!r->score) r->score = st_cross_genetic_scratch(p, capacity, sizeof(*r->score));
+    if (!r->population) r->population = st_cross_genetic_scratch(p, (size_t)capacity * 14, sizeof(double));
+    if (!r->population_SE) r->population_SE = st_cross_genetic_scratch(p, (size_t)capacity * 14, sizeof(double));
+    if (!r->population_state) r->population_state = st_cross_genetic_scratch(p, (size_t)capacity * 14, sizeof(int));
+    if (!r->population_SE_state) r->population_SE_state = st_cross_genetic_scratch(p, (size_t)capacity * 14, sizeof(int));
+    if (!r->pair_moments) r->pair_moments = st_cross_genetic_scratch(p, (size_t)capacity * 2, sizeof(double));
+    if (!r->pair_moments_SE) r->pair_moments_SE = st_cross_genetic_scratch(p, (size_t)capacity * 2, sizeof(double));
+    if (!r->pair_moments_state) r->pair_moments_state = st_cross_genetic_scratch(p, (size_t)capacity * 2, sizeof(int));
+    if (!r->pair_moments_SE_state) r->pair_moments_SE_state = st_cross_genetic_scratch(p, (size_t)capacity * 2, sizeof(int));
+    if (!r->contrast) r->contrast = st_cross_genetic_scratch(p, (size_t)(capacity - 1) * 3, sizeof(double));
+    if (!r->contrast_SE) r->contrast_SE = st_cross_genetic_scratch(p, (size_t)(capacity - 1) * 3, sizeof(double));
+    if (!r->contrast_state) r->contrast_state = st_cross_genetic_scratch(p, (size_t)(capacity - 1) * 3, sizeof(int));
+    if (!r->contrast_SE_state) r->contrast_SE_state = st_cross_genetic_scratch(p, (size_t)(capacity - 1) * 3, sizeof(int));
+    return f->final_design && f->final_names && f->final_reason && f->final_state && r->score && r->population && r->population_SE &&
+        r->population_state && r->population_SE_state && r->pair_moments && r->pair_moments_SE && r->pair_moments_state && r->pair_moments_SE_state &&
+        (capacity <= 1 || (r->contrast && r->contrast_SE && r->contrast_state && r->contrast_SE_state));
+}
+int st_cross_future_final(void *opaque, int count, const st_cross_future_design *design, const char *const *names)
+{
+    st_future_context *f = opaque;
+    if (!f || !f->active) return 1;
+    f->final_ran = 1; f->phase = 2; f->phase_limited = 0;
+    f->result.requested = f->parameters.evaluation; f->result.completed = 0; f->result.status = -1; f->result.reason = "not.evaluated";
+    if (!f->bound || count < 1 || count > 2 || !design || !names) { f->reason = f->result.reason = "no.current.design"; st_future_finish_point(f); return 0; }
+    if (f->unavailable) { f->result.reason = f->reason; st_future_finish_point(f); return 0; }
+    int capacity = 2 + f->comparator_count;
+    if (!st_future_final_storage(f, capacity)) { f->reason = f->result.reason = "max.cells"; st_future_finish_point(f); return 0; }
+    int all = count + f->comparator_count, valid_count = 0;
+    for (int i = 0; i < all; i++) {
+        st_cross_future_design current = i < count ? design[i] : f->comparators[i - count].design;
+        const char *name = i < count ? names[i] : f->comparators[i - count].name;
+        int state = i < count ? 1 : f->comparators[i - count].state;
+        const char *reason = i < count ? "qualified.current.design" : f->comparators[i - count].reason;
+        if (state == 1 && i >= count) {
+            state = st_future_own_source_check(f, f->comparators + i - count);
+            current = f->comparators[i - count].design;
+            if (state != 1) reason = "comparator.source.constraints.not.qualified";
+        }
+        if (state == 1) {
+            state = st_cross_future_validate(f, &current, 0);
+            if (state != 1) reason = state == -1 ? "comparator.resource.or.model.conflict" : f->reason;
+        }
+        if (state == 1 && f->contract.check) {
+            state = f->contract.check(f->contract.opaque, &current, 1);
+            if (state != 1) reason = "G1.constraints.not.qualified";
+        }
+        if (state == 1 && i >= count) {
+            state = st_future_own_source_cap_check(f, f->comparators + i - count);
+            if (state != 1) reason = "comparator.source.founder.cap.not.qualified";
+        }
+        f->final_names[i] = name; f->final_reason[i] = reason;
+        f->final_state[i] = state == 1 ? valid_count + 1 : state < 0 ? state : -2;
+        if (state == 1) f->final_design[valid_count++] = current;
+    }
+    f->final_count = all;
+    if (f->contract.check) f->contract.check(f->contract.opaque, design, 1);
+    if (f->best.complete && !st_future_same_design(design, &f->best_design)) {
+        memset(&f->best, 0, sizeof(f->best)); f->best.reason = "chosen.training.score.not.retained";
+    }
+    if (f->final_state[0] <= 0 || !valid_count) { f->reason = f->result.reason = "selected.G1.constraints.not.qualified"; st_future_finish_point(f); return 0; }
+    if (!st_future_map(f, valid_count, f->final_design) || !st_future_engine(f)) { f->reason = f->result.reason = "max.cells"; st_future_finish_point(f); return 0; }
+    f->result.designs = valid_count;
+    int good = st_cross_future_engine_final(f->engine, valid_count, f->mapped, &f->result);
+    f->reason = f->result.reason ? f->result.reason : "future.engine.unavailable";
+    st_future_finish_point(f);
+    return good;
+}
+SEXP st_cross_future_policy(const void *opaque)
+{
+    const st_future_context *f = opaque;
+    if (!f) return R_NilValue;
+    st_genetic_context *p = f->genetic; int np = 0;
+    const char *names[] = {"policy", "n.progeny", "n.selected", "accuracy"};
+    SEXP out = st_genetic_public_list(p, 4, names, &np);
+    SET_VECTOR_ELT(out, 0, st_genetic_public_text(p, "random.disjoint", &np));
+    SET_VECTOR_ELT(out, 1, st_genetic_public_real(p, (double)f->parameters.produced, &np));
+    SET_VECTOR_ELT(out, 2, st_genetic_public_real(p, (double)f->parameters.retained, &np));
+    SET_VECTOR_ELT(out, 3, st_genetic_public_real(p, f->parameters.accuracy, &np));
+    UNPROTECT(np); return out;
+}
+static double st_future_double(long double value)
+{ return isfinite(value) && fabsl(value) <= DBL_MAX ? (double)value : NA_REAL; }
+static SEXP st_future_bank_public(st_future_context *f, int training, int *np)
+{
+    st_genetic_context *p = f->genetic;
+    const char *names[] = {"status", "reason", "requested", "completed", "seed", "role", "bank.protocol", "model.signature", "value", "components"};
+    SEXP out = st_genetic_public_list(p, 10, names, np);
+    int requested = training ? f->parameters.request_training ? f->parameters.training : 0 : f->parameters.evaluation,
+        completed = training ? f->best.complete ? f->best.completed : 0 : f->result.completed;
+    const char *status = !requested ? "not.requested" : completed == requested ? "complete" : completed ? "partial" : "unavailable";
+    SET_VECTOR_ELT(out, 0, st_genetic_public_text(p, status, np));
+    SET_VECTOR_ELT(out, 1, st_genetic_public_text(p, training ? f->best.reason ? f->best.reason : "not.evaluated" : f->reason, np));
+    SET_VECTOR_ELT(out, 2, st_genetic_public_int(p, requested, 0, np)); SET_VECTOR_ELT(out, 3, st_genetic_public_int(p, completed, 0, np));
+    SET_VECTOR_ELT(out, 4, st_genetic_public_real(p, (double)(training ? f->parameters.training_seed : f->parameters.evaluation_seed), np));
+    SET_VECTOR_ELT(out, 5, st_genetic_public_text(p, training ? "training" : "evaluation", np));
+    SET_VECTOR_ELT(out, 6, st_genetic_public_text(p, "dh.two.cycle.haldane.slot.xorshift64star.v1", np));
+    SET_VECTOR_ELT(out, 7, st_genetic_public_text(p, p->signature, np));
+    const st_cross_future_score *score = training ? &f->best.score : f->result.score;
+    int available = completed > 0 && score;
+    SET_VECTOR_ELT(out, 8, st_genetic_public_real(p, available ? st_cross_future_total(f, score, 2) : NA_REAL, np));
+    const char *components[] = {"centered.baseline", "baseline.tail", "g1.response", "g1.selected.mean", "g2.response", "g2.selected.mean"};
+    SEXP values = st_genetic_public_vector(p, REALSXP, 6, np);
+    double numbers[6] = {available ? st_future_double(score->baseline) : NA_REAL, available ? st_future_double(score->tail) : NA_REAL,
+        available ? st_future_double(score->g1_response) : NA_REAL, available ? st_cross_future_total(f, score, 1) : NA_REAL,
+        available ? st_future_double(score->g2_response) : NA_REAL, available ? st_cross_future_total(f, score, 2) : NA_REAL};
+    for (int i = 0; i < 6; i++) REAL(values)[i] = numbers[i];
+    setAttrib(values, R_NamesSymbol, st_genetic_public_names(p, 6, components, np)); SET_VECTOR_ELT(out, 9, values);
+    return out;
+}
+SEXP st_cross_future_report(const void *opaque)
+{
+    st_future_context *f = (st_future_context *)opaque;
+    if (!f || !f->active) return R_NilValue;
+    st_genetic_context *p = f->genetic; int np = 0;
+    const char *names[] = {"horizon", "policy", "resources", "training", "evaluation", "comparators", "population", "pair.moments", "contrasts", "plans", "diagnostics"};
+    SEXP out = st_genetic_public_list(p, 11, names, &np);
+    SET_VECTOR_ELT(out, 0, st_genetic_public_int(p, 2, 0, &np));
+    SET_VECTOR_ELT(out, 1, st_allocate_keep(st_cross_future_policy(f), &np));
+    const char *resources[] = {"G1.families", "G1.produced", "G1.retained", "G2.families", "G2.produced", "G2.retained"};
+    SEXP resource = st_genetic_public_list(p, 6, resources, &np);
+    double count[6] = {f->bound ? f->contract.families : NA_REAL, f->bound ? (double)f->contract.produced : NA_REAL,
+        f->bound ? (double)f->contract.retained : NA_REAL, f->bound && !f->unavailable ? (double)(f->contract.retained / 2) : NA_REAL,
+        f->bound && !f->unavailable ? (double)(f->contract.retained / 2) * f->parameters.produced : NA_REAL,
+        f->bound && !f->unavailable ? (double)(f->contract.retained / 2) * f->parameters.retained : NA_REAL};
+    for (int i = 0; i < 6; i++) SET_VECTOR_ELT(resource, i, st_genetic_public_real(p, count[i], &np));
+    SET_VECTOR_ELT(out, 2, resource); SET_VECTOR_ELT(out, 3, st_future_bank_public(f, 1, &np)); SET_VECTOR_ELT(out, 4, st_future_bank_public(f, 0, &np));
+    const char *comparator_columns[] = {"design", "state", "reason"};
+    SEXP comparators = st_genetic_public_frame(p, 3, comparator_columns, f->final_count, &np);
+    for (int j = 0; j < 3; j++) SET_VECTOR_ELT(comparators, j, st_genetic_public_vector(p, j == 1 ? INTSXP : STRSXP, f->final_count, &np));
+    for (int i = 0; i < f->final_count; i++) {
+        st_genetic_public_string(p, VECTOR_ELT(comparators, 0), i, f->final_names[i]);
+        INTEGER(VECTOR_ELT(comparators, 1))[i] = f->final_state[i] > 0 ? 1 : f->final_state[i];
+        st_genetic_public_string(p, VECTOR_ELT(comparators, 2), i, f->final_reason[i]);
+    }
+    SET_VECTOR_ELT(out, 5, comparators);
+    if (f->final_count > INT_MAX / 14) error("future: public metric row count overflow");
+    const char *columns[] = {"design", "generation", "metric", "estimate", "SE", "state", "SE.state", "reason", "SE.reason"};
+    const char *metrics[] = {"response", "selected.mean", "finite.panel.variance", "sample.variance", "marginal.variance", "genomic.q", "gene.diversity"};
+    int rows = f->final_count * 14;
+    SEXP population = st_genetic_public_frame(p, 9, columns, rows, &np);
+    for (int j = 0; j < 9; j++) SET_VECTOR_ELT(population, j, st_genetic_public_vector(p, j == 3 || j == 4 ? REALSXP : j == 5 || j == 6 ? INTSXP : STRSXP, rows, &np));
+    for (int i = 0; i < f->final_count; i++) for (int generation = 0; generation < 2; generation++) for (int j = 0; j < 7; j++) {
+        int row = i * 14 + generation * 7 + j, at = (f->final_state[i] - 1) * 14 + generation * 7 + j;
+        int available = f->final_state[i] > 0 && f->result.completed > 0;
+        st_genetic_public_string(p, VECTOR_ELT(population, 0), row, f->final_names[i]);
+        st_genetic_public_string(p, VECTOR_ELT(population, 1), row, generation ? "G2" : "G1");
+        st_genetic_metric_row(p, population, 2, row, metrics[j], available ? f->result.population[at] : NA_REAL,
+            available ? f->result.population_SE[at] : NA_REAL, available ? f->result.population_state[at] : 0,
+            available ? f->result.population_SE_state[at] : 0, j == 1);
+    }
+    SET_VECTOR_ELT(out, 6, population);
+    const char *moment_columns[] = {"design", "metric", "estimate", "SE", "state", "SE.state", "reason", "SE.reason"};
+    SEXP moments = st_genetic_public_frame(p, 8, moment_columns, f->final_count * 2, &np);
+    for (int j = 0; j < 8; j++) SET_VECTOR_ELT(moments, j, st_genetic_public_vector(p, j == 2 || j == 3 ? REALSXP : j == 4 || j == 5 ? INTSXP : STRSXP, f->final_count * 2, &np));
+    for (int i = 0; i < f->final_count; i++) for (int j = 0; j < 2; j++) {
+        int row = i * 2 + j, at = (f->final_state[i] - 1) * 2 + j, available = f->final_state[i] > 0 && f->result.completed > 0;
+        st_genetic_public_string(p, VECTOR_ELT(moments, 0), row, f->final_names[i]);
+        st_genetic_metric_row(p, moments, 1, row, j ? "mean.sqrt.variance" : "mean.variance", available ? f->result.pair_moments[at] : NA_REAL,
+            available ? f->result.pair_moments_SE[at] : NA_REAL, available ? f->result.pair_moments_state[at] : 0,
+            available ? f->result.pair_moments_SE_state[at] : 0, 0);
+    }
+    SET_VECTOR_ELT(out, 7, moments);
+    int comparisons = f->final_count ? f->final_count - 1 : 0;
+    const char *contrast_columns[] = {"comparator", "metric", "estimate", "SE", "state", "SE.state", "reason", "SE.reason"};
+    SEXP contrasts = st_genetic_public_frame(p, 8, contrast_columns, comparisons * 3, &np);
+    for (int j = 0; j < 8; j++) SET_VECTOR_ELT(contrasts, j, st_genetic_public_vector(p, j == 2 || j == 3 ? REALSXP : j == 4 || j == 5 ? INTSXP : STRSXP, comparisons * 3, &np));
+    const char *contrast_metrics[] = {"G1.selected.mean", "G2.selected.mean", "G2.response"};
+    for (int i = 1; i < f->final_count; i++) for (int j = 0; j < 3; j++) {
+        int row = (i - 1) * 3 + j, at = (f->final_state[i] - 2) * 3 + j;
+        int available = f->final_state[i] > 1 && f->result.completed > 0;
+        st_genetic_public_string(p, VECTOR_ELT(contrasts, 0), row, f->final_names[i]);
+        st_genetic_metric_row(p, contrasts, 1, row, contrast_metrics[j], available ? f->result.contrast[at] : NA_REAL,
+            available ? f->result.contrast_SE[at] : NA_REAL, available ? f->result.contrast_state[at] : 0,
+            available ? f->result.contrast_SE_state[at] : 0, 0);
+    }
+    SET_VECTOR_ELT(out, 8, contrasts);
+    SEXP plans = st_genetic_public_list(p, f->final_count, f->final_names, &np);
+    const char *plan_columns[] = {"P1Name", "P2Name", "n.progeny", "n.selected", "accuracy"};
+    for (int i = 0; i < f->final_count; i++) if (f->final_state[i] > 0) {
+        const st_cross_future_design *d = f->final_design + f->final_state[i] - 1;
+        SEXP plan = st_genetic_public_frame(p, 5, plan_columns, d->families, &np);
+        for (int j = 0; j < 5; j++) SET_VECTOR_ELT(plan, j, st_genetic_public_vector(p, j < 2 ? STRSXP : REALSXP, d->families, &np));
+        for (int e = 0; e < d->families; e++) {
+            st_genetic_public_string(p, VECTOR_ELT(plan, 0), e, p->caller_ids[d->first[e]]);
+            st_genetic_public_string(p, VECTOR_ELT(plan, 1), e, p->caller_ids[d->second[e]]);
+            REAL(VECTOR_ELT(plan, 2))[e] = (double)d->produced[e]; REAL(VECTOR_ELT(plan, 3))[e] = (double)d->retained[e];
+            REAL(VECTOR_ELT(plan, 4))[e] = d->accuracy[e];
+        }
+        SET_VECTOR_ELT(plans, i, plan);
+    }
+    SET_VECTOR_ELT(out, 9, plans);
+    const char *diagnostic_names[] = {"target", "criterion", "training.work", "evaluation.work", "evaluation.reservation", "training.ceiling", "remaining.points", "limited", "reason", "qualification", "cache", "preparation.work", "reservation.initial", "reservation.estimate", "reservation.shortfall", "training.limit.reached", "evaluation.limit.reached"};
+    SEXP diagnostics = st_genetic_public_list(p, 17, diagnostic_names, &np);
+    SET_VECTOR_ELT(diagnostics, 0, st_genetic_public_text(p, "actual.selected.G2", &np));
+    SET_VECTOR_ELT(diagnostics, 1, st_genetic_public_int(p, f->criterion, 1, &np));
+    SET_VECTOR_ELT(diagnostics, 2, st_genetic_public_real(p, (double)f->training_work, &np));
+    SET_VECTOR_ELT(diagnostics, 3, st_genetic_public_real(p, (double)f->evaluation_work, &np));
+    SET_VECTOR_ELT(diagnostics, 4, st_genetic_public_real(p, (double)f->reservation, &np));
+    SET_VECTOR_ELT(diagnostics, 5, st_genetic_public_real(p, (double)f->training_ceiling, &np));
+    SET_VECTOR_ELT(diagnostics, 6, st_genetic_public_int(p, f->remaining_points, 0, &np));
+    SET_VECTOR_ELT(diagnostics, 7, st_genetic_public_int(p, f->genetic->limited || f->training_limited || f->evaluation_limited, 1, &np));
+    SET_VECTOR_ELT(diagnostics, 8, st_genetic_public_text(p, f->reason, &np));
+    SET_VECTOR_ELT(diagnostics, 9, st_genetic_public_text(p, "Actual DH genotypes, uniform disjoint matching and independent noisy within-family ranking; training is a finite-bank objective, held-out differences use paired whole replicates; model consistency is not field validation.", &np));
+    uint64_t hits = 0, misses = 0, evictions = 0;
+    st_cross_future_engine_counters(f->engine, &hits, &misses, &evictions);
+    const char *cache_names[] = {"hits", "misses", "evictions"};
+    SEXP cache = st_genetic_public_list(p, 3, cache_names, &np);
+    SET_VECTOR_ELT(cache, 0, st_genetic_public_real(p, (double)hits, &np));
+    SET_VECTOR_ELT(cache, 1, st_genetic_public_real(p, (double)misses, &np));
+    SET_VECTOR_ELT(cache, 2, st_genetic_public_real(p, (double)evictions, &np));
+    SET_VECTOR_ELT(diagnostics, 10, cache);
+    SET_VECTOR_ELT(diagnostics, 11, st_genetic_public_real(p, (double)f->preparation_work, &np));
+    SET_VECTOR_ELT(diagnostics, 12, st_genetic_public_real(p, (double)f->reservation_initial, &np));
+    SET_VECTOR_ELT(diagnostics, 13, st_genetic_public_real(p, (double)f->reservation_estimate, &np));
+    SET_VECTOR_ELT(diagnostics, 14, st_genetic_public_real(p, (double)fmaxl(0, f->reservation_estimate - f->reservation_initial), &np));
+    SET_VECTOR_ELT(diagnostics, 15, st_genetic_public_int(p, f->training_limited, 1, &np));
+    SET_VECTOR_ELT(diagnostics, 16, st_genetic_public_int(p, f->evaluation_limited, 1, &np));
+    SET_VECTOR_ELT(out, 10, diagnostics); UNPROTECT(np); return out;
+}
+
+void st_cross_genetic_point_begin(void *opaque, int has_cap, double cap)
+{
+    st_genetic_context *p = opaque; if (!p) return;
+    st_genetic_future_owner *owner = NULL;
+    for (st_genetic_block *block = p->blocks; block; block = block->next)
+        if (!block->data) { owner = (st_genetic_future_owner *)block; break; }
+    if (owner) { p->cap_active = owner->base_cap_active; p->cap = owner->base_cap; }
+    if (has_cap) {
+        if (!R_FINITE(cap) || cap < 0 || !p->K.n) error("frontier: invalid selected founder cap");
+        p->cap_active = 1; p->cap = cap;
+    }
+    p->nf = 0; p->assessed = 0; p->no_incumbent = 0; p->scenario_ran = 0;
+    p->check_state = p->prediction_state = -2; p->prediction_reason = "not.evaluated";
+    p->proxy = p->proxy_error = NA_REAL;
+    st_future_context *f = st_genetic_future_get(p);
+    if (f) {
+        f->final_ran = 0; f->final_count = 0; f->phase = 0; f->phase_limited = 0;
+        f->bound = 0; f->unavailable = 0; f->training_limited = f->evaluation_limited = 0;
+        memset(&f->best, 0, sizeof(f->best)); f->best.reason = "not.evaluated";
+        f->result.designs = 0; f->result.requested = f->parameters.evaluation; f->result.completed = 0;
+        f->result.status = 0; f->result.reason = f->reason = "not.evaluated";
+    }
+}
+
+static SEXP st_genetic_scenarios_public(st_genetic_context *p, int *np)
+{
+    const st_cross_dh_result *s = &p->scenarios; int ran = p->scenario_ran && !p->no_incumbent, nf = p->assessed && !p->no_incumbent ? p->nf : 0;
+    int nonempty = st_genetic_public_nonempty(p), nref = p->K.n ? p->K.n : p->view.parents;
+    const char *scenario_names[] = {"status", "reason", "requested", "completed", "seed", "bank.protocol", "model.signature",
+        "population", "families", "contributions", "availability"};
+    SEXP out = st_genetic_public_list(p, 11, scenario_names, np);
+    SET_VECTOR_ELT(out, 0, st_genetic_public_int(p, ran ? s->status : 0, 0, np));
+    SET_VECTOR_ELT(out, 1, st_genetic_public_text(p, ran && s->reason ? s->reason : "not.evaluated", np));
+    SET_VECTOR_ELT(out, 2, st_genetic_public_int(p, p->requested, 0, np)); SET_VECTOR_ELT(out, 3, st_genetic_public_int(p, ran ? s->completed : 0, 0, np));
+    SET_VECTOR_ELT(out, 4, st_genetic_public_real(p, ran ? (double)s->seed : p->seed, np));
+    SET_VECTOR_ELT(out, 5, st_genetic_public_text(p, s->bank_protocol ? s->bank_protocol : "dh.haldane.markov.xorshift64star.v1", np));
+    SET_VECTOR_ELT(out, 6, st_genetic_public_text(p, p->signature, np));
+    const char *metric_columns[] = {"metric", "estimate", "SE", "state", "SE.state", "reason", "SE.reason"};
+    const char *population_metrics[] = {"response", "selected.mean", "finite.panel.variance", "sample.variance", "marginal.variance", "genomic.q", "gene.diversity"};
+    SEXP population = st_genetic_public_frame(p, 7, metric_columns, 7, np);
+    for (int j = 0; j < 7; j++) SET_VECTOR_ELT(population, j, st_genetic_public_vector(p,
+        j == 0 || j >= 5 ? STRSXP : j == 3 || j == 4 ? INTSXP : REALSXP, 7, np));
+    for (int j = 0; j < 7; j++) st_genetic_metric_row(p, population, 0, j, population_metrics[j],
+        ran && s->population ? s->population[j] : NA_REAL, ran && s->population_SE ? s->population_SE[j] : NA_REAL,
+        ran && s->population_state ? s->population_state[j] : 0, ran && s->population_SE_state ? s->population_SE_state[j] : 0, j == 1);
+    SET_VECTOR_ELT(out, 7, population);
+    if (nf > INT_MAX / 7) error("genetic.model: family scenario output has too many rows");
+    int rows = nf * 7;
+    const char *family_columns[] = {"family", "P1Name", "P2Name", "metric", "estimate", "SE", "state", "SE.state", "reason", "SE.reason"};
+    const char *family_metrics[] = {"response", "selected.mean", "finite.panel.variance", "sample.variance", "marginal.variance", "P1.origin", "P2.origin"};
+    SEXP families = st_genetic_public_frame(p, 10, family_columns, rows, np);
+    for (int j = 0; j < 10; j++) SET_VECTOR_ELT(families, j, st_genetic_public_vector(p,
+        j == 0 || j == 6 || j == 7 ? INTSXP : j == 4 || j == 5 ? REALSXP : STRSXP, rows, np));
+    for (int e = 0; e < nf; e++) for (int j = 0; j < 7; j++) {
+        int row = e * 7 + j; size_t at = (size_t)e * 7 + j;
+        INTEGER(VECTOR_ELT(families, 0))[row] = e + 1;
+        st_genetic_public_string(p, VECTOR_ELT(families, 1), row, p->caller_ids[p->first[e]]);
+        st_genetic_public_string(p, VECTOR_ELT(families, 2), row, p->caller_ids[p->second[e]]);
+        st_genetic_metric_row(p, families, 3, row, family_metrics[j], ran && s->family && e < s->families ? s->family[at] : NA_REAL,
+            ran && s->family_SE && e < s->families ? s->family_SE[at] : NA_REAL,
+            ran && s->family_state && e < s->families ? s->family_state[at] : 0,
+            ran && s->family_SE_state && e < s->families ? s->family_SE_state[at] : 0, j == 1);
+    }
+    SET_VECTOR_ELT(out, 8, families);
+    const char *origin_columns[] = {"parent", "estimate", "SE", "state", "SE.state", "reason", "SE.reason"};
+    SEXP origin = st_genetic_public_frame(p, 7, origin_columns, nref, np);
+    for (int j = 0; j < 7; j++) SET_VECTOR_ELT(origin, j, st_genetic_public_vector(p,
+        j == 0 || j >= 5 ? STRSXP : j == 3 || j == 4 ? INTSXP : REALSXP, nref, np));
+    for (int i = 0; i < nref; i++) {
+        int at = p->K.n ? -1 : i;
+        if (p->K.n) for (int j = 0; j < p->view.parents; j++) if (p->K_map[j] == i) { at = j; break; }
+        int padding = at < 0 && ran && s->completed > 0 && nonempty;
+        int state = padding ? 1 : ran && at >= 0 && s->origin_state ? s->origin_state[at] : ran && !nonempty ? -1 : 0,
+            SE_state = padding ? s->completed > 1 ? 1 : -4 : ran && at >= 0 && s->origin_SE_state ? s->origin_SE_state[at] : ran && !nonempty ? -1 : 0;
+        double value = padding ? 0 : ran && at >= 0 && s->origin ? s->origin[at] : NA_REAL,
+            SE = padding ? 0 : ran && at >= 0 && s->origin_SE ? s->origin_SE[at] : NA_REAL;
+        st_genetic_public_string(p, VECTOR_ELT(origin, 0), i, p->K.n ? p->K.ids[i] : p->view.parent_ids[i]);
+        if (state == 1 && !R_FINITE(value)) { value = NA_REAL; state = -5; }
+        if (SE_state == 1 && (!R_FINITE(SE) || SE < 0)) { SE = NA_REAL; SE_state = -5; }
+        REAL(VECTOR_ELT(origin, 1))[i] = state == 1 ? value : NA_REAL; REAL(VECTOR_ELT(origin, 2))[i] = SE_state == 1 ? SE : NA_REAL;
+        INTEGER(VECTOR_ELT(origin, 3))[i] = state; INTEGER(VECTOR_ELT(origin, 4))[i] = SE_state;
+        st_genetic_public_string(p, VECTOR_ELT(origin, 5), i, st_genetic_metric_reason(state));
+        st_genetic_public_string(p, VECTOR_ELT(origin, 6), i, st_genetic_metric_reason(SE_state));
+    }
+    SET_VECTOR_ELT(out, 9, origin);
+    const char *availability_names[] = {"metric", "reference.D", "uncertainty", "marginal.variance.SE", "marginal.variance.SE.reason"};
+    SEXP availability = st_genetic_public_list(p, 5, availability_names, np);
+    SET_VECTOR_ELT(availability, 0, st_genetic_public_text(p, "weighted.vanraden.A.over.2.fixed.reference", np));
+    SET_VECTOR_ELT(availability, 1, st_genetic_public_real(p, p->view.reference_denominator, np));
+    SET_VECTOR_ELT(availability, 2, st_genetic_public_text(p, "Whole completed replicates; sample SD divided by sqrt(completed) when completed exceeds one.", np));
+    SET_VECTOR_ELT(availability, 3, st_genetic_public_int(p, FALSE, 1, np));
+    SET_VECTOR_ELT(availability, 4, st_genetic_public_text(p, "SE.not.implemented", np)); SET_VECTOR_ELT(out, 10, availability);
+    return out;
+}
+typedef struct
+{
+    SEXP selected, diagnostics, scenarios;
+} st_genetic_public_parts;
+
+static void st_genetic_report_parts(st_genetic_context *p, st_genetic_public_parts *parts, int *np)
+{
+    st_genetic_public_begin(p);
+    int evaluated = p->assessed && !p->no_incumbent, nf = evaluated ? p->nf : 0,
+        nonempty = st_genetic_public_nonempty(p), nref = p->K.n ? p->K.n : p->view.parents;
+    const char *selected_names[] = {"families", "contributions", "raw.contributions", "proxy", "model.signature", "selection.method", "qualification", "state", "reason"};
+    SEXP selected = st_genetic_public_list(p, 9, selected_names, np);
+    const char *family_columns[] = {"family", "P1Name", "P2Name", "n.progeny", "n.selected", "accuracy", "covariance", "origin.variance",
+        "intensity", "raw.P1", "raw.P2", "P1", "P2", "estimated.error", "state", "reason"};
+    SEXP families = st_genetic_public_frame(p, 16, family_columns, nf, np);
+    for (int j = 0; j < 16; j++) SET_VECTOR_ELT(families, j, st_genetic_public_vector(p,
+        j == 0 || j == 14 ? INTSXP : j == 1 || j == 2 || j == 15 ? STRSXP : REALSXP, nf, np));
+    for (int e = 0; e < nf; e++) {
+        INTEGER(VECTOR_ELT(families, 0))[e] = e + 1;
+        st_genetic_public_string(p, VECTOR_ELT(families, 1), e, p->caller_ids[p->first[e]]);
+        st_genetic_public_string(p, VECTOR_ELT(families, 2), e, p->caller_ids[p->second[e]]);
+        REAL(VECTOR_ELT(families, 3))[e] = st_genetic_public_count(p->n[e]); REAL(VECTOR_ELT(families, 4))[e] = st_genetic_public_count(p->r[e]);
+        REAL(VECTOR_ELT(families, 5))[e] = p->accuracy[e]; REAL(VECTOR_ELT(families, 6))[e] = p->covariance[e];
+        REAL(VECTOR_ELT(families, 7))[e] = p->origin_variance;
+        REAL(VECTOR_ELT(families, 8))[e] = p->r[e] > 0 ? p->intensity[e] : NA_REAL;
+        REAL(VECTOR_ELT(families, 9))[e] = p->r[e] > 0 ? p->raw[e] : NA_REAL;
+        REAL(VECTOR_ELT(families, 10))[e] = p->r[e] > 0 && !ISNAN(p->raw[e]) ? 1 - p->raw[e] : NA_REAL;
+        REAL(VECTOR_ELT(families, 11))[e] = p->r[e] > 0 && p->state[e] == 1 ? p->fraction[e] : NA_REAL;
+        REAL(VECTOR_ELT(families, 12))[e] = p->r[e] > 0 && p->state[e] == 1 ? 1 - p->fraction[e] : NA_REAL;
+        REAL(VECTOR_ELT(families, 13))[e] = p->r[e] > 0 ? p->error[e] : NA_REAL;
+        INTEGER(VECTOR_ELT(families, 14))[e] = p->state[e]; st_genetic_public_string(p, VECTOR_ELT(families, 15), e, p->family_reason[e]);
+    }
+    SET_VECTOR_ELT(selected, 0, families);
+    SEXP names = st_genetic_public_names(p, nref, p->K.n ? p->K.ids : p->view.parent_ids, np),
+        aggregate = st_genetic_public_vector(p, REALSXP, nref, np), raw = st_genetic_public_vector(p, REALSXP, nref, np);
+    for (int i = 0; i < nref; i++) { REAL(aggregate)[i] = nonempty && p->prediction_state == 1 ? 0 : NA_REAL; REAL(raw)[i] = nonempty ? 0 : NA_REAL; }
+    if (nonempty) for (int i = 0; i < p->view.parents; i++) {
+        int at = p->K.n ? p->K_map[i] : i;
+        REAL(aggregate)[at] = p->prediction_state == 1 && p->aggregate ? p->aggregate[i] : NA_REAL;
+        REAL(raw)[at] = p->raw_aggregate ? p->raw_aggregate[i] : NA_REAL;
+    }
+    setAttrib(aggregate, R_NamesSymbol, names); setAttrib(raw, R_NamesSymbol, names);
+    SET_VECTOR_ELT(selected, 1, aggregate); SET_VECTOR_ELT(selected, 2, raw);
+    const char *proxy_names[] = {"metric", "value", "estimated.error", "cap", "state", "reason", "reference", "allowance", "refinement"};
+    SEXP proxy = st_genetic_public_list(p, 9, proxy_names, np);
+    int proxy_state = !evaluated ? -2 : p->cap_active ? p->check_state : !p->K.n ? -2 : p->prediction_state;
+    const char *reason = !evaluated ? "not.evaluated" : !p->K.n ? "founder.K.unavailable" :
+        p->prediction_state != 1 ? p->prediction_reason : p->cap_active && proxy_state == -1 ? "proxy.cap.violated" :
+        p->cap_active && proxy_state == 0 ? "proxy.cap.numerically.unresolved" : "joint.normal.regression.approximation";
+    SET_VECTOR_ELT(proxy, 0, st_genetic_public_text(p, "ucpc.founder.proxy", np));
+    SET_VECTOR_ELT(proxy, 1, st_genetic_public_real(p, evaluated ? p->proxy : NA_REAL, np));
+    SET_VECTOR_ELT(proxy, 2, st_genetic_public_real(p, evaluated ? p->proxy_error : NA_REAL, np));
+    SET_VECTOR_ELT(proxy, 3, st_genetic_public_real(p, p->cap_active ? p->cap : NA_REAL, np));
+    SET_VECTOR_ELT(proxy, 4, st_genetic_public_int(p, proxy_state, 0, np)); SET_VECTOR_ELT(proxy, 5, st_genetic_public_text(p, reason, np));
+    const char *reference_names[] = {"ids", "scale", "available"}; SEXP reference = st_genetic_public_list(p, 3, reference_names, np);
+    SET_VECTOR_ELT(reference, 0, names); SET_VECTOR_ELT(reference, 1, st_genetic_public_text(p, p->K.n ? "original.supplied.K" : "unavailable", np));
+    SET_VECTOR_ELT(reference, 2, st_genetic_public_int(p, p->K.n > 0, 1, np)); SET_VECTOR_ELT(proxy, 6, reference);
+    SET_VECTOR_ELT(proxy, 7, st_genetic_public_real(p, p->cap_active && R_FINITE(p->proxy) ?
+        1e-10 * fmax(1, fmax(fabs(p->cap), fabs(p->proxy))) : NA_REAL, np));
+    SET_VECTOR_ELT(proxy, 8, st_genetic_public_int(p, p->refinement, 0, np)); SET_VECTOR_ELT(selected, 3, proxy);
+    SET_VECTOR_ELT(selected, 4, st_genetic_public_text(p, p->signature, np)); SET_VECTOR_ELT(selected, 5, st_genetic_public_text(p, st_genetic_public_method(p), np));
+    SET_VECTOR_ELT(selected, 6, st_genetic_public_text(p, "joint.normal.regression.approximation", np));
+    SET_VECTOR_ELT(selected, 7, st_genetic_public_int(p, evaluated ? p->prediction_state : -2, 0, np));
+    SET_VECTOR_ELT(selected, 8, st_genetic_public_text(p, evaluated ? p->prediction_reason : "not.evaluated", np)); parts->selected = selected;
+    const char *diagnostic_names[] = {"model.signature", "selection.method", "work", "max.work", "category.work", "mandatory.work",
+        "peak.cells", "max.cells", "output.bytes", "limited", "reason", "assessed", "public.reserve.bytes", "public.reserve.qualification"};
+    SEXP diagnostics = st_genetic_public_list(p, 14, diagnostic_names, np);
+    SET_VECTOR_ELT(diagnostics, 0, st_genetic_public_text(p, p->signature, np)); SET_VECTOR_ELT(diagnostics, 1, st_genetic_public_text(p, st_genetic_public_method(p), np));
+    SET_VECTOR_ELT(diagnostics, 2, st_genetic_public_real(p, (double)p->work, np)); SET_VECTOR_ELT(diagnostics, 3, st_genetic_public_real(p, p->max_work, np));
+    const char *category_names[] = {"preparation", "moments", "proxy", "key.bytes", "rng.draws", "candidate.marker", "heap", "selected.reconstruction", "metric.marker", "aggregation"};
+    SEXP category = st_genetic_public_vector(p, REALSXP, 10, np), category_labels = st_genetic_public_names(p, 10, category_names, np);
+    for (int i = 0; i < 10; i++) REAL(category)[i] = (double)p->category[i];
+    setAttrib(category, R_NamesSymbol, category_labels); SET_VECTOR_ELT(diagnostics, 4, category);
+    SET_VECTOR_ELT(diagnostics, 5, st_genetic_public_real(p, (double)p->mandatory_work, np));
+    SET_VECTOR_ELT(diagnostics, 6, st_genetic_public_real(p, (double)ceill((long double)p->peak_bytes / sizeof(double)), np));
+    SET_VECTOR_ELT(diagnostics, 7, st_genetic_public_real(p, p->max_cells, np));
+    SET_VECTOR_ELT(diagnostics, 8, st_genetic_public_real(p, 0, np)); SET_VECTOR_ELT(diagnostics, 9, st_genetic_public_int(p, p->limited, 1, np));
+    SET_VECTOR_ELT(diagnostics, 10, st_genetic_public_text(p, p->reason ? p->reason : "within.limits", np));
+    SET_VECTOR_ELT(diagnostics, 11, st_genetic_public_int(p, evaluated, 1, np));
+    SET_VECTOR_ELT(diagnostics, 12, st_genetic_public_real(p, (double)p->reserve_peak, np));
+    SET_VECTOR_ELT(diagnostics, 13, st_genetic_public_text(p, "Conservative final payload allowance; released at publication and replaced by actual output.bytes.", np));
+    parts->diagnostics = diagnostics;
+    parts->scenarios = p->requested ? st_genetic_scenarios_public(p, np) : R_NilValue;
+    REAL(VECTOR_ELT(diagnostics, 8))[0] = (double)p->output_bytes;
+}
+
+SEXP st_cross_genetic_report(const void *opaque)
+{
+    st_genetic_context *p = (st_genetic_context *)opaque;
+    if (!p) return R_NilValue;
+    int np = 0;
+    const char *names[] = {"selected.contributions", "diagnostics", "scenarios"};
+    st_genetic_public_begin(p);
+    SEXP out = st_genetic_public_list(p, p->requested ? 3 : 2, names, &np);
+    st_genetic_public_parts parts;
+    st_genetic_report_parts(p, &parts, &np);
+    SET_VECTOR_ELT(out, 0, parts.selected);
+    SET_VECTOR_ELT(out, 1, parts.diagnostics);
+    if (p->requested) SET_VECTOR_ELT(out, 2, parts.scenarios);
+    REAL(st_population_get(parts.diagnostics, "output.bytes"))[0] = (double)p->output_bytes;
+    UNPROTECT(np); return out;
+}
+
+static SEXP st_future_public_availability(st_genetic_context *p, SEXP out, SEXP future, int *np)
+{
+    SEXP frame = st_genetic_get(future, "population"), evaluation = st_genetic_get(future, "evaluation"),
+        designs = st_genetic_get(frame, "design"), generations = st_genetic_get(frame, "generation"),
+        metrics = st_genetic_get(frame, "metric"), estimates = st_genetic_get(frame, "estimate"), states = st_genetic_get(frame, "state"),
+        metric_reasons = st_genetic_get(frame, "reason");
+    int available = 0; double value = NA_REAL;
+    const char *reason = st_legacy_marker_string(st_genetic_get(evaluation, "reason"), "future evaluation reason");
+    double completed = asReal(st_genetic_get(evaluation, "completed")), requested = asReal(st_genetic_get(evaluation, "requested"));
+    if (TYPEOF(designs) == STRSXP && TYPEOF(generations) == STRSXP && TYPEOF(metrics) == STRSXP && TYPEOF(estimates) == REALSXP && TYPEOF(states) == INTSXP)
+        for (R_xlen_t i = 0; i < XLENGTH(designs); i++) if (!strcmp(CHAR(STRING_ELT(designs, i)), "selected") &&
+            !strcmp(CHAR(STRING_ELT(generations, i)), "G2") && !strcmp(CHAR(STRING_ELT(metrics, i)), "selected.mean")) {
+            available = completed > 0 && INTEGER(states)[i] == 1 && R_FINITE(REAL(estimates)[i]);
+            if (available) { value = REAL(estimates)[i]; reason = completed < requested ? "available.from.completed.replicate.prefix" : "available"; }
+            else if (TYPEOF(metric_reasons) == STRSXP) reason = CHAR(STRING_ELT(metric_reasons, i));
+            break;
+        }
+    SEXP availability = st_genetic_get(out, "availability");
+    if (!isNull(availability)) {
+        SEXP reasons = st_genetic_get(availability, "reasons");
+        if (!isNull(reasons)) {
+            reasons = st_genetic_public_set(p, reasons, "G2", st_genetic_public_text(p, reason, np), np);
+            availability = st_genetic_public_set(p, availability, "reasons", reasons, np);
+        }
+        availability = st_genetic_public_set(p, availability, "G2", st_genetic_public_int(p, available, 1, np), np);
+        out = st_genetic_public_set(p, out, "availability", availability, np);
+    }
+    SEXP population = st_genetic_get(out, "population");
+    if (!isNull(population) && !isNull(st_genetic_get(population, "future.mean"))) {
+        population = st_genetic_public_set(p, population, "future.mean", st_genetic_public_real(p, value, np), np);
+        out = st_genetic_public_set(p, out, "population", population, np);
+    }
+    return out;
+}
+static SEXP st_genetic_attach_result(SEXP out, void *opaque, SEXP request, int *np)
+{
+    st_genetic_context *p = opaque; if (!p) return out;
+    SEXP normalized = st_allocate_keep(st_cross_genetic_normalized(p), np);
+    st_genetic_public_parts parts;
+    st_genetic_report_parts(p, &parts, np);
+    SEXP diagnostics = st_population_get(out, "diagnostics"), inputs = st_population_get(out, "inputs"), genetic = parts.diagnostics;
+    out = st_genetic_public_set(p, out, "genetic.model", normalized, np);
+    out = st_genetic_public_set(p, out, "selected.contributions", parts.selected, np);
+    SEXP scenarios = parts.scenarios;
+    if (!isNull(scenarios)) out = st_genetic_public_set(p, out, "scenarios", scenarios, np);
+    diagnostics = st_genetic_public_set(p, diagnostics, "genetic", genetic, np);
+    out = st_genetic_public_set(p, out, "diagnostics", diagnostics, np);
+    inputs = st_genetic_public_set(p, inputs, "genetic.model", request, np);
+    out = st_genetic_public_set(p, out, "inputs", inputs, np);
+    SEXP future = st_allocate_keep(st_cross_future_report(st_genetic_future_get(p)), np);
+    if (!isNull(future)) {
+        out = st_genetic_public_set(p, out, "future", future, np);
+        out = st_future_public_availability(p, out, future, np);
+    }
+    REAL(st_population_get(genetic, "output.bytes"))[0] = (double)p->output_bytes;
+    REAL(st_population_get(genetic, "peak.cells"))[0] = (double)ceill((long double)p->peak_bytes / sizeof(double));
+    return out;
+}
+
+
+static double st_genetic_consumer_intensity(void *opaque, int n, int r, int refinement, double *estimated_error)
+{
+    if (n < 1 || r < 1 || r > n || !estimated_error)
+        error("cross planning: invalid genetic intensity request");
+    if (n == r) { *estimated_error = 0; return 0; }
+    if (opaque)
+    {
+        st_allocate_normal_state *state = opaque;
+        double value = st_allocate_normal_estimate(state, n, r, 0, refinement, estimated_error);
+        if (state->failures != 0) *estimated_error = R_PosInf;
+        return value;
+    }
+    *estimated_error = 0;
+    return st_cross_intensity((double)r / n, r, n);
+}
+
+static void *st_genetic_consumer_prepare(SEXP source, SEXP request, void *prepared,
+    const st_population_data *data, SEXP original_ids, const st_practical_set *practical, SEXP K,
+    int **first, int **second)
+{
+    SEXP inherited = st_population_get(source, "genetic.model");
+    if (!prepared && isNull(inherited) && isNull(request)) return NULL;
+    void *context = prepared;
+    if (!context)
+    {
+        int count = 0; const char **ids = NULL; size_t extra_bytes = 0;
+        if (TYPEOF(original_ids) == STRSXP)
+        {
+            if (XLENGTH(original_ids) > INT_MAX) error("cross planning: too many genetic candidate IDs");
+            count = (int)XLENGTH(original_ids);
+            ids = st_work_alloc(count, sizeof(*ids)); extra_bytes = (size_t)count * sizeof(*ids);
+            for (int i = 0; i < count; i++) ids[i] = st_population_id(original_ids, i);
+        }
+        else if (practical) { count = practical->n; ids = practical->ids; }
+        else if (!data->K.n) { count = data->np; ids = data->ids; }
+        else
+        {
+            size_t capacity = (size_t)data->nf * 2;
+            if (capacity > SIZE_MAX / sizeof(*ids)) error("cross planning: genetic candidate workspace overflow");
+            ids = st_work_alloc(capacity, sizeof(*ids)); extra_bytes = capacity * sizeof(*ids);
+            for (int e = 0; e < data->nf; e++)
+            {
+                const char *names[] = {data->ids[data->p1[e]], data->ids[data->p2[e]]};
+                for (int side = 0; side < 2; side++) if (st_allocate_find(names[side], ids, count) < 0)
+                {
+                    if (count == INT_MAX) error("cross planning: too many genetic candidate IDs");
+                    ids[count++] = names[side];
+                }
+            }
+        }
+        context = st_genetic_prepare_ids(inherited, request, count, ids, K);
+        if (extra_bytes) st_genetic_external_bytes(context, extra_bytes);
+    }
+    int count = 0; const char **ids = st_genetic_caller_ids(context, &count);
+    *first = st_genetic_consumer_alloc(context, data->nf, sizeof(int));
+    *second = st_genetic_consumer_alloc(context, data->nf, sizeof(int));
+    for (int e = 0; e < data->nf; e++)
+    {
+        (*first)[e] = st_allocate_find(data->ids[data->p1[e]], ids, count);
+        (*second)[e] = st_allocate_find(data->ids[data->p2[e]], ids, count);
+        if ((*first)[e] < 0 || (*second)[e] < 0) error("cross planning: an actual family uses a noncandidate genetic parent");
+    }
+    return context;
+}
+
+typedef struct {
+    st_genetic_context *genetic;
+    st_practical_set *practical;
+    st_population_matrix K;
+    int *K_map;
+    st_cross_genetic_intensity intensity;
+    void *count_context, *diversity;
+    int families, family_contributions, family_theta, has_theta, has_diversity, state;
+    int64_t produced, retained;
+    double theta, diversity_max, tolerance;
+    double *lower, *upper, *fixed, *share;
+    int64_t *degree_lower, *degree_upper, *uses, *retained_uses;
+    unsigned char *allowed;
+    int *nmin, *nmax, *rmin, *rmax;
+    size_t direction_capacity;
+    int *direction_seed, *direction_pollen;
+} st_future_consumer_scope;
+static int st_future_scope_relatedness(const st_future_consumer_scope *p, int families, int64_t retained)
+{
+    const st_genetic_context *g = p->genetic;
+    int n = g->caller_n;
+    const int64_t *counts = p->family_theta ? p->uses : p->retained_uses;
+    long double denominator = 2 * (p->family_theta ? (long double)families : (long double)retained);
+    if (!p->K.n || !p->K_map || denominator <= 0) return -2;
+    long double square = denominator * denominator, numerator = 0, absolute = 0, maximum_row_residual = 0;
+    double active_maximum = 0;
+    for (int i = 0; i < n; i++) if (counts[i])
+        for (int j = 0; j < n; j++) if (counts[j])
+        {
+            int a = p->K_map[g->caller_map[i]], b = p->K_map[g->caller_map[j]];
+            active_maximum = fmax(active_maximum, fabs(p->K.value[a + (size_t)p->K.n * b]));
+        }
+    int integer_product = active_maximum <= LDBL_MAX / square;
+    for (int i = 0; i < n; i++)
+    {
+        int a = p->K_map[g->caller_map[i]];
+        if (p->theta == 0)
+        {
+            double scale = 0;
+            for (int j = 0; j < n; j++)
+            {
+                int b = p->K_map[g->caller_map[j]];
+                scale = fmax(scale, fabs(p->K.value[a + (size_t)p->K.n * b]));
+            }
+            if (scale)
+            {
+                long double value = 0, norm = 0;
+                for (int j = 0; j < n; j++)
+                {
+                    int b = p->K_map[g->caller_map[j]];
+                    long double x = (long double)p->K.value[a + (size_t)p->K.n * b] / scale;
+                    value += x * counts[j]; norm += x * x;
+                }
+                maximum_row_residual = fmaxl(maximum_row_residual, fabsl(value) / (denominator * sqrtl(norm)));
+            }
+        }
+        if (!counts[i]) continue;
+        for (int j = 0; j < n; j++) if (counts[j])
+        {
+            int b = p->K_map[g->caller_map[j]];
+            long double value = p->K.value[a + (size_t)p->K.n * b];
+            if (integer_product) value *= (long double)counts[i] * counts[j];
+            else value *= ((long double)counts[i] / denominator) * ((long double)counts[j] / denominator);
+            numerator += value; absolute += fabsl(value);
+        }
+    }
+    if (integer_product) { numerator /= square; absolute /= square; }
+    long double operations = 3 * (long double)n * n + 8;
+    if (!isfinite(numerator) || !isfinite(absolute) || operations * LDBL_EPSILON >= .5) return 0;
+    long double gamma = operations * LDBL_EPSILON / (1 - operations * LDBL_EPSILON),
+        error = gamma * absolute + operations * nextafterl(0.0L, 1.0L),
+        allowance = p->tolerance * fmaxl(fabsl(p->theta), absolute);
+    if (!isfinite(error)) return 0;
+    if (p->theta == 0 && maximum_row_residual > 128 * DBL_EPSILON * n) return -1;
+    if (active_maximum == 0) return p->theta >= 0 ? 1 : -1;
+    long double limit = (long double)p->theta + allowance;
+    if (nextafterl(numerator + error, INFINITY) <= limit) return 1;
+    if (nextafterl(numerator - error, -INFINITY) > limit) return -1;
+    return 0;
+}
+
+static int st_future_scope_bound(st_future_consumer_scope *p, const st_cross_future_design *d, int mandatory)
+{
+    if (!p || !d || d->families != p->families) return -1;
+    st_genetic_context *g = p->genetic; int n = g->caller_n, state = p->state;
+    memset(p->uses, 0, (size_t)n * sizeof(int64_t)); memset(p->retained_uses, 0, (size_t)n * sizeof(int64_t));
+    int64_t total_n = 0, total_r = 0;
+    for (int e = 0; e < d->families; e++) {
+        int a = d->first[e], b = d->second[e];
+        if (a < 0 || b < 0 || a >= n || b >= n || a == b || d->produced[e] < 1 || d->produced[e] > INT_MAX ||
+            d->retained[e] < 0 || d->retained[e] > d->produced[e]) return -1;
+        size_t at = (size_t)a * n + b;
+        if (!p->allowed[at] || d->produced[e] < p->nmin[at] || d->produced[e] > p->nmax[at] ||
+            d->retained[e] < p->rmin[at] || d->retained[e] > p->rmax[at]) return -1;
+        if (d->produced[e] > INT64_C(9007199254740991) - total_n || d->retained[e] > INT64_C(9007199254740991) - total_r) return -1;
+        total_n += d->produced[e]; total_r += d->retained[e];
+        p->uses[a]++; p->uses[b]++; p->retained_uses[a] += d->retained[e]; p->retained_uses[b] += d->retained[e];
+    }
+    if ((p->produced >= 0 && total_n != p->produced) || (p->retained >= 0 && total_r != p->retained)) return -1;
+    for (int i = 0; i < n; i++) {
+        p->share[i] = p->family_contributions ? (double)((long double)p->uses[i] / (2 * (long double)d->families)) :
+            total_r ? (double)((long double)p->retained_uses[i] / (2 * (long double)total_r)) : NA_REAL;
+        if (p->uses[i] < p->degree_lower[i] || p->uses[i] > p->degree_upper[i] ||
+            p->share[i] < p->lower[i] - p->tolerance || p->share[i] > p->upper[i] + p->tolerance ||
+            (!ISNA(p->fixed[i]) && fabs(p->share[i] - p->fixed[i]) > p->tolerance)) return -1;
+    }
+    if (p->has_theta)
+    {
+        int relation = st_future_scope_relatedness(p, d->families, total_r);
+        if (relation == -1) return -1;
+        if (relation != 1) state = relation == -2 || state == -2 ? -2 : 0;
+    }
+    if (p->has_diversity && !(st_cross_propsd_eval64(p->diversity, p->uses) < p->diversity_max)) return -1;
+    if (p->practical) {
+        const st_cross_future_operations *op = d->operation_view;
+        int rows = op ? op->rows : d->families, direction = op ? op->direction_known : 0;
+        const int *seed = op ? op->seed : d->first, *pollen = op ? op->pollen : d->second;
+        const int64_t *produced = op ? op->produced : d->produced, *retained = op ? op->retained : d->retained,
+            *operations = op && op->operations_known ? op->operations : NULL;
+        if (rows < 0) return -1;
+        if ((size_t)rows > p->direction_capacity)
+        {
+            int *sa = st_cross_genetic_scratch(g, (size_t)rows, sizeof(int));
+            int *sb = st_cross_genetic_scratch(g, (size_t)rows, sizeof(int));
+            if (!sa || !sb) return -2;
+            p->direction_seed = sa; p->direction_pollen = sb; p->direction_capacity = (size_t)rows;
+        }
+        for (int j = 0; j < p->practical->count; j++) {
+            st_practical *context = p->practical->contexts[j];
+            int *sa = p->direction_seed, *sb = p->direction_pollen;
+            for (int i = 0; i < rows; i++) {
+                if (seed[i] < 0 || pollen[i] < 0 || seed[i] >= n || pollen[i] >= n) return -1;
+                sa[i] = st_allocate_find(g->caller_ids[seed[i]], context->ids, context->n);
+                sb[i] = st_allocate_find(g->caller_ids[pollen[i]], context->ids, context->n);
+                if (sa[i] < 0 || sb[i] < 0) return -1;
+            }
+            int result = st_cross_practical_check(context, rows, sa, sb, op ? op->family_hint : NULL,
+                produced, retained, operations, direction);
+            if (result == -1) return -1;
+            if (result != 1) state = result == -2 || state == -2 ? -2 : 0;
+        }
+    }
+    if (p->intensity) {
+        int previous = g->mandatory; g->mandatory = mandatory != 0;
+        int result = st_cross_genetic_check(g, d->families, d->first, d->second, d->produced, d->retained,
+            d->accuracy, p->intensity, p->count_context);
+        g->mandatory = previous;
+        if (result == -1) return -1;
+        if (result != 1) state = result == -2 || state == -2 ? -2 : 0;
+    }
+    return state;
+}
+static int st_future_consumer_check(void *opaque, const st_cross_future_design *d, int mandatory)
+{ return st_future_scope_bound(opaque, d, mandatory); }
+static st_future_consumer_scope *st_future_scope_prepare(st_genetic_context *g, SEXP source,
+    st_practical_set *practical, st_cross_genetic_intensity intensity, void *count_context,
+    const st_cross_future_design *current)
+{
+    st_future_consumer_scope *p = st_genetic_alloc(g, 1, sizeof(*p)); memset(p, 0, sizeof(*p));
+    p->genetic = g; p->practical = practical; p->intensity = intensity; p->count_context = count_context;
+    p->families = current->families; p->produced = p->retained = -1; p->tolerance = 1e-10; p->state = 1;
+    int allocation = inherits(source, "st.cross.allocation"), plan = inherits(source, "st.cross.plan");
+    SEXP original = plan ? source : allocation ? st_genetic_get(st_genetic_get(source, "inputs"), "plan") : R_NilValue;
+    if (!inherits(original, "st.cross.plan")) original = R_NilValue;
+    SEXP constraints = st_genetic_get(original, "constraints"), direct = st_genetic_get(source, "constraints"),
+        inputs = st_genetic_get(original, "inputs"), ids = st_genetic_get(st_genetic_get(original, "parents"), "parent");
+    SEXP tolerance = st_genetic_get(st_genetic_get(original, "control"), "tolerance");
+    if (!isNull(tolerance))
+    {
+        p->tolerance = st_genetic_number(tolerance, "source tolerance");
+        if (p->tolerance <= 0 || p->tolerance >= 1) error("future: source tolerance must lie strictly between zero and one");
+    }
+    p->K = g->K; p->K_map = g->K_map;
+    SEXP old_matrix = st_genetic_get(inputs, "K");
+    if (!isNull(old_matrix) && old_matrix != g->K.original) {
+        st_population_matrix saved = g->K; int *saved_map = g->K_map;
+        memset(&g->K, 0, sizeof(g->K)); g->K_map = NULL;
+        st_genetic_matrix(g, old_matrix); p->K = g->K; p->K_map = g->K_map;
+        g->K = saved; g->K_map = saved_map;
+    }
+    p->family_contributions = !allocation; p->family_theta = !allocation;
+    SEXP basis = st_genetic_get(constraints, "contribution.basis");
+    if (!isNull(basis)) p->family_contributions = !strcmp(st_legacy_marker_string(basis, "contribution basis"), "family.slots");
+    basis = st_genetic_get(constraints, "theta.basis");
+    if (!isNull(basis)) p->family_theta = !strcmp(st_legacy_marker_string(basis, "theta basis"), "family.slots");
+    int n = g->caller_n;
+    if (n < 1 || (size_t)n > SIZE_MAX / (size_t)n) error("future: source pair table size overflow");
+    size_t pairs = (size_t)n * n;
+    if (!st_genetic_charge(g, 1, (uint64_t)pairs + (uint64_t)n * 12 + (uint64_t)current->families * 4))
+        error("genetic.model$future: resource.limit (source constraint preparation)");
+    p->lower = st_genetic_alloc(g, n, sizeof(double)); p->upper = st_genetic_alloc(g, n, sizeof(double));
+    p->fixed = st_genetic_alloc(g, n, sizeof(double)); p->share = st_genetic_alloc(g, n, sizeof(double));
+    p->degree_lower = st_genetic_alloc(g, n, sizeof(int64_t)); p->degree_upper = st_genetic_alloc(g, n, sizeof(int64_t));
+    p->uses = st_genetic_alloc(g, n, sizeof(int64_t)); p->retained_uses = st_genetic_alloc(g, n, sizeof(int64_t));
+    p->allowed = st_genetic_alloc(g, pairs, 1); p->nmin = st_genetic_alloc(g, pairs, sizeof(int)); p->nmax = st_genetic_alloc(g, pairs, sizeof(int));
+    p->rmin = st_genetic_alloc(g, pairs, sizeof(int)); p->rmax = st_genetic_alloc(g, pairs, sizeof(int));
+    for (int i = 0; i < n; i++) {
+        p->lower[i] = 0; p->upper[i] = 1; p->fixed[i] = NA_REAL; p->degree_lower[i] = 0; p->degree_upper[i] = INT_MAX;
+        const char *fields[] = {"lower", "upper", "degree.lower", "degree.upper", "requested.contributions"};
+        for (int j = 0; j < 5; j++) {
+            SEXP bound = st_genetic_get(constraints, fields[j]);
+            if (isNull(bound)) continue;
+            double value = st_population_parent_limit(bound, g->caller_ids[i], ids, i, n, fields[j]);
+            if (j == 2 || j == 3)
+            {
+                if (value < 0 || value > INT_MAX || value != floor(value))
+                    error("future: source parent-use bounds need supported whole counts");
+                if (j == 2) p->degree_lower[i] = (int64_t)value;
+                else p->degree_upper[i] = (int64_t)value;
+            }
+            else
+            {
+                if (value < 0 || value > 1) error("future: source contributions must lie between zero and one");
+                if (j == 0) p->lower[i] = value;
+                else if (j == 1) p->upper[i] = value;
+                else p->fixed[i] = value;
+            }
+        }
+    }
+    SEXP declared_families = st_genetic_get(direct, allocation ? "n.families" : "n.crosses");
+    if (!isNull(declared_families)) p->families = (int)st_future_count(declared_families, "source family count", 1, INT_MAX);
+    const char **unsupported = st_genetic_alloc(g, (isNull(constraints) ? 0 : (size_t)XLENGTH(constraints)) + (isNull(direct) ? 0 : (size_t)XLENGTH(direct)) + 1, sizeof(char *));
+    int unsupported_count = 0;
+    if (st_population_known_constraints(constraints, 0, unsupported, &unsupported_count) ||
+        (allocation && st_population_known_constraints(direct, 1, unsupported, &unsupported_count))) p->state = -2;
+    st_population_progeny_contract pc = st_population_progeny_contract_get(constraints);
+    st_population_variable_contract vc = st_population_variable_contract_get(constraints, &pc);
+    for (int i = 0; i < n; i++) for (int j = 0; j < n; j++) {
+        size_t at = (size_t)i * n + j; p->allowed[at] = i != j;
+        p->nmin[at] = plan && pc.active ? pc.lower : 1; p->nmax[at] = plan && pc.active ? pc.upper : INT_MAX;
+        p->rmin[at] = plan && pc.active && !vc.active ? pc.retained : 0; p->rmax[at] = plan && pc.active && !vc.active ? pc.retained : INT_MAX;
+        if (plan && vc.active && i != j) {
+            int row = st_population_variable_row(&vc, g->caller_ids[i], g->caller_ids[j]);
+            if (row < 0) p->allowed[at] = 0;
+            else {
+                p->nmin[at] = st_population_variable_count(vc.columns[0], row, "min.progeny", 1);
+                p->nmax[at] = st_population_variable_count(vc.columns[1], row, "max.progeny", 1);
+                p->rmin[at] = st_population_variable_count(vc.columns[2], row, "min.selected", 0);
+                p->rmax[at] = st_population_variable_count(vc.columns[3], row, "max.selected", 0);
+            }
+        }
+    }
+    SEXP equal_n = st_genetic_get(constraints, "n.progeny");
+    if (plan && !pc.active && !isNull(equal_n)) {
+        int value = (int)st_future_count(equal_n, "source n.progeny", 1, INT_MAX);
+        for (size_t i = 0; i < pairs; i++) p->nmin[i] = p->nmax[i] = value;
+    }
+    SEXP total = st_genetic_get(direct, "total.progeny");
+    if (!isNull(total)) p->produced = st_future_count(total, "source total.progeny", 0, INT64_C(9007199254740991));
+    total = st_genetic_get(direct, "total.selected");
+    if (!isNull(total)) p->retained = st_future_count(total, "source total.selected", 0, INT64_C(9007199254740991));
+    if (plan && pc.active) { p->families = pc.families; p->produced = pc.budget; p->retained = vc.active ? vc.total : (int64_t)pc.families * pc.retained; }
+    SEXP theta = st_genetic_get(constraints, "theta");
+    if (!isNull(theta)) { p->has_theta = 1; p->theta = st_genetic_number(theta, "source theta"); }
+    if (allocation) {
+        memset(p->allowed, 0, pairs);
+        for (int e = 0; e < current->families; e++) {
+            int a = current->first[e], b = current->second[e];
+            if (current->retained[e] < 0 || current->retained[e] > INT_MAX)
+                error("future: source family retention exceeds supported count range");
+            p->allowed[(size_t)a * n + b] = p->allowed[(size_t)b * n + a] = 1;
+            p->rmin[(size_t)a * n + b] = p->rmax[(size_t)a * n + b] = (int)current->retained[e];
+            p->rmin[(size_t)b * n + a] = p->rmax[(size_t)b * n + a] = (int)current->retained[e];
+        }
+        SEXP table = st_genetic_get(source, "crosses"), lower = st_genetic_get(table, "min.progeny"), upper = st_genetic_get(table, "max.progeny");
+        if (st_allocate_numeric(lower) && st_allocate_numeric(upper) && XLENGTH(lower) == current->families && XLENGTH(upper) == current->families)
+            for (int e = 0; e < current->families; e++) {
+                int a = current->first[e], b = current->second[e];
+                int L = st_population_variable_count(lower, e, "source min.progeny", 1);
+                int U = st_population_variable_count(upper, e, "source max.progeny", 1);
+                if (L > U) error("future: inconsistent source progeny bounds");
+                p->nmin[(size_t)a * n + b] = p->nmin[(size_t)b * n + a] = L;
+                p->nmax[(size_t)a * n + b] = p->nmax[(size_t)b * n + a] = U;
+            }
+    }
+    SEXP allowed = st_genetic_get(inputs, "pairs");
+    if (!isNull(allowed)) {
+        unsigned char *fixed_allowed = NULL;
+        if (allocation) { fixed_allowed = st_genetic_alloc(g, pairs, 1); memcpy(fixed_allowed, p->allowed, pairs); }
+        memset(p->allowed, 0, pairs); SEXP a = R_NilValue, b = R_NilValue; int rows = 0, matrix = 0;
+        SEXP dimensions = getAttrib(allowed, R_DimSymbol);
+        if (TYPEOF(allowed) == STRSXP && TYPEOF(dimensions) == INTSXP && XLENGTH(dimensions) == 2 && INTEGER(dimensions)[1] == 2) {
+            a = b = allowed; rows = INTEGER(dimensions)[0]; matrix = 1;
+        } else if (TYPEOF(allowed) == VECSXP && inherits(allowed, "data.frame") && XLENGTH(allowed) == 2) {
+            a = VECTOR_ELT(allowed, 0); b = VECTOR_ELT(allowed, 1);
+            if (XLENGTH(a) > INT_MAX) error("future: source allowed pairs exceed supported row count");
+            rows = (int)XLENGTH(a);
+        }
+        if (TYPEOF(a) != STRSXP || TYPEOF(b) != STRSXP || rows < 0 ||
+            (!matrix && XLENGTH(b) != rows)) p->state = -2;
+        else for (int row = 0; row < rows; row++) {
+            int i = st_future_parent(g, a, row), j = st_future_parent(g, b, matrix ? row + rows : row);
+            if (i >= 0 && j >= 0) p->allowed[(size_t)i * n + j] = p->allowed[(size_t)j * n + i] = 1;
+        }
+        if (fixed_allowed) for (size_t i = 0; i < pairs; i++) p->allowed[i] = p->allowed[i] && fixed_allowed[i];
+    }
+    SEXP dc = st_genetic_get(constraints, "diversity"), diversity = st_genetic_get(inputs, "diversity");
+    if (!isNull(dc)) {
+        if (isNull(diversity) || isNull(st_genetic_get(diversity, "G"))) p->state = -2;
+        else { p->has_diversity = 1; p->diversity_max = st_genetic_number(st_genetic_get(dc, "max"), "diversity max");
+            p->diversity = st_cross_propsd_prepare64(st_genetic_get(diversity, "G"), n, g->caller_ids); }
+    }
+    return p;
+}
+static int st_future_own_source_check(st_future_context *f, st_future_comparator *c)
+{
+    st_genetic_context *g = f->genetic;
+    if (!c->scope) {
+        st_practical_set *practical = NULL;
+        SEXP inherited = st_practical_inherited(c->source);
+        if (!isNull(inherited)) {
+            st_population_data data; memset(&data, 0, sizeof(data));
+            data.nf = c->design.families; data.nr = c->operations.rows; data.np = g->caller_n; data.ids = g->caller_ids;
+            data.p1 = (int *)c->design.first; data.p2 = (int *)c->design.second;
+            data.produced = st_genetic_alloc(g, data.nf, sizeof(int)); data.retained = st_genetic_alloc(g, data.nf, sizeof(int));
+            for (int e = 0; e < data.nf; e++) {
+                if (c->design.produced[e] > INT_MAX || c->design.retained[e] > INT_MAX) return -2;
+                data.produced[e] = (int)c->design.produced[e]; data.retained[e] = (int)c->design.retained[e];
+            }
+            SEXP original = inherits(c->source, "st.cross.plan") ? c->source : st_genetic_get(st_genetic_get(c->source, "inputs"), "plan"),
+                ids = st_genetic_get(st_genetic_get(original, "parents"), "parent"), table = st_genetic_get(c->source, "crosses");
+            SEXP old_matrix = st_genetic_get(st_genetic_get(original, "inputs"), "K");
+            practical = st_practical_set_prepare(c->source, R_NilValue, ids, isNull(old_matrix) ? g->K.original : old_matrix, table,
+                st_genetic_get(table, "n.selected"), &data, 0);
+            st_genetic_external_bytes(g, (size_t)ceill(st_practical_set_cells(practical) * sizeof(double)));
+            if (practical) {
+                st_cross_future_operations *op = &c->operations;
+                int *seed = st_genetic_alloc(g, practical->nrows, sizeof(int)), *pollen = st_genetic_alloc(g, practical->nrows, sizeof(int));
+                for (int i = 0; i < practical->nrows; i++) {
+                    seed[i] = st_allocate_find(practical->ids[practical->seed[i]], g->caller_ids, g->caller_n);
+                    pollen[i] = st_allocate_find(practical->ids[practical->pollen[i]], g->caller_ids, g->caller_n);
+                }
+                op->rows = practical->nrows; op->direction_known = practical->direction_known; op->operations_known = practical->operations_known;
+                op->seed = seed; op->pollen = pollen; op->family_hint = practical->family;
+                op->produced = practical->produced; op->retained = practical->retained; op->operations = practical->operations;
+            }
+        }
+        c->scope = st_future_scope_prepare(g, c->source, practical, NULL, NULL, &c->design);
+    }
+    return st_future_scope_bound(c->scope, &c->design, 1);
+}
+static int st_future_own_source_cap_check(st_future_context *f, st_future_comparator *c)
+{
+    st_genetic_context *g = f->genetic;
+    SEXP oldcap = st_genetic_get(st_genetic_get(c->source, "genetic.model"), "cap");
+    if (isNull(oldcap)) return 1;
+    if (!f->intensity) return -2;
+    st_population_matrix original_K = g->K; int *original_map = g->K_map;
+    if (!c->source_cap_prepared) {
+        c->source_cap_prepared = 1; c->source_cap_state = 1;
+        SEXP matrix = st_genetic_get(oldcap, "K");
+        if (isNull(matrix)) return c->source_cap_state = -2;
+        memset(&g->K, 0, sizeof(g->K)); g->K_map = NULL;
+        st_genetic_matrix(g, matrix); c->source_K = g->K; c->source_K_map = g->K_map;
+        g->K = original_K; g->K_map = original_map;
+        if (original_K.n) for (int j = 0; j < g->view.parents; j++) for (int i = 0; i < g->view.parents; i++)
+            if (original_K.value[original_map[i] + (size_t)original_K.n * original_map[j]] !=
+                c->source_K.value[c->source_K_map[i] + (size_t)c->source_K.n * c->source_K_map[j]]) c->source_cap_state = -2;
+    }
+    if (c->source_cap_state != 1) return c->source_cap_state;
+    int active = g->cap_active, mandatory = g->mandatory; double theta = g->cap;
+    g->K = c->source_K; g->K_map = c->source_K_map; g->cap_active = 1;
+    g->cap = st_genetic_number(st_genetic_get(oldcap, "theta"), "comparator founder cap"); g->mandatory = 1;
+    int state = st_genetic_check_impl(g, c->design.families, c->design.first, c->design.second, c->design.produced,
+        c->design.retained, c->design.accuracy, f->intensity, f->count_context);
+    g->K = original_K; g->K_map = original_map; g->cap_active = active; g->cap = theta; g->mandatory = mandatory;
+    return state;
+}
+static void st_future_consumer_assess(st_genetic_context *g, SEXP source, st_practical_set *practical,
+    st_cross_genetic_intensity intensity, void *count_context, int nf, const int *first, const int *second,
+    const int *produced, const int *retained, const double *accuracy)
+{
+    st_future_context *f = st_genetic_future_get(g);
+    if (!f || !f->active || f->final_ran) return;
+    int64_t *n = st_genetic_alloc(g, nf, sizeof(int64_t)), *r = st_genetic_alloc(g, nf, sizeof(int64_t));
+    int64_t ntotal = 0, rtotal = 0;
+    for (int e = 0; e < nf; e++) { n[e] = produced[e]; r[e] = retained[e]; ntotal += n[e]; rtotal += r[e]; }
+    st_cross_future_operations operations; memset(&operations, 0, sizeof(operations));
+    int *seed = NULL, *pollen = NULL;
+    if (practical) {
+        seed = st_genetic_alloc(g, practical->nrows, sizeof(int)); pollen = st_genetic_alloc(g, practical->nrows, sizeof(int));
+        for (int i = 0; i < practical->nrows; i++) {
+            seed[i] = st_allocate_find(practical->ids[practical->seed[i]], g->caller_ids, g->caller_n);
+            pollen[i] = st_allocate_find(practical->ids[practical->pollen[i]], g->caller_ids, g->caller_n);
+        }
+        operations.rows = practical->nrows; operations.direction_known = practical->direction_known; operations.operations_known = practical->operations_known;
+        operations.seed = seed; operations.pollen = pollen; operations.family_hint = practical->family;
+        operations.produced = practical->produced; operations.retained = practical->retained; operations.operations = practical->operations;
+    }
+    st_cross_future_design design = {nf, first, second, n, r, accuracy, practical ? &operations : NULL};
+    st_future_consumer_scope *scope = st_future_scope_prepare(g, source, practical, intensity, count_context, &design);
+    st_cross_future_contract contract = {nf, 1, 0, ntotal, rtotal, st_future_consumer_check, scope};
+    st_cross_future_bind(f, &contract);
+    st_cross_future_kernel_set(f, intensity, count_context);
+    const char *name = "selected"; st_cross_future_final(f, 1, &design, &name);
+    int previous = g->mandatory; g->mandatory = 1;
+    st_genetic_check_impl(g, nf, first, second, n, r, accuracy, intensity, count_context);
+    g->mandatory = previous;
+    if (practical) st_practical_set_check(practical);
+}
+
+typedef struct
+{
+    st_practical_set *practical;
+    void *genetic, *count_context;
+    int nf;
+    const int *first, *second, *retained;
+    const double *accuracy;
+} st_genetic_allocation_context;
+
+static int st_genetic_allocation_check(int nf, const int *produced, void *opaque)
+{
+    st_genetic_allocation_context *p = opaque;
+    if (!p || nf != p->nf) error("cross planning: invalid joint allocation check context");
+    int practical = p->practical ? st_practical_allocation_check(nf, produced, p->practical) : 1;
+    if (practical == -1) return -1;
+    int genetic = st_genetic_check_int(p->genetic, nf, p->first, p->second, produced, p->retained,
+        p->accuracy, st_genetic_consumer_intensity, p->count_context, 0);
+    if (genetic == -1) return -1;
+    if (practical == -2 || genetic == -2) return -2;
+    if (practical == 0 || genetic == 0) return 0;
+    return 1;
+}
+
+static int st_genetic_allocation_limited(void *opaque)
+{
+    const st_genetic_allocation_context *p = opaque;
+    return p && st_cross_genetic_limited(p->genetic);
+}
+
 static SEXP st_legacy_cross_allocate(SEXP args)
 {
+    int np = 0;
     SEXP plan = getListElement(args, "plan"), scores = getListElement(args, "scores"),
          control = getListElement(args, "control");
+    SEXP method_arg = getListElement(args, "selection.method");
+    const char *selection_method = isNull(method_arg) ? "burrows" :
+        st_legacy_marker_string(method_arg, "selection.method");
+    int normal_mode = !strcmp(selection_method, "order.statistics"), requested_algorithm = 0;
+    if (!normal_mode && strcmp(selection_method, "burrows"))
+        error("st.cross.allocate: selection.method must be burrows or order.statistics");
+    SEXP practical_arg = getListElement(args, "constraints"), genetic_request = getListElement(args, "genetic.model");
+    int genetic_active = !isNull(genetic_request) || !isNull(st_population_get(plan, "genetic.model"));
+    int practical_active = !isNull(practical_arg) || !isNull(st_practical_inherited(plan));
     int inherited = inherits(plan, "st.cross.plan");
     SEXP table = inherited ? getListElement(plan, "crosses") : plan;
     if (!inherits(table, "data.frame"))
@@ -25564,10 +34536,19 @@ static SEXP st_legacy_cross_allocate(SEXP args)
         if (STRING_ELT(cnames, i) == NA_STRING) error("st.cross.allocate: missing control name");
         const char *name = CHAR(STRING_ELT(cnames, i));
         int key = !strcmp(name, "max.cells") ? 0 : !strcmp(name, "max.transitions") ? 1 :
-            !strcmp(name, "tolerance") ? 2 : -1;
+            !strcmp(name, "tolerance") ? 2 : normal_mode && !strcmp(name, "algorithm") ? 3 : -1;
         if (key < 0 || (seen & (1u << key)))
             error("st.cross.allocate: unknown or repeated control '%s'", name);
         seen |= 1u << key;
+        if (key == 3)
+        {
+            const char *algorithm = st_legacy_marker_string(VECTOR_ELT(control, i), "algorithm");
+            requested_algorithm = !strcmp(algorithm, "auto") ? 0 : !strcmp(algorithm, "greedy") ? 1 :
+                !strcmp(algorithm, "dp") ? 2 : -1;
+            if (requested_algorithm < 0)
+                error("st.cross.allocate: algorithm must be auto, greedy or dp");
+            continue;
+        }
         if (!st_allocate_numeric(VECTOR_ELT(control, i)))
             error("st.cross.allocate: control values must be numeric scalars");
         double x = st_cross_scalar(VECTOR_ELT(control, i), name);
@@ -25591,6 +34572,11 @@ static SEXP st_legacy_cross_allocate(SEXP args)
     SEXP inputs = inherited ? getListElement(plan, "inputs") : R_NilValue,
          matrix = inherited ? getListElement(inputs, "K") : R_NilValue,
          constraints_in = inherited ? getListElement(plan, "constraints") : R_NilValue;
+    st_population_progeny_contract source_progeny = st_population_progeny_contract_get(constraints_in);
+    st_population_variable_contract source_variable = st_population_variable_contract_get(constraints_in, &source_progeny);
+    int source_family_contributions = st_population_constraint_family(constraints_in, "contribution.basis", 0, source_progeny.active),
+        source_family_theta = st_population_constraint_family(constraints_in, "theta.basis", 0, source_progeny.active),
+        identified_active = practical_active || source_progeny.active || genetic_active;
     if (inherited)
     {
         SEXP parent_names = getListElement(getListElement(plan, "parents"), "parent");
@@ -25606,6 +34592,22 @@ static SEXP st_legacy_cross_allocate(SEXP args)
         }
     }
     else ids = st_work_alloc((size_t)nr * 2, sizeof(*ids));
+    SEXP original_ids = inherited ? getListElement(getListElement(plan, "parents"), "parent") : R_NilValue;
+    st_population_matrix practical_matrix; memset(&practical_matrix, 0, sizeof(practical_matrix));
+    double *identified_K = NULL, inherited_work_cells = 0;
+    if (identified_active && inherited)
+    {
+        st_practical_identified_matrix(&practical_matrix, matrix, original_ids, 1);
+        identified_K = st_work_alloc((size_t)nparents * nparents, sizeof(double));
+        int *index = st_work_alloc(nparents, sizeof(int));
+        for (int i = 0; i < nparents; i++)
+        {
+            index[i] = st_allocate_find(ids[i], practical_matrix.ids, practical_matrix.n);
+            if (index[i] < 0) error("st.cross.allocate: full inherited K omits a candidate parent");
+        }
+        for (int j = 0; j < nparents; j++) for (int i = 0; i < nparents; i++)
+            identified_K[i + (size_t)nparents * j] = practical_matrix.value[index[i] + (size_t)practical_matrix.n * index[j]];
+    }
     int nf = 0;
     for (int i = 0; i < nr; i++)
     {
@@ -25686,9 +34688,34 @@ static SEXP st_legacy_cross_allocate(SEXP args)
         double c = retained[e] / (2.0 * sum_retained);
         cret[p1[e]] += c; cret[p2[e]] += c;
     }
+    st_population_variable_keys_check(&source_variable, plan, original_ids);
     double qret = NA_REAL, qprod = NA_REAL;
+    int *family_degrees = NULL;
+    double *family_contributions = NULL;
+    if (source_family_contributions || source_family_theta || source_progeny.active)
+    {
+        family_degrees = st_work_alloc(nparents, sizeof(int)); memset(family_degrees, 0, (size_t)nparents * sizeof(int));
+        family_contributions = st_work_alloc(nparents, sizeof(double));
+        for (int e = 0; e < nf; e++) { family_degrees[p1[e]]++; family_degrees[p2[e]]++; }
+        for (int i = 0; i < nparents; i++) family_contributions[i] = family_degrees[i] / (2.0 * nf);
+        if (source_progeny.active)
+        {
+            SEXP degree_lower = st_population_get(constraints_in, "degree.lower"),
+                degree_upper = st_population_get(constraints_in, "degree.upper"), allowed = st_population_get(inputs, "pairs");
+            for (int i = 0; i < nparents; i++)
+            {
+                if ((!isNull(degree_lower) && family_degrees[i] < st_population_parent_limit(degree_lower, ids[i], original_ids, i, nparents, "degree.lower")) ||
+                    (!isNull(degree_upper) && family_degrees[i] > st_population_parent_limit(degree_upper, ids[i], original_ids, i, nparents, "degree.upper")))
+                    error("st.cross.allocate: actual fixed families violate inherited parent-use bounds");
+            }
+            for (int e = 0; e < nf; e++) if (!st_population_pair_allowed(allowed, ids[p1[e]], ids[p2[e]]))
+                error("st.cross.allocate: an actual fixed family violates inherited allowed pairs");
+        }
+    }
     if (inherited)
     {
+        if (!identified_active)
+        {
         SEXP dim = getAttrib(matrix, R_DimSymbol);
         if ((TYPEOF(matrix) != REALSXP && TYPEOF(matrix) != INTSXP) || TYPEOF(dim) != INTSXP ||
             XLENGTH(dim) != 2 || INTEGER(dim)[0] != nparents || INTEGER(dim)[1] != nparents)
@@ -25708,19 +34735,20 @@ static SEXP st_legacy_cross_allocate(SEXP args)
                         error("st.cross.allocate: inherited K names must agree with the parental order");
             }
         }
+        }
         if ((size_t)nparents > SIZE_MAX / (size_t)nparents / sizeof(double))
             error("st.cross.allocate: inherited K exceeds the supported workspace size");
         double *copy = st_work_alloc((size_t)nparents * nparents, sizeof(double)), scale = 0;
         for (size_t i = 0; i < (size_t)nparents * nparents; i++)
         {
-            double x = st_legacy_marker_number(matrix, i);
+            double x = st_practical_matrix_number(matrix, identified_K, i);
             if (!R_FINITE(x)) error("st.cross.allocate: inherited K must be finite");
             scale = fmax(scale, fabs(x));
         }
         for (int i = 0; i < nparents; i++) for (int j = 0; j < nparents; j++)
         {
-            double x = scale ? st_legacy_marker_number(matrix, i + (size_t)nparents * j) / scale : 0,
-                   y = scale ? st_legacy_marker_number(matrix, j + (size_t)nparents * i) / scale : 0;
+            double x = scale ? st_practical_matrix_number(matrix, identified_K, i + (size_t)nparents * j) / scale : 0,
+                   y = scale ? st_practical_matrix_number(matrix, identified_K, j + (size_t)nparents * i) / scale : 0;
             if (fabs(x - y) > 256 * DBL_EPSILON * nparents)
                 error("st.cross.allocate: inherited K must be symmetric");
             copy[i + (size_t)nparents * j] = x * .5 + y * .5;
@@ -25732,6 +34760,7 @@ static SEXP st_legacy_cross_allocate(SEXP args)
             error("st.cross.allocate: inherited K eigendecomposition failed");
         lwork = (int)query;
         double *work = st_work_alloc(lwork, sizeof(double));
+        if (identified_active) inherited_work_cells = (double)nparents * nparents + nparents + lwork;
         F77_CALL(dsyev)("N", "U", &nparents, copy, &nparents, eigen, work, &lwork, &info FCONE FCONE);
         if (info || eigen[0] < -256 * DBL_EPSILON * nparents * fmax(1, eigen[nparents - 1]))
             error("st.cross.allocate: inherited K must be positive semidefinite");
@@ -25744,11 +34773,14 @@ static SEXP st_legacy_cross_allocate(SEXP args)
             double l = st_legacy_marker_number(lo, i), u = st_legacy_marker_number(hi, i);
             if (!R_FINITE(l) || !R_FINITE(u) || l < 0 || u > 1 || l > u)
                 error("st.cross.allocate: inherited contribution bounds are invalid");
-            if (cret[i] < l - 1e-12 || cret[i] > u + 1e-12)
-                error("st.cross.allocate: nominal retained contributions violate inherited bounds");
+            double source_share = source_family_contributions ? family_contributions[i] : cret[i];
+            if (source_share < l - 1e-12 || source_share > u + 1e-12)
+                error(source_family_contributions ? "st.cross.allocate: family-slot contributions violate inherited bounds" :
+                    "st.cross.allocate: nominal retained contributions violate inherited bounds");
             if (!isNull(fixed) && (!st_allocate_numeric(fixed) || XLENGTH(fixed) != nparents ||
-                !R_FINITE(st_legacy_marker_number(fixed, i)) || fabs(cret[i] - st_legacy_marker_number(fixed, i)) > 1e-12))
-                error("st.cross.allocate: nominal retained contributions violate inherited fixed contributions");
+                !R_FINITE(st_legacy_marker_number(fixed, i)) || fabs(source_share - st_legacy_marker_number(fixed, i)) > 1e-12))
+                error(source_family_contributions ? "st.cross.allocate: family-slot contributions violate inherited fixed contributions" :
+                    "st.cross.allocate: nominal retained contributions violate inherited fixed contributions");
         }
         double theta = st_cross_scalar(getListElement(constraints_in, "theta"), "inherited theta"),
             inherited_tolerance = st_cross_scalar(getListElement(getListElement(plan, "control"), "tolerance"), "inherited tolerance");
@@ -25756,13 +34788,14 @@ static SEXP st_legacy_cross_allocate(SEXP args)
             error("st.cross.allocate: inherited tolerance must lie between zero and one");
         int64_t *uses = st_work_alloc(nparents, sizeof(int64_t));
         memset(uses, 0, (size_t)nparents * sizeof(int64_t));
-        for (int e = 0; e < nf; e++) { uses[p1[e]] += retained[e]; uses[p2[e]] += retained[e]; }
-        long double denominator = 2 * (long double)sum_retained, square = denominator * denominator,
+        for (int e = 0; e < nf; e++)
+        { uses[p1[e]] += source_family_theta ? 1 : retained[e]; uses[p2[e]] += source_family_theta ? 1 : retained[e]; }
+        long double denominator = 2 * (long double)(source_family_theta ? nf : sum_retained), square = denominator * denominator,
             numerator = 0, absolute = 0, row_residual = 0, active_maximum = 0;
         for (int i = 0; i < nparents; i++) if (uses[i])
             for (int j = 0; j < nparents; j++) if (uses[j])
                 active_maximum = fmaxl(active_maximum,
-                    fabsl(st_legacy_marker_number(matrix, i + (size_t)nparents * j)));
+                    fabsl(st_practical_matrix_number(matrix, identified_K, i + (size_t)nparents * j)));
         int integer_product = active_maximum <= LDBL_MAX / square;
         for (int i = 0; i < nparents; i++)
         {
@@ -25770,13 +34803,13 @@ static SEXP st_legacy_cross_allocate(SEXP args)
             {
                 long double row_scale = 0;
                 for (int j = 0; j < nparents; j++) row_scale = fmaxl(row_scale,
-                    fabsl(st_legacy_marker_number(matrix, i + (size_t)nparents * j)));
+                    fabsl(st_practical_matrix_number(matrix, identified_K, i + (size_t)nparents * j)));
                 if (row_scale)
                 {
                     long double row_value = 0, norm = 0;
                     for (int j = 0; j < nparents; j++)
                     {
-                        long double x = st_legacy_marker_number(matrix, i + (size_t)nparents * j) / row_scale;
+                        long double x = st_practical_matrix_number(matrix, identified_K, i + (size_t)nparents * j) / row_scale;
                         row_value += x * uses[j]; norm += x * x;
                     }
                     row_residual = fmaxl(row_residual, fabsl(row_value) / (denominator * sqrtl(norm)));
@@ -25786,7 +34819,7 @@ static SEXP st_legacy_cross_allocate(SEXP args)
             for (int j = 0; j < nparents; j++)
             {
                 if (!uses[j]) continue;
-                long double x = st_legacy_marker_number(matrix, i + (size_t)nparents * j);
+                long double x = st_practical_matrix_number(matrix, identified_K, i + (size_t)nparents * j);
                 if (integer_product) x *= (long double)uses[i] * uses[j];
                 else x *= ((long double)uses[i] / denominator) * ((long double)uses[j] / denominator);
                 numerator += x; absolute += fabsl(x);
@@ -25797,13 +34830,22 @@ static SEXP st_legacy_cross_allocate(SEXP args)
             gamma = operations * LDBL_EPSILON / (1 - operations * LDBL_EPSILON),
             arithmetic_error = gamma * absolute + operations * nextafterl(0.0L, 1.0L),
             limit = (long double)theta + inherited_tolerance * fmaxl(fabsl(theta), absolute);
-        qret = (double)numerator;
+        double source_q = (double)numerator;
+        qret = source_q;
+        if (source_family_theta)
+        {
+            long double retained_q = 0;
+            for (int i = 0; i < nparents; i++) for (int j = 0; j < nparents; j++)
+                retained_q += (long double)cret[i] * st_practical_matrix_number(matrix, identified_K, i + (size_t)nparents * j) * cret[j];
+            qret = (double)retained_q;
+        }
         if (!isfinite(numerator) || !isfinite(absolute) || !isfinite(arithmetic_error) ||
-            !R_FINITE(qret) || operations * LDBL_EPSILON >= .5)
+            !R_FINITE(source_q) || !R_FINITE(qret) || operations * LDBL_EPSILON >= .5)
             error("st.cross.allocate: inherited retained relatedness cannot be certified");
         if ((theta == 0 && row_residual > 128 * DBL_EPSILON * nparents) ||
             (active_maximum == 0 ? theta < 0 : nextafterl(numerator + arithmetic_error, INFINITY) > limit))
-            error("st.cross.allocate: nominal retained relatedness violates or cannot certify inherited theta");
+            error(source_family_theta ? "st.cross.allocate: family-slot relatedness violates or cannot certify inherited theta" :
+                "st.cross.allocate: nominal retained relatedness violates or cannot certify inherited theta");
     }
     SEXP diversity = inherited ? getListElement(inputs, "diversity") : R_NilValue;
     double diversity_loss = NA_REAL;
@@ -25856,8 +34898,82 @@ static SEXP st_legacy_cross_allocate(SEXP args)
         int add = upper[e] - lower[e]; if (add > remain) add = remain;
         produced[e] = lower[e] + add; remain -= add;
     }
+    st_population_data practical_data; memset(&practical_data, 0, sizeof(practical_data));
+    practical_data.nr = nr; practical_data.nf = nf; practical_data.np = nparents; practical_data.ids = ids;
+    practical_data.p1 = p1; practical_data.p2 = p2; practical_data.mapping = input_family;
+    practical_data.produced = produced; practical_data.retained = retained;
+    st_practical_set *practical = st_practical_set_prepare(plan, practical_arg, original_ids, matrix,
+        table, retained_arg, &practical_data, 1);
+    int *genetic_first = NULL, *genetic_second = NULL;
+    void *genetic = st_genetic_consumer_prepare(plan, genetic_request, NULL, &practical_data, original_ids,
+        practical, matrix, &genetic_first, &genetic_second);
+    int genetic_cap = genetic && (st_cross_genetic_requirements(genetic) & 1),
+        coupled = (practical && practical->coupled) || genetic_cap,
+        checking_active = practical != NULL || genetic_cap;
+    st_genetic_allocation_context genetic_check; memset(&genetic_check, 0, sizeof(genetic_check));
+    genetic_check.practical = practical; genetic_check.genetic = genetic; genetic_check.nf = nf;
+    genetic_check.first = genetic_first; genetic_check.second = genetic_second; genetic_check.retained = retained;
+    genetic_check.accuracy = accuracy;
+    if (genetic)
+    {
+        if (genetic_active && !practical_active && !source_progeny.active && identified_K)
+        {
+            long double bytes = (practical_matrix.workspace_cells + (long double)nparents * nparents +
+                (long double)nparents * sizeof(int) / sizeof(double) + inherited_work_cells) * sizeof(double);
+            if (bytes >= (long double)SIZE_MAX) error("cross planning: genetic reference workspace overflow");
+            st_genetic_external_bytes(genetic, (size_t)ceill(bytes));
+        }
+        if (genetic_cap) st_genetic_external_bytes(genetic, sizeof(genetic_check));
+        st_cross_genetic_method_set(genetic, normal_mode);
+        st_genetic_validate_scores(genetic, nf, genetic_first, genetic_second, mu, va);
+    }
+    st_allocate_practical_callback allocation_check = genetic_cap ? st_genetic_allocation_check : st_practical_allocation_check;
+    void *allocation_check_data = genetic_cap ? (void *)&genetic_check : (void *)practical;
+    if (coupled && requested_algorithm != 0)
+        error(genetic_cap ? "st.cross.allocate: coupled genetic constraints require control$algorithm = auto" :
+            "st.cross.allocate: coupled practical constraints require control$algorithm = auto");
+    if (practical && ((practical->requirements & 1) && !practical->direction_known))
+        error("st.cross.allocate: role restrictions require explicitly identified fixed directions");
+    if (practical && ((practical->requirements & 4) && !practical->operations_known))
+        error("st.cross.allocate: operation restrictions require fixed n.operations counts");
+    if (practical && ((practical->requirements & 32) && isNull(matrix)))
+        error("st.cross.allocate: relatedness restrictions require a K reference");
+    if (practical && st_practical_directed_pairs(practical, inherited ? plan : R_NilValue) != 0)
+        error("st.cross.allocate: live fixed directions violate or cannot verify inherited allowed pairs");
+    int workspace_active = practical != NULL || source_progeny.active;
+    double practical_cells = workspace_active ? st_practical_set_cells(practical) + 32.0 * nparents + 32.0 * nf + 8.0 * nr +
+        (identified_K ? practical_matrix.workspace_cells + (double)nparents * nparents + nparents * sizeof(int) / (double)sizeof(double) : 0) +
+        inherited_work_cells + source_variable.workspace_cells : 0;
+    int fixed_state = practical && !practical->coupled ? st_practical_set_check(practical) : 1;
+    int has_incumbent = 1, practical_unresolved = 0, proof_infeasible = 0, used_constrained = 0;
+    st_allocate_practical_result practical_result; memset(&practical_result, 0, sizeof(practical_result));
     double transitions = 0, response_upper = R_PosInf;
-    if (complete)
+    st_allocate_normal_state *normal_state = NULL;
+    st_allocate_normal_result normal_result;
+    memset(&normal_result, 0, sizeof(normal_result));
+    normal_result.algorithm = requested_algorithm == 2 ? "dp" : "greedy";
+    if (workspace_active && !normal_mode && cells + practical_cells > max_cells)
+    { complete = 0; reason = "max.cells"; }
+    if (normal_mode) normal_state = st_allocate_normal_initialize(nf, extra);
+    genetic_check.count_context = normal_state;
+    void *solver_mark = checking_active ? st_work_mark() : NULL;
+    if (practical && fixed_state != 1)
+    {
+        complete = 1; has_incumbent = 0; proof_infeasible = fixed_state == -1; practical_unresolved = !proof_infeasible;
+        reason = proof_infeasible ? "fixed.practical.constraints.infeasible" : "fixed.practical.constraints.unresolved";
+        cells = practical_cells;
+    }
+    else if (normal_mode)
+    {
+        normal_result = st_allocate_normal_solve(normal_state, nf, extra, retained, lower, upper,
+            accuracy, va, sum_retained, produced, requested_algorithm, workspace_active ? fmax(0, max_cells - practical_cells) : max_cells, max_transitions,
+            tolerance, cells, (double)utilities, estimated_transitions);
+        complete = normal_result.complete; reason = normal_result.reason;
+        cells = normal_result.cells; transitions = normal_result.transitions;
+        response_upper = normal_result.response_upper;
+        estimated_transitions = normal_result.estimated_transitions;
+    }
+    else if (complete && (!workspace_active || cells + practical_cells <= max_cells))
     {
         size_t stride = (size_t)extra + 1;
         if ((size_t)nf > SIZE_MAX / stride / sizeof(int))
@@ -25920,12 +35036,58 @@ static SEXP st_legacy_cross_allocate(SEXP args)
         }
         if (b) error("st.cross.allocate: incomplete allocation traceback");
     }
-    long double mean_sum = 0, mean_upper = 0, response_sum = 0;
-    double response_lower = 0;
-    for (int e = 0; e < nf; e++)
+    if (checking_active)
     {
-        double s = (retained[e] / (double)sum_retained) * accuracy[e] * sqrt(va[e]),
-            response = st_allocate_response(retained[e], produced[e], s),
+        double preliminary_cells = fixed_state == 1 ? cells + practical_cells : cells;
+        st_work_reset(solver_mark);
+        if (fixed_state == 1)
+        {
+            int checked = allocation_check(nf, produced, allocation_check_data);
+            if (checked != 1 || !complete)
+            {
+                if (coupled)
+                {
+                    if (requested_algorithm != 0)
+                        error("st.cross.allocate: coupled practical constraints require control$algorithm = auto");
+                    int *initial = st_work_alloc(nf, sizeof(int)); memcpy(initial, produced, (size_t)nf * sizeof(int));
+                    double normal_cells = normal_mode ? (sizeof(*normal_state) + (long double)normal_state->cache_size * sizeof(*normal_state->cache) +
+                        (long double)normal_state->limit * sizeof(int) + (long double)normal_state->lenw * sizeof(double)) / sizeof(double) : 0;
+                    practical_result = st_allocate_practical_solve(normal_state, normal_mode, nf, budget, retained, lower, upper,
+                        accuracy, va, sum_retained, initial, produced, allocation_check, allocation_check_data,
+                        max_cells, fmax(0, max_transitions - transitions), tolerance, practical_cells + normal_cells,
+                        genetic_cap ? st_genetic_allocation_limited : NULL, genetic_cap && checked == 1);
+                    used_constrained = 1; has_incumbent = practical_result.has_incumbent;
+                    complete = practical_result.complete; reason = practical_result.reason; cells = practical_result.cells;
+                    transitions += practical_result.transitions; response_upper = practical_result.response_upper;
+                    practical_unresolved = practical_result.unresolved; proof_infeasible = practical_result.proof_infeasible;
+                    if (normal_mode) normal_result.algorithm = practical_result.algorithm;
+                }
+                else { has_incumbent = checked == 1; practical_unresolved = checked != -1 && checked != 1; proof_infeasible = checked == -1; }
+            }
+            cells = fmax(used_constrained ? cells : 0, preliminary_cells);
+        }
+        if (has_incumbent && practical && st_practical_allocation_check(nf, produced, practical) != 1)
+            error("st.cross.allocate: final practical constraints were not independently verified");
+        if (!has_incumbent && practical) st_practical_set_no_incumbent(practical);
+    }
+    else if (workspace_active) cells += practical_cells;
+    int genetic_search_limited = genetic_cap && st_cross_genetic_limited(genetic);
+    if (genetic)
+    {
+        if (!has_incumbent) st_cross_genetic_no_incumbent(genetic);
+        int state = st_genetic_check_int(genetic, has_incumbent ? nf : 0, has_incumbent ? genetic_first : NULL,
+            has_incumbent ? genetic_second : NULL, has_incumbent ? produced : NULL, has_incumbent ? retained : NULL,
+            has_incumbent ? accuracy : NULL, st_genetic_consumer_intensity, normal_state, 1);
+        if (genetic_cap && has_incumbent && state != 1)
+            error("st.cross.allocate: final genetic constraint was not independently verified");
+    }
+    long double mean_sum = 0, mean_upper = 0, response_sum = 0;
+    double response_lower = 0, normal_error = 0;
+    for (int e = 0; e < nf && has_incumbent; e++)
+    {
+        double s = (retained[e] / (double)sum_retained) * accuracy[e] * sqrt(va[e]), uncertainty = 0,
+            response = normal_mode ? st_allocate_normal_scaled(normal_state, produced[e], retained[e],
+                0, 1, s, &uncertainty) : st_allocate_response(retained[e], produced[e], s),
             c = produced[e] / (2.0 * budget);
         long double weight = (long double)retained[e] / sum_retained,
             weight_bound = nextafterl(weight, mu[e] < 0 ? -INFINITY : INFINITY),
@@ -25933,7 +35095,9 @@ static SEXP st_legacy_cross_allocate(SEXP args)
         mean_sum += weight * mu[e];
         mean_upper = nextafterl(mean_upper + term_upper, INFINITY);
         response_sum += response;
-        response_lower = nextafter(response_lower + response, R_NegInf);
+        response_lower = normal_mode ? nextafter(response_lower + nextafter(response - uncertainty, R_NegInf), R_NegInf) :
+            nextafter(response_lower + response, R_NegInf);
+        if (normal_mode) normal_error = nextafter(normal_error + uncertainty, R_PosInf);
         cprod[p1[e]] += c; cprod[p2[e]] += c;
     }
     double base = (double)mean_sum, response = (double)response_sum, value = (double)(mean_sum + response_sum);
@@ -25943,26 +35107,52 @@ static SEXP st_legacy_cross_allocate(SEXP args)
     if ((long double)base_upper < mean_upper) base_upper = nextafter(base_upper, R_PosInf);
     double gap = complete ? fmax(0, nextafter(response_upper - response_lower, R_PosInf)) : R_PosInf,
         bound = complete ? fmax(value, nextafter(base_upper + response_upper, R_PosInf)) : R_PosInf;
-    const char *status = !complete ? "resource.limit" : gap <= tolerance * fmax(1, fabs(response)) ?
-        "optimal" : "numerically.unresolved";
-    if (inherited)
+    const char *status = !complete ? "resource.limit" : gap <= tolerance * fmax(1, fabs(response)) &&
+        (!normal_mode || normal_state->failures == 0) ? normal_mode ? "numerically.optimal" : "optimal" :
+        "numerically.unresolved";
+    if (checking_active && !has_incumbent)
+    {
+        value = response = base = NA_REAL; gap = R_PosInf; bound = R_PosInf;
+        status = proof_infeasible ? "infeasible" : complete ? "numerically.unresolved" : "resource.limit";
+        for (int i = 0; i < nparents; i++) cprod[i] = NA_REAL;
+    }
+    else if (checking_active && complete && practical_unresolved) status = "numerically.unresolved";
+    if (genetic_search_limited && !complete) { status = "resource.limit"; reason = "genetic.resource.limit"; }
+    if (inherited && has_incumbent)
     {
         long double q = 0;
         for (int i = 0; i < nparents; i++) for (int j = 0; j < nparents; j++)
-            q += (long double)cprod[i] * st_legacy_marker_number(matrix, i + (size_t)nparents * j) * cprod[j];
+            q += (long double)cprod[i] * st_practical_matrix_number(matrix, identified_K, i + (size_t)nparents * j) * cprod[j];
         qprod = (double)q;
         if (!R_FINITE(qprod)) error("st.cross.allocate: produced relatedness is not finite");
     }
-    int np = 0;
+    int nout = has_incumbent ? nf : 0;
     const char *out_names[] = {"crosses", "contributions.retained", "contributions.produced", "relatedness.retained",
         "relatedness.produced", "status", "objective", "constraints", "diagnostics", "inputs", "control"};
-    SEXP out = st_allocate_list(11, out_names, &np);
+    SEXP directions_out = practical && has_incumbent
+        ? st_practical_directions(practical, &practical_data, &np) : R_NilValue;
+    SEXP operations_out = practical && has_incumbent
+        ? st_practical_operations(practical, &np) : R_NilValue;
+    const char *output_names[17];
+    memcpy(output_names, out_names, sizeof(out_names));
+    int output_count = 11;
+    if (!isNull(directions_out))
+        output_names[output_count++] = "directions";
+    if (!isNull(operations_out))
+        output_names[output_count++] = "operations";
+    output_count = st_genetic_public_fields(genetic, output_names, output_count);
+    SEXP out = st_allocate_list(output_count, output_names, &np);
+    int output_at = 11;
+    if (!isNull(directions_out))
+        SET_VECTOR_ELT(out, output_at++, directions_out);
+    if (!isNull(operations_out))
+        SET_VECTOR_ELT(out, output_at++, operations_out);
     const char *columns[] = {"family", "P1Name", "P2Name", "n.progeny", "n.selected", "mu", "va", "accuracy",
         "intensity", "selected.mean", "min.progeny", "max.progeny"};
-    SEXP crosses = st_legacy_marker_frame(12, columns, nf, &np);
+    SEXP crosses = st_legacy_marker_frame(12, columns, nout, &np);
     for (int j = 0; j < 12; j++) SET_VECTOR_ELT(crosses, j, st_allocate_keep(allocVector(
-        j == 1 || j == 2 ? STRSXP : j == 0 || j == 3 || j == 4 || j > 9 ? INTSXP : REALSXP, nf), &np));
-    for (int e = 0; e < nf; e++)
+        j == 1 || j == 2 ? STRSXP : j == 0 || j == 3 || j == 4 || j > 9 ? INTSXP : REALSXP, nout), &np));
+    for (int e = 0; e < nout; e++)
     {
         INTEGER(VECTOR_ELT(crosses, 0))[e] = e + 1;
         SET_STRING_ELT(VECTOR_ELT(crosses, 1), e, mkCharCE(ids[p1[e]], CE_UTF8));
@@ -25971,7 +35161,9 @@ static SEXP st_legacy_cross_allocate(SEXP args)
         INTEGER(VECTOR_ELT(crosses, 4))[e] = retained[e];
         REAL(VECTOR_ELT(crosses, 5))[e] = mu[e]; REAL(VECTOR_ELT(crosses, 6))[e] = va[e];
         REAL(VECTOR_ELT(crosses, 7))[e] = accuracy[e];
-        double intensity = st_cross_intensity((double)retained[e] / produced[e], retained[e], produced[e]),
+        double intensity_error = 0,
+            intensity = normal_mode ? st_allocate_normal_estimate(normal_state, produced[e], retained[e],
+                0, 1, &intensity_error) : st_cross_intensity((double)retained[e] / produced[e], retained[e], produced[e]),
             selected = mu[e] + accuracy[e] * sqrt(va[e]) * intensity;
         if (!R_FINITE(selected)) error("st.cross.allocate: a selected family mean is not finite");
         REAL(VECTOR_ELT(crosses, 8))[e] = intensity;
@@ -25997,12 +35189,13 @@ static SEXP st_legacy_cross_allocate(SEXP args)
     SET_VECTOR_ELT(objective, 2, st_allocate_keep(ScalarReal(base), &np));
     SET_VECTOR_ELT(objective, 3, st_allocate_keep(ScalarReal(bound), &np));
     SET_VECTOR_ELT(objective, 4, st_allocate_keep(ScalarReal(gap), &np));
-    SET_VECTOR_ELT(objective, 5, st_allocate_keep(mkString(complete ?
-        "outward.addition.enclosure.of.evaluated.response.table" : "unbounded.resource.limit"), &np));
+    SET_VECTOR_ELT(objective, 5, st_allocate_keep(mkString(complete ? normal_mode ?
+        "estimated.normal.quadrature.and.roundoff" : "outward.addition.enclosure.of.evaluated.response.table" :
+        "unbounded.resource.limit"), &np));
     SET_VECTOR_ELT(out, 6, objective);
     const char *constraint_names[] = {"total.progeny", "total.selected", "n.families", "contribution.sample",
-        "inherited", "family.slots.fixed", "diversity.loss"};
-    SEXP constraints = st_allocate_list(7, constraint_names, &np);
+        "inherited", "family.slots.fixed", "diversity.loss", "practical"};
+    SEXP constraints = st_allocate_list(practical ? 8 : 7, constraint_names, &np);
     SET_VECTOR_ELT(constraints, 0, st_allocate_keep(ScalarInteger(budget), &np));
     SET_VECTOR_ELT(constraints, 1, st_allocate_keep(ScalarReal((double)sum_retained), &np));
     SET_VECTOR_ELT(constraints, 2, st_allocate_keep(ScalarInteger(nf), &np));
@@ -26012,8 +35205,23 @@ static SEXP st_legacy_cross_allocate(SEXP args)
     SET_VECTOR_ELT(constraints, 6, st_allocate_keep(ScalarReal(diversity_loss), &np));
     SET_VECTOR_ELT(out, 7, constraints);
     const char *diagnostic_names[] = {"reason", "complete.search", "input.rows", "pooled.rows", "workspace.cells",
-        "transition.upper.estimate", "transitions", "numerical.qualification", "ancestry.qualification"};
-    SEXP diagnostics = st_allocate_list(9, diagnostic_names, &np);
+        "transition.upper.estimate", "transitions", "numerical.qualification", "ancestry.qualification",
+        "selection.method", "algorithm", "quadrature.error.estimate", "quadrature.evaluations", "quadrature.failures"};
+    const char *diagnostic_labels[18];
+    int diagnostic_count = normal_mode ? 14 : 9;
+    memcpy(diagnostic_labels, diagnostic_names,
+           (size_t)diagnostic_count * sizeof(*diagnostic_labels));
+    int algorithm_at = normal_mode ? 10 : diagnostic_count;
+    if (practical && !normal_mode)
+        diagnostic_labels[diagnostic_count++] = "algorithm";
+    int practical_at = diagnostic_count;
+    if (practical)
+    {
+        diagnostic_labels[diagnostic_count++] = "practical";
+        diagnostic_labels[diagnostic_count++] = "practical.search";
+    }
+    if (genetic) diagnostic_labels[diagnostic_count++] = "genetic";
+    SEXP diagnostics = st_allocate_list(diagnostic_count, diagnostic_labels, &np);
     SET_VECTOR_ELT(diagnostics, 0, st_allocate_keep(mkString(reason), &np));
     SET_VECTOR_ELT(diagnostics, 1, st_allocate_keep(ScalarLogical(complete), &np));
     SET_VECTOR_ELT(diagnostics, 2, st_allocate_keep(ScalarInteger(nr), &np));
@@ -26021,24 +35229,59 @@ static SEXP st_legacy_cross_allocate(SEXP args)
     SET_VECTOR_ELT(diagnostics, 4, st_allocate_keep(ScalarReal(cells), &np));
     SET_VECTOR_ELT(diagnostics, 5, st_allocate_keep(ScalarReal(estimated_transitions), &np));
     SET_VECTOR_ELT(diagnostics, 6, st_allocate_keep(ScalarReal(transitions), &np));
-    SET_VECTOR_ELT(diagnostics, 7, st_allocate_keep(mkString(
+    SET_VECTOR_ELT(diagnostics, 7, st_allocate_keep(mkString(normal_mode ?
+        "Bounds and gaps estimate normal quadrature and floating-point error; adaptive integration errors are not rigorous interval certificates or bounds on biological prediction error." :
         "Gap encloses addition rounding for the evaluated binary64 response table; it does not bound the normal or finite-family approximation error."), &np));
     SET_VECTOR_ELT(diagnostics, 8, st_allocate_keep(mkString(
         "Produced and retained contributions are nominal parental shares, not realized genomic ancestry after within-family selection."), &np));
+    if (normal_mode)
+    {
+        SET_VECTOR_ELT(diagnostics, 9, st_allocate_keep(mkString(selection_method), &np));
+        SET_VECTOR_ELT(diagnostics, 10, st_allocate_keep(mkString(normal_result.algorithm), &np));
+        SET_VECTOR_ELT(diagnostics, 11, st_allocate_keep(ScalarReal(normal_error), &np));
+        SET_VECTOR_ELT(diagnostics, 12, st_allocate_keep(ScalarReal(normal_state->evaluations), &np));
+        SET_VECTOR_ELT(diagnostics, 13, st_allocate_keep(ScalarReal(normal_state->failures), &np));
+    }
     SET_VECTOR_ELT(out, 8, diagnostics);
-    const char *input_names[] = {"plan", "scores", "input.family"};
-    SEXP input_out = st_allocate_list(3, input_names, &np);
+    const char *input_names[5] = {"plan", "scores", "input.family", "practical"};
+    int input_count = practical ? 4 : 3;
+    if (genetic) input_names[input_count++] = "genetic.model";
+    SEXP input_out = st_allocate_list(input_count, input_names, &np);
     SET_VECTOR_ELT(input_out, 0, plan); SET_VECTOR_ELT(input_out, 1, scores);
     SEXP mapping = st_allocate_keep(allocVector(INTSXP, nr), &np);
     for (int i = 0; i < nr; i++) INTEGER(mapping)[i] = input_family[i] + 1;
     SET_VECTOR_ELT(input_out, 2, mapping); SET_VECTOR_ELT(out, 9, input_out);
-    const char *control_names[] = {"max.cells", "max.transitions", "tolerance"};
-    SEXP control_out = st_allocate_list(3, control_names, &np);
+    const char *control_names[] = {"max.cells", "max.transitions", "tolerance", "algorithm"};
+    SEXP control_out = st_allocate_list(normal_mode ? 4 : 3, control_names, &np);
     SET_VECTOR_ELT(control_out, 0, st_allocate_keep(ScalarReal(max_cells), &np));
     SET_VECTOR_ELT(control_out, 1, st_allocate_keep(ScalarReal(max_transitions), &np));
     SET_VECTOR_ELT(control_out, 2, st_allocate_keep(ScalarReal(tolerance), &np));
+    if (normal_mode) SET_VECTOR_ELT(control_out, 3, st_allocate_keep(mkString(requested_algorithm == 0 ?
+        "auto" : requested_algorithm == 1 ? "greedy" : "dp"), &np));
     SET_VECTOR_ELT(out, 10, control_out);
+    if (practical)
+    {
+        SET_VECTOR_ELT(constraints, 7, st_practical_set_request(practical, &np));
+        const char *checked_algorithm = used_constrained ? "constrained.enumeration" : normal_mode ?
+            !strcmp(normal_result.algorithm, "dp") ? "checked.unconstrained.dp" : "checked.unconstrained.greedy" : "checked.unconstrained.dp";
+        SET_VECTOR_ELT(diagnostics, algorithm_at, st_allocate_keep(mkString(checked_algorithm), &np));
+        SET_VECTOR_ELT(diagnostics, practical_at, st_practical_set_report(practical, &np));
+        const char *search_names[] = {"incumbent.checked", "coupled", "algorithm", "unresolved", "proof.infeasible"};
+        SEXP search = st_allocate_list(5, search_names, &np);
+        SET_VECTOR_ELT(search, 0, st_allocate_keep(ScalarLogical(has_incumbent), &np));
+        SET_VECTOR_ELT(search, 1, st_allocate_keep(ScalarLogical(practical->coupled), &np));
+        SET_VECTOR_ELT(search, 2, st_allocate_keep(mkString(used_constrained ? "constrained.enumeration" : "checked.unconstrained.allocator"), &np));
+        SET_VECTOR_ELT(search, 3, st_allocate_keep(ScalarLogical(practical_unresolved), &np));
+        SET_VECTOR_ELT(search, 4, st_allocate_keep(ScalarLogical(proof_infeasible), &np));
+        SET_VECTOR_ELT(diagnostics, practical_at + 1, search);
+        SET_VECTOR_ELT(input_out, 3, practical->explicit_request);
+    }
     setAttrib(out, R_ClassSymbol, st_allocate_keep(mkString("st.cross.allocation"), &np));
+    if (genetic)
+    {
+        if (has_incumbent) st_future_consumer_assess(genetic, out, practical, st_genetic_consumer_intensity, normal_state, nf, genetic_first, genetic_second, produced, retained, accuracy);
+        out = st_genetic_attach_result(out, genetic, genetic_request, &np);
+    }
     UNPROTECT(np);
     return out;
 }
@@ -26059,11 +35302,14 @@ static int st_allocate_print_setting(SEXP args, SEXP options, const char *name,
 
 static void st_allocate_print_line(int width, const char *format, ...)
 {
+    if (!format) error("print: allocation format must not be null");
     va_list ap, copy; va_start(ap, format); va_copy(copy, ap);
     int n = vsnprintf(NULL, 0, format, copy); va_end(copy);
-    if (n < 0) error("print: unable to format allocation");
+    if (n < 0) { va_end(ap); error("print: unable to format allocation"); }
     char *text = st_work_alloc((size_t)n + 1, sizeof(char));
-    vsnprintf(text, (size_t)n + 1, format, ap); va_end(ap);
+    int written = vsnprintf(text, (size_t)n + 1, format, ap); va_end(ap);
+    if (written < 0 || written != n || (size_t)written >= (size_t)n + 1)
+        error("print: allocation text exceeds its reserved buffer");
     for (int i = 0; i < n; i++) if ((unsigned char)text[i] < 32 || text[i] == 127) text[i] = ' ';
     char *start = text;
     while ((int)strlen(start) > width)
@@ -26076,6 +35322,47 @@ static void st_allocate_print_line(int width, const char *format, ...)
         while (*start == ' ') start++;
     }
     Rprintf("%s\n", start);
+}
+
+static void st_genetic_consumer_print(SEXP object, int digits, int width)
+{
+    if (isNull(st_population_get(object, "genetic.model"))) return;
+    SEXP selected = st_population_get(object, "selected.contributions"), proxy = st_population_get(selected, "proxy"),
+        value = st_population_get(proxy, "value"), cap = st_population_get(proxy, "cap"),
+        state = st_population_get(proxy, "state"), reason = st_population_get(proxy, "reason");
+    if (!st_allocate_numeric(value) || XLENGTH(value) != 1 || (!isNull(cap) && (!st_allocate_numeric(cap) || XLENGTH(cap) != 1)) ||
+        !st_allocate_numeric(state) || XLENGTH(state) != 1)
+        error("print: invalid selected founder proxy");
+    const char *qualification = st_legacy_marker_string(reason, "proxy reason");
+    if (!isNull(cap) && R_FINITE(asReal(cap)))
+        st_allocate_print_line(width, "Selected founder proxy: %.*g; cap: %.*g; state %.0f; %s", digits,
+            asReal(value), digits, asReal(cap), asReal(state), qualification);
+    else st_allocate_print_line(width, "Selected founder proxy: %.*g; state %.0f; %s", digits,
+        asReal(value), asReal(state), qualification);
+    SEXP scenarios = st_population_get(object, "scenarios");
+    if (!isNull(scenarios))
+    {
+        SEXP completed = st_population_get(scenarios, "completed"), requested = st_population_get(scenarios, "requested"),
+            status = st_population_get(scenarios, "status");
+        if (!st_allocate_numeric(completed) || XLENGTH(completed) != 1 || !st_allocate_numeric(requested) ||
+            XLENGTH(requested) != 1 || !st_allocate_numeric(status) || XLENGTH(status) != 1)
+            error("print: invalid genotype scenario summary");
+        st_allocate_print_line(width, "Genotype scenarios: %.0f / %.0f complete; state %.0f; %s", asReal(completed),
+            asReal(requested), asReal(status), st_legacy_marker_string(st_population_get(scenarios, "reason"), "scenario reason"));
+    }
+    SEXP future = st_population_get(object, "future");
+    if (!isNull(future)) {
+        SEXP training = st_population_get(future, "training"), evaluation = st_population_get(future, "evaluation");
+        st_allocate_print_line(width, "Future selected population (G2): random disjoint DH matching");
+        st_allocate_print_line(width, "Training: %s; %.0f / %.0f complete; G2 mean %.*g",
+            st_legacy_marker_string(st_population_get(training, "status"), "future training status"),
+            asReal(st_population_get(training, "completed")), asReal(st_population_get(training, "requested")), digits,
+            asReal(st_population_get(training, "value")));
+        st_allocate_print_line(width, "Held-out: %s; %.0f / %.0f complete; G2 mean %.*g",
+            st_legacy_marker_string(st_population_get(evaluation, "status"), "future evaluation status"),
+            asReal(st_population_get(evaluation, "completed")), asReal(st_population_get(evaluation, "requested")), digits,
+            asReal(st_population_get(evaluation, "value")));
+    }
 }
 
 static SEXP st_legacy_cross_allocate_print(SEXP args)
@@ -26106,15 +35393,27 @@ static SEXP st_legacy_cross_allocate_print(SEXP args)
             error("print: invalid st.cross.allocation family values");
     }
     st_allocate_print_line(width, "Fixed-pair progeny allocation");
+    SEXP selection_method = getListElement(getListElement(x, "diagnostics"), "selection.method");
+    int normal_mode = !isNull(selection_method) && !strcmp(st_legacy_marker_string(selection_method,
+        "selection.method"), "order.statistics");
+    if (normal_mode)
+        st_allocate_print_line(width, "Selection: finite normal order statistics; allocator: %s",
+            st_legacy_marker_string(getListElement(getListElement(x, "diagnostics"), "algorithm"), "algorithm"));
     st_allocate_print_line(width, "Status: %s", st_legacy_marker_string(getListElement(x, "status"), "status"));
     st_allocate_print_line(width, "Families: %d; produced: %.0f; retained: %.0f", n,
         asReal(getListElement(constraints, "total.progeny")), asReal(getListElement(constraints, "total.selected")));
     st_allocate_print_line(width, "Predicted retained mean: %.*g; response: %.*g", digits,
         asReal(getListElement(objective, "value")), digits, asReal(getListElement(objective, "response")));
-    st_allocate_print_line(width, "Objective upper bound: %.*g; response gap: %.*g", digits,
+    st_allocate_print_line(width, normal_mode ? "Estimated objective upper bound: %.*g; response gap: %.*g" :
+        "Objective upper bound: %.*g; response gap: %.*g", digits,
         asReal(getListElement(objective, "bound")), digits, asReal(getListElement(objective, "gap")));
     st_allocate_print_line(width, "Group relatedness, nominal retained: %.*g; produced: %.*g", digits,
         asReal(getListElement(x, "relatedness.retained")), digits, asReal(getListElement(x, "relatedness.produced")));
+    st_practical_print_summary(getListElement(x, "diagnostics"), width);
+    st_genetic_consumer_print(x, digits, width);
+    SEXP practical_search = st_population_get(st_population_get(x, "diagnostics"), "practical.search");
+    if (!isNull(practical_search) && asLogical(st_population_get(practical_search, "incumbent.checked")) != TRUE)
+        st_allocate_print_line(width, "No independently feasible allocation was found.");
     st_allocate_print_line(width, "Family: parents; produced / retained; predicted retained mean");
     int ntop = top < n ? top : n, nbot = bottom < n - ntop ? bottom : n - ntop;
     for (int i = 0; i < n; i++)
@@ -26125,6 +35424,671 @@ static SEXP st_legacy_cross_allocate_print(SEXP args)
         st_allocate_print_line(width, "%d: %s x %s; %d / %d; %.*g", i + 1,
             st_allocate_id(p1, i), st_allocate_id(p2, i), INTEGER(produced)[i], INTEGER(selected)[i],
             digits, REAL(means)[i]);
+    }
+    return x;
+}
+
+static void st_population_centered_add(long double *sum, long double *error,
+    long double weight, long double value, long double anchor)
+{
+    long double difference = value, tail = 0;
+    st_genetic_sum_add(&difference, &tail, -anchor);
+    st_genetic_sum_add(sum, error, weight * difference);
+    st_genetic_sum_add(sum, error, weight * tail);
+}
+static long double st_population_signed_total(const long double *terms, int n)
+{
+    long double sum = 0, error = 0;
+    for (int i = 0; i < n; i++) st_genetic_sum_add(&sum, &error, terms[i]);
+    return sum + error;
+}
+static SEXP st_cross_evaluate_genetic_impl(SEXP args, SEXP source_override, void *prepared_genetic,
+    st_cross_genetic_intensity external_intensity, void *external_count_context, SEXP destination)
+{
+    int np = 0, final_mode = prepared_genetic != NULL, previous_final = 0;
+    if (final_mode) previous_final = st_genetic_final_enter(prepared_genetic);
+    SEXP source = isNull(source_override) ? st_population_get(args, "plan") : source_override;
+    SEXP genetic_request = isNull(destination) ? st_population_get(args, "genetic.model") :
+        st_population_get(st_population_get(destination, "inputs"), "genetic.model");
+    int allocation = inherits(source, "st.cross.allocation"), plan_object = inherits(source, "st.cross.plan");
+    SEXP table = allocation || plan_object ? st_population_get(source, "crosses") : source,
+        original_plan = plan_object ? source : allocation ? st_population_get(st_population_get(source, "inputs"), "plan") : R_NilValue;
+    if (!inherits(original_plan, "st.cross.plan")) original_plan = R_NilValue;
+    SEXP original_inputs = st_population_get(original_plan, "inputs"),
+        original_constraints = st_population_get(original_plan, "constraints"),
+        direct_constraints = allocation || plan_object ? st_population_get(source, "constraints") : R_NilValue,
+        original_ids = st_population_get(st_population_get(original_plan, "parents"), "parent");
+    if (allocation && !isNull(st_population_get(direct_constraints, "inherited")))
+        original_constraints = st_population_get(direct_constraints, "inherited");
+    st_population_progeny_contract source_progeny = st_population_progeny_contract_get(original_constraints);
+    st_population_variable_contract source_variable = st_population_variable_contract_get(original_constraints, &source_progeny);
+    int source_family_contributions = st_population_constraint_family(original_constraints, "contribution.basis", !allocation, source_progeny.active),
+        source_family_theta = st_population_constraint_family(original_constraints, "theta.basis", !allocation, source_progeny.active);
+    SEXP retained_arg = st_population_get(args, "n.selected"), accuracy_arg = st_population_get(args, "accuracy"),
+        scores = st_population_get(args, "scores"), matrix = st_population_get(args, "K"), method_arg = st_population_get(args, "selection.method");
+    const char *retained_origin = isNull(retained_arg) ? "crosses" : "argument",
+        *accuracy_origin = isNull(accuracy_arg) ? "crosses" : "argument",
+        *scores_origin = isNull(scores) ? "crosses" : "argument",
+        *matrix_origin = isNull(matrix) ? "inherited" : "argument",
+        *method_origin = isNull(method_arg) ? "burrows.default" : "argument";
+    if (isNull(retained_arg)) retained_arg = st_population_get(table, "n.selected");
+    if (isNull(accuracy_arg)) accuracy_arg = st_population_get(table, "accuracy");
+    if (isNull(accuracy_arg) && plan_object)
+    {
+        accuracy_arg = st_population_get(source, "accuracy");
+        if (!isNull(accuracy_arg)) accuracy_origin = "plan";
+    }
+    if (isNull(accuracy_arg)) accuracy_origin = "perfect.ranking.default";
+    const char *method = "burrows";
+    if (!isNull(method_arg)) method = st_legacy_marker_string(method_arg, "selection.method");
+    else if (plan_object && source_progeny.active)
+    { method = source_progeny.method; method_origin = "plan.progeny"; }
+    else if (allocation)
+    {
+        SEXP stored = st_population_get(st_population_get(source, "diagnostics"), "selection.method");
+        if (!isNull(stored)) { method = st_legacy_marker_string(stored, "selection.method"); method_origin = "allocation"; }
+    }
+    int normal_mode = !strcmp(method, "order.statistics");
+    if (!normal_mode && strcmp(method, "burrows"))
+        error("st.cross.evaluate: selection.method must be burrows or order.statistics");
+    SEXP inherited_matrix = st_population_get(original_inputs, "K");
+    if (isNull(matrix)) matrix = inherited_matrix;
+    if (isNull(matrix)) matrix_origin = "unavailable";
+    st_population_data p; memset(&p, 0, sizeof(p));
+    st_practical_identified_matrix(&p.K, matrix, original_ids, isNull(st_population_get(args, "K")));
+    if (!isNull(st_population_get(args, "K")) && !isNull(inherited_matrix))
+    {
+        st_population_matrix inherited;
+        st_practical_identified_matrix(&inherited, inherited_matrix, original_ids, 1);
+        if (!st_population_same_matrix(&p.K, &inherited))
+            error("st.cross.evaluate: explicit K conflicts with the inherited named reference or coefficients");
+    }
+    st_population_normalize(&p, table, scores, retained_arg, accuracy_arg, original_ids);
+    st_population_variable_keys_check(&source_variable, original_plan, original_ids);
+    st_practical_set *practical = st_practical_set_prepare(source, st_population_get(args, "constraints"),
+        original_ids, matrix, table, retained_arg, &p, 0);
+    int practical_state = st_practical_set_check(practical);
+    if (normal_mode && !external_intensity) p.normal = st_allocate_normal_initialize(p.nf, 0);
+    int *genetic_first = NULL, *genetic_second = NULL;
+    void *genetic = st_genetic_consumer_prepare(source, genetic_request, prepared_genetic, &p, original_ids,
+        practical, matrix, &genetic_first, &genetic_second);
+    st_cross_genetic_intensity genetic_intensity = external_intensity ? external_intensity : st_genetic_consumer_intensity;
+    void *genetic_count_context = external_intensity ? external_count_context : p.normal;
+    if (genetic)
+    {
+        st_cross_genetic_method_set(genetic, normal_mode);
+        st_genetic_validate_scores(genetic, p.nf, genetic_first, genetic_second, p.mu, p.va);
+    }
+    double numerical_error = 0; int external_failures = 0;
+    for (int e = 0; e < p.nf; e++)
+    {
+        p.intensity[e] = p.selected[e] = p.response[e] = NA_REAL;
+        if (!p.retained[e]) continue;
+        double err = 0, intensity = external_intensity ? external_intensity(external_count_context, p.produced[e], p.retained[e], 1, &err) :
+            normal_mode ? st_allocate_normal_estimate(p.normal, p.produced[e], p.retained[e], 0, 1, &err) :
+            st_cross_intensity((double)p.retained[e] / p.produced[e], p.retained[e], p.produced[e]);
+        if (external_intensity && (!R_FINITE(err) || err < 0)) external_failures++;
+        p.intensity[e] = intensity;
+        p.response[e] = p.accuracy[e] * sqrt(p.va[e]) * intensity;
+        p.selected[e] = p.mu[e] + p.response[e];
+        if (!R_FINITE(p.response[e]) || !R_FINITE(p.selected[e]))
+            error("st.cross.evaluate: a selected family mean or response exceeds the finite numeric range");
+        if (external_intensity && (!R_FINITE(err) || err < 0))
+        {
+            if (p.accuracy[e] != 0 && p.va[e] != 0) numerical_error = R_PosInf;
+        }
+        else numerical_error += ((double)p.retained[e] / p.total_retained) * p.accuracy[e] * sqrt(p.va[e]) * err;
+    }
+    double values[17]; for (int i = 0; i < 17; i++) values[i] = NA_REAL;
+    values[0] = (double)p.total_produced; values[1] = (double)p.total_retained;
+    values[2] = p.produced_families; values[3] = p.retained_families;
+    if (p.total_produced)
+    {
+        int first = 0; while (!p.produced[first]) first++;
+        long double anchor = p.mu[first], centered = 0, centered_error = 0, within = 0;
+        for (int e = 0; e < p.nf; e++) if (p.produced[e])
+        {
+            long double w = (long double)p.produced[e] / p.total_produced;
+            st_population_centered_add(&centered, &centered_error, w, p.mu[e], anchor);
+            within += w * p.va[e];
+        }
+        long double between = 0;
+        for (int e = 0; e < p.nf; e++) if (p.produced[e])
+        {
+            long double terms[] = {p.mu[e], -anchor, -centered, -centered_error};
+            long double d = st_population_signed_total(terms, 4);
+            between += ((long double)p.produced[e] / p.total_produced) * d * d;
+        }
+        long double mean_terms[] = {anchor, centered, centered_error};
+        values[4] = st_population_finite(st_population_signed_total(mean_terms, 3), "produced mean");
+        values[5] = st_population_finite(within, "produced within-family variance");
+        values[6] = st_population_finite(between, "produced between-family variance");
+        values[7] = st_population_finite(within + between, "produced marginal variance");
+    }
+    if (p.total_retained)
+    {
+        int first = 0; while (!p.retained[first]) first++;
+        long double anchor = p.mu[first], baseline = 0, baseline_error = 0, response = 0, response_error = 0;
+        for (int e = 0; e < p.nf; e++) if (p.retained[e])
+        {
+            long double w = (long double)p.retained[e] / p.total_retained;
+            st_population_centered_add(&baseline, &baseline_error, w, p.mu[e], anchor);
+            st_genetic_sum_add(&response, &response_error, w * p.response[e]);
+        }
+        long double between = 0;
+        for (int e = 0; e < p.nf; e++) if (p.retained[e])
+        {
+            long double terms[] = {p.mu[e], -anchor, p.response[e], -baseline, -baseline_error, -response, -response_error};
+            long double d = st_population_signed_total(terms, 7);
+            between += ((long double)p.retained[e] / p.total_retained) * d * d;
+        }
+        long double baseline_terms[] = {anchor, baseline, baseline_error},
+            selected_terms[] = {anchor, baseline, baseline_error, response, response_error},
+            response_terms[] = {response, response_error};
+        values[8] = st_population_finite(st_population_signed_total(baseline_terms, 3), "retained-weight baseline");
+        values[9] = st_population_finite(st_population_signed_total(selected_terms, 5), "G1 retained mean");
+        values[10] = st_population_finite(st_population_signed_total(response_terms, 2), "retained response");
+        values[11] = st_population_finite(between, "retained between-family variance");
+    }
+    double q[3] = {st_population_relatedness(&p, p.family_share, p.produced_families > 0),
+        st_population_relatedness(&p, p.produced_share, p.total_produced > 0),
+        st_population_relatedness(&p, p.retained_share, p.total_retained > 0)};
+    const char *residual_names[] = {"total.progeny", "total.selected", "n.families", "family.lower", "family.upper",
+        "parent.lower", "parent.upper", "parent.use.lower", "parent.use.upper", "fixed.contributions",
+        "relatedness", "diversity", "allowed.pairs", "family.selected"};
+    int nresiduals = plan_object && source_progeny.active ? 14 : 13;
+    double residuals[14]; for (int i = 0; i < 14; i++) residuals[i] = NA_REAL;
+    int violated = 0, unknown = 0, unsupported_count = 0;
+    const char **unsupported = st_work_alloc((isNull(original_constraints) ? 0 : (size_t)XLENGTH(original_constraints)) +
+        (isNull(direct_constraints) ? 0 : (size_t)XLENGTH(direct_constraints)) + 32,
+        sizeof(*unsupported));
+    double tolerance = 1e-10, diversity_loss = NA_REAL;
+    if (!isNull(original_plan))
+    {
+        SEXP t = st_population_get(st_population_get(original_plan, "control"), "tolerance");
+        if (!isNull(t))
+        {
+            tolerance = st_cross_scalar(t, "inherited tolerance");
+            if (tolerance < 0 || tolerance > 1) error("st.cross.evaluate: inherited tolerance is invalid");
+        }
+        unknown += st_population_known_constraints(original_constraints, 0, unsupported, &unsupported_count);
+    }
+    if (allocation)
+    {
+        unknown += st_population_known_constraints(direct_constraints, 1, unsupported, &unsupported_count);
+        if (isNull(original_plan) && !isNull(original_constraints))
+        {
+            unknown += st_population_known_constraints(original_constraints, 0, unsupported, &unsupported_count);
+            unknown++; unsupported[unsupported_count++] = "inherited.reference";
+        }
+        SEXP sample = st_population_get(direct_constraints, "contribution.sample");
+        if (!isNull(sample) && strcmp(st_legacy_marker_string(sample, "contribution.sample"), "nominal.retained.family.shares"))
+        { unknown++; unsupported[unsupported_count++] = "contribution.sample"; }
+    }
+    if (allocation || plan_object)
+    {
+        SEXP total = st_population_get(direct_constraints, "total.progeny");
+        if (!isNull(total)) { residuals[0] = fabs((double)p.total_produced - st_cross_scalar(total, "declared total.progeny")); if (residuals[0] != 0) violated = 1; }
+        SEXP selected = st_population_get(direct_constraints, "total.selected");
+        if (!isNull(selected)) { residuals[1] = fabs((double)p.total_retained - st_cross_scalar(selected, "declared total.selected")); if (residuals[1] != 0) violated = 1; }
+        SEXP count = st_population_get(direct_constraints, allocation ? "n.families" : "n.crosses");
+        if (!isNull(count)) { residuals[2] = fabs(p.produced_families - st_cross_scalar(count, "declared family count")); if (residuals[2] != 0) violated = 1; }
+    }
+    for (int e = 0; e < p.nf; e++)
+    {
+        if (!ISNA(p.lower[e])) residuals[3] = fmax(ISNA(residuals[3]) ? 0 : residuals[3], fmax(0, p.lower[e] - p.produced[e]));
+        if (!ISNA(p.upper[e])) residuals[4] = fmax(ISNA(residuals[4]) ? 0 : residuals[4], fmax(0, p.produced[e] - p.upper[e]));
+    }
+    if (plan_object && source_progeny.active)
+    {
+        double produced_residual = fabs((double)p.total_produced - source_progeny.budget),
+            selected_residual = fabs((double)p.total_retained - (source_variable.active ? source_variable.total :
+                (double)((int64_t)source_progeny.families * source_progeny.retained))),
+            family_residual = fabs((double)p.produced_families - (double)source_progeny.families);
+        residuals[0] = fmax(ISNA(residuals[0]) ? 0 : residuals[0], produced_residual);
+        residuals[1] = fmax(ISNA(residuals[1]) ? 0 : residuals[1], selected_residual);
+        residuals[2] = fmax(ISNA(residuals[2]) ? 0 : residuals[2], family_residual);
+        residuals[13] = 0;
+        for (int e = 0; e < p.nf; e++)
+        {
+            int L = source_progeny.lower, U = source_progeny.upper, l = source_progeny.retained, u = source_progeny.retained;
+            if (source_variable.active)
+            {
+                int row = st_population_variable_row(&source_variable, p.ids[p.p1[e]], p.ids[p.p2[e]]);
+                if (row < 0) error("st.cross.evaluate: an actual family has no eligible source-bound key");
+                L = st_population_variable_count(source_variable.columns[0], row, "min.progeny", 1);
+                U = st_population_variable_count(source_variable.columns[1], row, "max.progeny", 1);
+                l = st_population_variable_count(source_variable.columns[2], row, "min.selected", 0);
+                u = st_population_variable_count(source_variable.columns[3], row, "max.selected", 0);
+            }
+            if (!p.produced[e]) continue;
+            residuals[3] = fmax(ISNA(residuals[3]) ? 0 : residuals[3], fmax(0, L - p.produced[e]));
+            residuals[4] = fmax(ISNA(residuals[4]) ? 0 : residuals[4], fmax(0, p.produced[e] - U));
+            residuals[13] = fmax(residuals[13], fmax(fmax(0, l - p.retained[e]), fmax(0, p.retained[e] - u)));
+        }
+        if (produced_residual || selected_residual || family_residual || residuals[13]) violated = 1;
+    }
+    if (plan_object && !source_progeny.active)
+    {
+        SEXP count = st_population_get(original_constraints, "n.progeny");
+        if (!isNull(count))
+        {
+            double expected = st_cross_scalar(count, "declared n.progeny");
+            for (int e = 0; e < p.nf; e++) if (p.produced[e])
+            {
+                residuals[3] = fmax(ISNA(residuals[3]) ? 0 : residuals[3], fmax(0, expected - p.produced[e]));
+                residuals[4] = fmax(ISNA(residuals[4]) ? 0 : residuals[4], fmax(0, p.produced[e] - expected));
+            }
+        }
+    }
+    if ((!ISNA(residuals[3]) && residuals[3] > 0) || (!ISNA(residuals[4]) && residuals[4] > 0)) violated = 1;
+    const double *constraint_share = source_family_contributions ? p.family_share : p.retained_share;
+    int share_available = source_family_contributions ? p.produced_families > 0 : p.total_retained > 0;
+    const char *parent_fields[] = {"lower", "upper", "degree.lower", "degree.upper", "requested.contributions"};
+    for (int field = 0; field < 5; field++)
+    {
+        SEXP limit = st_population_get(original_constraints, parent_fields[field]);
+        if (isNull(limit)) continue;
+        int target = 5 + field; residuals[target] = 0;
+        if ((field < 2 || field == 4) && !share_available)
+        { residuals[target] = NA_REAL; unknown++; unsupported[unsupported_count++] = parent_fields[field]; continue; }
+        for (int i = 0; i < p.np; i++)
+        {
+            if (TYPEOF(original_ids) == STRSXP)
+            {
+                int candidate = 0;
+                for (int j = 0; j < XLENGTH(original_ids); j++) if (!strcmp(p.ids[i], st_population_id(original_ids, j))) { candidate = 1; break; }
+                if (!candidate) continue;
+            }
+            double requested = st_population_parent_limit(limit, p.ids[i], original_ids, i, p.np, parent_fields[field]),
+                actual = field == 2 || field == 3 ? p.uses[i] : constraint_share[i],
+                r = field == 0 || field == 2 ? fmax(0, requested - actual) : field == 1 || field == 3 ?
+                    fmax(0, actual - requested) : fabs(actual - requested);
+            residuals[target] = fmax(residuals[target], r);
+        }
+        if (residuals[target] > (field == 2 || field == 3 ? 0 : tolerance)) violated = 1;
+    }
+    SEXP theta = st_population_get(original_constraints, "theta");
+    if (!isNull(theta))
+    {
+        double limit = st_cross_scalar(theta, "inherited theta"), actual = source_family_theta ? q[0] : q[2];
+        if (ISNA(actual)) { unknown++; unsupported[unsupported_count++] = "theta.reference"; }
+        else { residuals[10] = fmax(0, actual - limit); if (residuals[10] > tolerance * fmax(1, fabs(limit))) violated = 1; }
+    }
+    SEXP diversity = st_population_get(original_inputs, "diversity"),
+        diversity_constraint = st_population_get(original_constraints, "diversity");
+    if (!isNull(diversity_constraint))
+    {
+        SEXP sample = st_population_get(diversity, "sample"), maximum = st_population_get(diversity_constraint, "max");
+        if (!p.produced_families || isNull(diversity) || isNull(sample) ||
+            strcmp(st_legacy_marker_string(sample, "diversity sample"), "family.slots") || isNull(maximum))
+        { unknown++; unsupported[unsupported_count++] = "diversity.reference"; }
+        else
+        {
+            double limit = st_cross_scalar(maximum, "inherited diversity max");
+            if (TYPEOF(original_ids) == STRSXP)
+            {
+                int n = (int)XLENGTH(original_ids); const char **ids = st_work_alloc(n, sizeof(*ids));
+                int *uses = st_work_alloc(n, sizeof(int));
+                for (int i = 0; i < n; i++)
+                {
+                    ids[i] = st_population_id(original_ids, i); int at = st_allocate_find(ids[i], p.ids, p.np);
+                    if (at < 0) error("st.cross.evaluate: inherited diversity candidate is missing from the live reference");
+                    uses[i] = p.uses[at];
+                }
+                diversity_loss = st_cross_propsd_validate(st_population_get(diversity, "G"), n, ids, uses, DBL_MAX);
+            }
+            else diversity_loss = st_cross_propsd_validate(st_population_get(diversity, "G"), p.np, p.ids, p.uses, DBL_MAX);
+            residuals[11] = fmax(0, diversity_loss - limit);
+            if (!(diversity_loss < limit)) violated = 1;
+        }
+    }
+    if (!isNull(original_plan))
+    {
+        SEXP allowed = st_population_get(original_inputs, "pairs"); residuals[12] = 0;
+        if (!isNull(allowed))
+        {
+            SEXP a = R_NilValue, b = R_NilValue;
+            R_xlen_t allowed_n = 0; int pair_matrix = 0;
+            if (TYPEOF(allowed) == STRSXP)
+            {
+                SEXP dimensions = getAttrib(allowed, R_DimSymbol);
+                if (TYPEOF(dimensions) == INTSXP && XLENGTH(dimensions) == 2 && INTEGER(dimensions)[1] == 2)
+                { a = b = allowed; allowed_n = INTEGER(dimensions)[0]; pair_matrix = 1; }
+            }
+            else if (inherits(allowed, "data.frame") && TYPEOF(allowed) == VECSXP && XLENGTH(allowed) == 2)
+            {
+                a = VECTOR_ELT(allowed, 0); b = VECTOR_ELT(allowed, 1);
+                if (TYPEOF(a) == STRSXP) allowed_n = XLENGTH(a);
+            }
+            if (TYPEOF(a) != STRSXP || TYPEOF(b) != STRSXP || allowed_n > INT_MAX ||
+                (!pair_matrix && XLENGTH(a) != XLENGTH(b)))
+            { residuals[12] = NA_REAL; unknown++; unsupported[unsupported_count++] = "allowed.pairs"; }
+            else for (int e = 0; e < p.nf; e++) if (p.produced[e])
+            {
+                int found = 0;
+                for (R_xlen_t row = 0; row < allowed_n; row++)
+                {
+                    const char *x = st_population_id(a, (int)row),
+                        *y = st_population_id(b, (int)(pair_matrix ? row + allowed_n : row));
+                    if ((!strcmp(x, p.ids[p.p1[e]]) && !strcmp(y, p.ids[p.p2[e]])) ||
+                        (!strcmp(y, p.ids[p.p1[e]]) && !strcmp(x, p.ids[p.p2[e]]))) { found = 1; break; }
+                }
+                if (!found) residuals[12]++;
+            }
+        }
+        if (!ISNA(residuals[12]) && residuals[12] > 0) violated = 1;
+    }
+    if (practical)
+    {
+        if (practical_state == -1) violated = 1;
+        else if (practical_state != 1) unknown++;
+        int directed = st_practical_directed_pairs(practical, original_plan);
+        if (directed < 0) { residuals[12] = NA_REAL; unknown++; unsupported[unsupported_count++] = "directed.allowed.pairs"; }
+        else if (directed > 0) { residuals[12] = directed; violated = 1; }
+    }
+    if (genetic)
+    {
+        int state = st_genetic_check_int(genetic, p.nf, genetic_first, genetic_second, p.produced, p.retained,
+            p.accuracy, genetic_intensity, genetic_count_context, 1);
+        if (st_cross_genetic_requirements(genetic) & 1)
+        {
+            if (state == -1) violated = 1;
+            else if (state != 1) { unknown++; unsupported[unsupported_count++] = "selected.founder.theta"; }
+        }
+    }
+    const char *status = violated ? "infeasible" : unknown ? "partly.qualified" : "evaluated";
+    SEXP out = destination;
+    if (isNull(destination))
+    {
+        const char *out_names[] = {"crosses", "population", "contributions", "relatedness", "feasibility",
+            "availability", "diagnostics", "inputs", "status", "constraints", "directions", "operations"};
+        SEXP directions_out = practical ? st_practical_directions(practical, &p, &np) : R_NilValue;
+        SEXP operations_out = practical ? st_practical_operations(practical, &np) : R_NilValue;
+        const char *output_names[16];
+        memcpy(output_names, out_names, 9 * sizeof(*output_names));
+        int output_count = 9;
+        if (practical)
+            output_names[output_count++] = "constraints";
+        if (!isNull(directions_out))
+            output_names[output_count++] = "directions";
+        if (!isNull(operations_out))
+            output_names[output_count++] = "operations";
+        output_count = st_genetic_public_fields(genetic, output_names, output_count);
+        out = st_allocate_list(output_count, output_names, &np);
+        int output_at = practical ? 10 : 9;
+        if (!isNull(directions_out))
+            SET_VECTOR_ELT(out, output_at++, directions_out);
+        if (!isNull(operations_out))
+            SET_VECTOR_ELT(out, output_at++, operations_out);
+        const char *columns[] = {"family", "P1Name", "P2Name", "n.progeny", "n.selected", "mu", "va", "accuracy",
+            "intensity", "selected.mean", "response", "active.produced", "active.retained", "input.rows"};
+        SEXP crosses = st_legacy_marker_frame(14, columns, p.nf, &np);
+        for (int j = 0; j < 14; j++) SET_VECTOR_ELT(crosses, j, st_allocate_keep(allocVector(j == 1 || j == 2 ? STRSXP :
+            j == 0 || j == 3 || j == 4 ? INTSXP : j == 11 || j == 12 ? LGLSXP : j == 13 ? VECSXP : REALSXP, p.nf), &np));
+        for (int e = 0; e < p.nf; e++)
+        {
+            INTEGER(VECTOR_ELT(crosses, 0))[e] = e + 1;
+            SET_STRING_ELT(VECTOR_ELT(crosses, 1), e, mkCharCE(p.ids[p.p1[e]], CE_UTF8));
+            SET_STRING_ELT(VECTOR_ELT(crosses, 2), e, mkCharCE(p.ids[p.p2[e]], CE_UTF8));
+            INTEGER(VECTOR_ELT(crosses, 3))[e] = p.produced[e]; INTEGER(VECTOR_ELT(crosses, 4))[e] = p.retained[e];
+            REAL(VECTOR_ELT(crosses, 5))[e] = p.mu[e]; REAL(VECTOR_ELT(crosses, 6))[e] = p.va[e];
+            REAL(VECTOR_ELT(crosses, 7))[e] = p.accuracy[e]; REAL(VECTOR_ELT(crosses, 8))[e] = p.intensity[e];
+            REAL(VECTOR_ELT(crosses, 9))[e] = p.selected[e]; REAL(VECTOR_ELT(crosses, 10))[e] = p.response[e];
+            LOGICAL(VECTOR_ELT(crosses, 11))[e] = p.produced[e] > 0;
+            LOGICAL(VECTOR_ELT(crosses, 12))[e] = p.retained[e] > 0;
+            int nrows = 0; for (int row = 0; row < p.nr; row++) if (p.mapping[row] == e) nrows++;
+            SEXP rows = PROTECT(allocVector(INTSXP, nrows));
+            int at = 0; for (int row = 0; row < p.nr; row++) if (p.mapping[row] == e) INTEGER(rows)[at++] = row + 1;
+            SET_VECTOR_ELT(VECTOR_ELT(crosses, 13), e, rows);
+            UNPROTECT(1);
+        }
+        SET_VECTOR_ELT(out, 0, crosses);
+    }
+    const char *population_names[] = {"total.progeny", "total.selected", "n.families.produced", "n.families.retained",
+        "produced.mean", "produced.within.variance", "produced.between.variance", "produced.variance",
+        "retained.baseline", "retained.mean", "response", "retained.between.variance", "retained.within.variance",
+        "retained.variance", "retained.sample.variance", "future.mean"};
+    SEXP population = st_allocate_list(16, population_names, &np);
+    for (int i = 0; i < 16; i++) SET_VECTOR_ELT(population, i, st_allocate_keep(ScalarReal(values[i]), &np));
+    if (isNull(destination)) SET_VECTOR_ELT(out, 1, population);
+    else st_public_set(out, "population", population);
+    const char *basis_names[] = {"family.slots", "produced", "retained"};
+    int publish_relatedness = isNull(destination) || st_public_field(destination, "population.relatedness") >= 0;
+    SEXP contributions = st_allocate_list(3, basis_names, &np), relatedness = publish_relatedness ? st_allocate_list(3, basis_names, &np) : R_NilValue,
+        parent_names = st_allocate_keep(allocVector(STRSXP, p.np), &np);
+    for (int i = 0; i < p.np; i++) SET_STRING_ELT(parent_names, i, mkCharCE(p.ids[i], CE_UTF8));
+    for (int j = 0; j < 3; j++)
+    {
+        SEXP share = st_allocate_keep(allocVector(REALSXP, p.np), &np);
+        if (p.np) memcpy(REAL(share), j == 0 ? p.family_share : j == 1 ? p.produced_share : p.retained_share, (size_t)p.np * sizeof(double));
+        setAttrib(share, R_NamesSymbol, parent_names); SET_VECTOR_ELT(contributions, j, share);
+        if (publish_relatedness) SET_VECTOR_ELT(relatedness, j, st_allocate_keep(ScalarReal(q[j]), &np));
+    }
+    if (isNull(destination))
+    {
+        SET_VECTOR_ELT(out, 2, contributions); SET_VECTOR_ELT(out, 3, relatedness);
+    }
+    else
+    {
+        st_public_set(out, "population.contributions", contributions);
+        if (publish_relatedness) st_public_set(out, "population.relatedness", relatedness);
+    }
+    const char *feasibility_names[] = {"feasible", "residuals", "tolerance", "source.status", "qualification"};
+    SEXP feasibility = st_allocate_list(5, feasibility_names, &np), residual_out = st_allocate_keep(allocVector(REALSXP, nresiduals), &np),
+        residual_labels = st_allocate_keep(allocVector(STRSXP, nresiduals), &np);
+    for (int i = 0; i < nresiduals; i++) { REAL(residual_out)[i] = residuals[i]; SET_STRING_ELT(residual_labels, i, mkChar(residual_names[i])); }
+    setAttrib(residual_out, R_NamesSymbol, residual_labels);
+    SET_VECTOR_ELT(feasibility, 0, st_allocate_keep(ScalarLogical(violated ? FALSE : unknown ? NA_LOGICAL : TRUE), &np));
+    SET_VECTOR_ELT(feasibility, 1, residual_out);
+    SET_VECTOR_ELT(feasibility, 2, st_allocate_keep(ScalarReal(tolerance), &np));
+    SET_VECTOR_ELT(feasibility, 3, allocation || plan_object ? st_population_get(source, "status") : R_NilValue);
+    SET_VECTOR_ELT(feasibility, 4, st_allocate_keep(mkString(unknown ?
+        "Some inherited restrictions are unavailable or unsupported; verified violations remain infeasible." :
+        "Supported declared restrictions were independently recomputed; this evaluation is not an optimizer certificate."), &np));
+    if (!isNull(destination))
+    {
+        st_public_set(out, "feasibility", feasibility);
+        if (genetic)
+        {
+            st_future_consumer_assess(genetic, source, practical, genetic_intensity, genetic_count_context, p.nf, genetic_first, genetic_second, p.produced, p.retained, p.accuracy);
+            st_genetic_attach_result(out, genetic, genetic_request, &np);
+        }
+        if (final_mode) st_genetic_final_leave(prepared_genetic, previous_final);
+        UNPROTECT(np); return out;
+    }
+    SET_VECTOR_ELT(out, 4, feasibility);
+    const char *availability_names[] = {"produced", "retained", "relatedness", "selected.within.variance",
+        "selected.variance", "selected.sample.variance", "selected.genomic.ancestry", "selected.genomic.diversity", "G2", "operations", "reasons"};
+    SEXP availability = st_allocate_list(11, availability_names, &np), reasons = st_allocate_list(10, availability_names, &np);
+    const char *reason_text[] = {p.total_produced ? "available" : "No progeny were produced.",
+        p.total_retained ? "available" : "No progeny were retained.", !p.K.n ? "No named K reference was supplied." :
+            p.produced_families ? "available" : "No produced families define nominal shares.",
+        "Selected within-family second moments are not yet qualified.", "Selected within-family second moments are not yet qualified.",
+        "Finite selected-set covariance is not yet qualified; a one-member marginal is not a sample variance.",
+        "Selection-aware genomic ancestry requires genetic.model.", "Selection-aware genomic diversity requires genetic.model.",
+        "A second DH-cycle forecast requires genetic.model$future.", "Crossing-operation multiplicities are not identified by progeny counts."};
+    for (int i = 0; i < 10; i++)
+    {
+        SET_VECTOR_ELT(availability, i, st_allocate_keep(ScalarLogical(i == 0 ? p.total_produced > 0 : i == 1 ?
+            p.total_retained > 0 : i == 2 ? p.K.n > 0 && p.produced_families > 0 : i == 9 ? practical && practical->operations_known : FALSE), &np));
+        SET_VECTOR_ELT(reasons, i, st_allocate_keep(mkString(i == 9 && practical && practical->operations_known ? "available" : reason_text[i]), &np));
+    }
+    SET_VECTOR_ELT(availability, 10, reasons); SET_VECTOR_ELT(out, 5, availability);
+    const char *diagnostic_names[] = {"selection.method", "target", "input.rows", "pooled.rows", "produced.counts.fixed",
+        "quadrature.error.estimate", "quadrature.evaluations", "quadrature.failures", "numerical.qualification", "ancestry.qualification",
+        "diversity.loss", "unsupported.constraints", "K.symmetry.tolerance", "unqualified.count", "numerical.status", "practical"};
+    const char *diagnostic_labels[17];
+    int diagnostic_count = practical ? 16 : 15;
+    memcpy(diagnostic_labels, diagnostic_names, (size_t)diagnostic_count * sizeof(*diagnostic_labels));
+    if (genetic) diagnostic_labels[diagnostic_count++] = "genetic";
+    SEXP diagnostics = st_allocate_list(diagnostic_count, diagnostic_labels, &np);
+    SET_VECTOR_ELT(diagnostics, 0, st_allocate_keep(mkString(method), &np));
+    SET_VECTOR_ELT(diagnostics, 1, st_allocate_keep(mkString("G1"), &np));
+    SET_VECTOR_ELT(diagnostics, 2, st_allocate_keep(ScalarInteger(p.nr), &np));
+    SET_VECTOR_ELT(diagnostics, 3, st_allocate_keep(ScalarInteger(p.nr - p.nf), &np));
+    SET_VECTOR_ELT(diagnostics, 4, st_allocate_keep(ScalarLogical(TRUE), &np));
+    SET_VECTOR_ELT(diagnostics, 5, st_allocate_keep(ScalarReal(numerical_error), &np));
+    SET_VECTOR_ELT(diagnostics, 6, st_allocate_keep(ScalarReal(normal_mode && p.normal ? p.normal->evaluations : 0), &np));
+    SET_VECTOR_ELT(diagnostics, 7, st_allocate_keep(ScalarReal(normal_mode ? p.normal ? p.normal->failures : external_failures : 0), &np));
+    SET_VECTOR_ELT(diagnostics, 8, st_allocate_keep(mkString(normal_mode ? (p.normal ? p.normal->failures : external_failures) ?
+        "Some finite-normal quadratures did not converge; their estimates remain numerically unresolved." :
+        "Finite-normal mean quadrature is numerically qualified; adaptive error estimates are not rigorous interval certificates." :
+        "Legacy Burrows finite-family response; biological approximation error is not bounded."), &np));
+    SET_VECTOR_ELT(diagnostics, 9, st_allocate_keep(mkString(
+        "Nominal parental gene shares are not realized or selection-aware genomic ancestry."), &np));
+    SET_VECTOR_ELT(diagnostics, 10, st_allocate_keep(ScalarReal(diversity_loss), &np));
+    SEXP unsupported_out = st_allocate_keep(allocVector(STRSXP, unsupported_count), &np);
+    for (int i = 0; i < unsupported_count; i++) SET_STRING_ELT(unsupported_out, i, mkChar(unsupported[i]));
+    SET_VECTOR_ELT(diagnostics, 11, unsupported_out);
+    SET_VECTOR_ELT(diagnostics, 12, st_allocate_keep(ScalarReal(p.K.n ? p.K.tolerance : NA_REAL), &np));
+    SET_VECTOR_ELT(diagnostics, 13, st_allocate_keep(ScalarInteger(unknown), &np));
+    SET_VECTOR_ELT(diagnostics, 14, st_allocate_keep(mkString(normal_mode ? (p.normal ? p.normal->failures : external_failures) ?
+        "numerically.unresolved" : "numerically.qualified" : "legacy.approximation"), &np));
+    SET_VECTOR_ELT(out, 6, diagnostics);
+    const char *input_names[10] = {"plan", "scores", "n.selected", "accuracy", "K", "selection.method", "input.family", "provenance", "practical"};
+    int input_count = practical ? 9 : 8;
+    if (genetic) input_names[input_count++] = "genetic.model";
+    SEXP inputs = st_allocate_list(input_count, input_names, &np), mapping = st_allocate_keep(allocVector(INTSXP, p.nr), &np);
+    SET_VECTOR_ELT(inputs, 0, source); SET_VECTOR_ELT(inputs, 1, scores); SET_VECTOR_ELT(inputs, 2, retained_arg);
+    SET_VECTOR_ELT(inputs, 3, accuracy_arg); SET_VECTOR_ELT(inputs, 4, matrix);
+    SET_VECTOR_ELT(inputs, 5, st_allocate_keep(mkString(method), &np));
+    for (int row = 0; row < p.nr; row++) INTEGER(mapping)[row] = p.mapping[row] + 1;
+    SET_VECTOR_ELT(inputs, 6, mapping);
+    const char *provenance_names[] = {"scores", "n.selected", "accuracy", "K", "selection.method"};
+    const char *provenance_values[] = {scores_origin, retained_origin, accuracy_origin, matrix_origin, method_origin};
+    SEXP provenance = st_allocate_list(5, provenance_names, &np);
+    for (int i = 0; i < 5; i++) SET_VECTOR_ELT(provenance, i, st_allocate_keep(mkString(provenance_values[i]), &np));
+    SET_VECTOR_ELT(inputs, 7, provenance); SET_VECTOR_ELT(out, 7, inputs);
+    SET_VECTOR_ELT(out, 8, st_allocate_keep(mkString(status), &np));
+    if (practical)
+    {
+        SET_VECTOR_ELT(diagnostics, 15, st_practical_set_report(practical, &np));
+        SET_VECTOR_ELT(inputs, 8, practical->explicit_request);
+        const char *effective_names[] = {"practical"};
+        SEXP effective = st_allocate_list(1, effective_names, &np);
+        SET_VECTOR_ELT(effective, 0, st_practical_set_request(practical, &np));
+        SET_VECTOR_ELT(out, 9, effective);
+    }
+    setAttrib(out, R_ClassSymbol, st_allocate_keep(mkString("st.cross.population"), &np));
+    if (genetic)
+    {
+        st_future_consumer_assess(genetic, source, practical, genetic_intensity, genetic_count_context, p.nf, genetic_first, genetic_second, p.produced, p.retained, p.accuracy);
+        out = st_genetic_attach_result(out, genetic, genetic_request, &np);
+    }
+    if (final_mode) st_genetic_final_leave(prepared_genetic, previous_final);
+    UNPROTECT(np); return out;
+}
+
+static SEXP st_legacy_cross_evaluate(SEXP args)
+{
+    return st_cross_evaluate_genetic_impl(args, R_NilValue, NULL, NULL, NULL, R_NilValue);
+}
+
+SEXP st_cross_joint_evaluate_genetic(SEXP completed_plan, void *prepared_genetic,
+    st_cross_genetic_intensity intensity, void *count_context)
+{
+    return st_cross_evaluate_genetic_impl(R_NilValue, completed_plan, prepared_genetic, intensity, count_context, R_NilValue);
+}
+
+SEXP st_cross_joint_evaluate(SEXP completed_plan)
+{
+    return st_cross_evaluate_genetic_impl(R_NilValue, completed_plan, NULL, NULL, NULL, R_NilValue);
+}
+
+void st_cross_joint_evaluate_plan(SEXP plan, void *genetic,
+    st_cross_genetic_intensity intensity, void *count_context)
+{
+    st_cross_evaluate_genetic_impl(R_NilValue, plan, genetic, intensity, count_context, plan);
+}
+
+static SEXP st_legacy_cross_evaluate_print(SEXP args)
+{
+    SEXP x = st_population_get(args, "object"), options = st_population_get(args, "options"),
+        population = st_population_get(x, "population"), crosses = st_population_get(x, "crosses"),
+        relatedness = st_population_get(x, "relatedness"), diagnostics = st_population_get(x, "diagnostics");
+    if (!inherits(x, "st.cross.population") || !inherits(crosses, "data.frame"))
+        error("print: invalid st.cross.population object");
+    SEXP p1 = st_population_get(crosses, "P1Name"), p2 = st_population_get(crosses, "P2Name"),
+        n = st_population_get(crosses, "n.progeny"), r = st_population_get(crosses, "n.selected"), means = st_population_get(crosses, "selected.mean");
+    if (TYPEOF(p1) != STRSXP || TYPEOF(p2) != STRSXP || XLENGTH(p1) > INT_MAX ||
+        TYPEOF(n) != INTSXP || TYPEOF(r) != INTSXP || TYPEOF(means) != REALSXP ||
+        XLENGTH(p2) != XLENGTH(p1) || XLENGTH(n) != XLENGTH(p1) || XLENGTH(r) != XLENGTH(p1) || XLENGTH(means) != XLENGTH(p1))
+        error("print: invalid st.cross.population family columns");
+    for (int e = 0; e < XLENGTH(p1); e++)
+    {
+        st_population_id(p1, e); st_population_id(p2, e);
+        if (INTEGER(n)[e] < 0 || INTEGER(r)[e] < 0 || INTEGER(r)[e] > INTEGER(n)[e] ||
+            (INTEGER(r)[e] ? !R_FINITE(REAL(means)[e]) : !ISNA(REAL(means)[e])))
+            error("print: invalid st.cross.population family values");
+    }
+    const char *printed_population[] = {"total.progeny", "total.selected", "n.families.produced", "n.families.retained",
+        "retained.mean", "retained.baseline", "response", "retained.between.variance", "produced.within.variance",
+        "produced.between.variance", "produced.variance"};
+    for (int i = 0; i < 11; i++)
+    {
+        SEXP value = st_population_get(population, printed_population[i]);
+        if (!st_allocate_numeric(value) || XLENGTH(value) != 1)
+            error("print: invalid st.cross.population summary");
+    }
+    const char *printed_relatedness[] = {"family.slots", "produced", "retained"};
+    for (int i = 0; i < 3; i++)
+    {
+        SEXP value = st_population_get(relatedness, printed_relatedness[i]);
+        if (!st_allocate_numeric(value) || XLENGTH(value) != 1)
+            error("print: invalid st.cross.population relatedness");
+    }
+    int digits = st_allocate_print_setting(args, options, "digits", "print.digits", 1, 16, 0),
+        top = st_allocate_print_setting(args, options, "top", "print.top", 0, INT_MAX, 1),
+        bottom = st_allocate_print_setting(args, options, "bottom", "print.bottom", 0, INT_MAX, 1),
+        width = st_allocate_print_setting(args, options, "char.per.line", "print.char.perline", 40, 10000, 0);
+    st_allocate_print_line(width, "Cross-plan population evaluation");
+    st_allocate_print_line(width, "Status: %s; selection: %s", st_legacy_marker_string(st_population_get(x, "status"), "status"),
+        st_legacy_marker_string(st_population_get(diagnostics, "selection.method"), "selection.method"));
+    st_allocate_print_line(width, "Produced: %.0f in %.0f families; retained: %.0f in %.0f families",
+        asReal(st_population_get(population, "total.progeny")), asReal(st_population_get(population, "n.families.produced")),
+        asReal(st_population_get(population, "total.selected")), asReal(st_population_get(population, "n.families.retained")));
+    if (asReal(st_population_get(population, "total.selected")) > 0)
+    {
+        st_allocate_print_line(width, "G1 retained mean: %.*g; retained-weight baseline: %.*g; response: %.*g", digits,
+            asReal(st_population_get(population, "retained.mean")), digits, asReal(st_population_get(population, "retained.baseline")),
+            digits, asReal(st_population_get(population, "response")));
+        st_allocate_print_line(width, "Retained between-family variance: %.*g; retained total variance: unavailable", digits,
+            asReal(st_population_get(population, "retained.between.variance")));
+    }
+    else st_allocate_print_line(width, "G1 retained mean and retained variance: unavailable (no retained progeny)");
+    if (asReal(st_population_get(population, "total.progeny")) > 0)
+        st_allocate_print_line(width, "Produced marginal variance, within / between / total: %.*g / %.*g / %.*g", digits,
+            asReal(st_population_get(population, "produced.within.variance")), digits,
+            asReal(st_population_get(population, "produced.between.variance")), digits, asReal(st_population_get(population, "produced.variance")));
+    else st_allocate_print_line(width, "Produced mean and marginal variance: unavailable (no produced progeny)");
+    if (!ISNA(asReal(st_population_get(relatedness, "family.slots"))) && ISNA(asReal(st_population_get(relatedness, "retained"))))
+        st_allocate_print_line(width, "Nominal relatedness, family / produced: %.*g / %.*g; retained: unavailable", digits,
+            asReal(st_population_get(relatedness, "family.slots")), digits, asReal(st_population_get(relatedness, "produced")));
+    else if (!ISNA(asReal(st_population_get(relatedness, "family.slots"))))
+        st_allocate_print_line(width, "Nominal relatedness, family / produced / retained: %.*g / %.*g / %.*g", digits,
+            asReal(st_population_get(relatedness, "family.slots")), digits, asReal(st_population_get(relatedness, "produced")),
+            digits, asReal(st_population_get(relatedness, "retained")));
+    else st_allocate_print_line(width, "Relatedness: unavailable without a supplied reference and defined shares");
+    st_practical_print_summary(diagnostics, width);
+    if (isNull(st_population_get(x, "genetic.model")))
+        st_allocate_print_line(width, "Selected genomic diversity and G2 forecast: unavailable without genetic.model");
+    else
+    {
+        st_genetic_consumer_print(x, digits, width);
+        if (isNull(st_population_get(x, "future"))) st_allocate_print_line(width, "G2 forecast: unavailable without genetic.model$future");
+    }
+    st_allocate_print_line(width, "Family: parents; produced / retained; predicted retained mean");
+    int families = (int)XLENGTH(p1), ntop = top < families ? top : families,
+        nbot = bottom < families - ntop ? bottom : families - ntop;
+    for (int e = 0; e < families; e++)
+    {
+        if (e == ntop && families - ntop - nbot > 0) st_allocate_print_line(width, "... %d families omitted ...", families - ntop - nbot);
+        if (e >= ntop && e < families - nbot) continue;
+        if (ISNA(REAL(means)[e])) st_allocate_print_line(width, "%d: %s x %s; %d / %d; NA", e + 1,
+            st_population_id(p1, e), st_population_id(p2, e), INTEGER(n)[e], INTEGER(r)[e]);
+        else st_allocate_print_line(width, "%d: %s x %s; %d / %d; %.*g", e + 1,
+            st_population_id(p1, e), st_population_id(p2, e), INTEGER(n)[e], INTEGER(r)[e], digits, REAL(means)[e]);
     }
     return x;
 }
@@ -26464,12 +36428,18 @@ static SEXP st_vcf_from_frame(SEXP args)
         }
         chrom[i] = at + 1;
     }
-    for (int i = 0; i < nchrom; i++) message_size += strlen(translateCharUTF8(levels[i])) + 40;
+    for (int i = 0; i < nchrom; i++)
+    {
+        size_t length = strlen(translateCharUTF8(levels[i]));
+        if (length > SIZE_MAX - 40 || message_size > SIZE_MAX - length - 40)
+            error("Chromosome message size overflow");
+        message_size += length + 40;
+    }
     char *message = st_work_alloc(message_size, 1);
     strcpy(message, "Chromosome coding: ");
     size_t used = strlen(message);
     for (int i = 0; i < nchrom; i++)
-        used += (size_t)snprintf(message + used, message_size - used, "%s%d=%s", i ? ", " : "", i + 1, translateCharUTF8(levels[i]));
+        used += (size_t)st_text_write(message + used, message_size - used, "%s%d=%s", i ? ", " : "", i + 1, translateCharUTF8(levels[i]));
     st_info(0, message);
     int format = -1, cm = -1, formats = 0, cms = 0;
     SEXP format_values = R_NilValue;
@@ -26682,6 +36652,8 @@ static SEXP st_vcf_to_frame(SEXP args)
          a2 = st_stvcf_element(value, "allele2");
     int nr = LENGTH(ids), ns = LENGTH(individuals);
     if (!nr || !ns) error("STvcf contains no markers or no individuals");
+    if (ns > INT_MAX - 8)
+        error("STvcf sample count exceeds supported data-frame width");
     if (TYPEOF(chrom) != INTSXP || LENGTH(chrom) != nr || TYPEOF(pos) != REALSXP || LENGTH(pos) != nr ||
         TYPEOF(ids) != STRSXP || TYPEOF(refs) != STRSXP || LENGTH(refs) != nr ||
         TYPEOF(alts) != STRSXP || LENGTH(alts) != nr || TYPEOF(individuals) != STRSXP || TYPEOF(levels) != STRSXP)
@@ -26770,8 +36742,8 @@ static SEXP st_vcf_to_frame(SEXP args)
             int first = raw ? RAW(a1)[at] : INTEGER(a1)[at], second = raw ? RAW(a2)[at] : INTEGER(a2)[at];
             char text[32];
             if (raw ? first == 255 || second == 255 : first == NA_INTEGER || second == NA_INTEGER)
-                snprintf(text, sizeof(text), ".%c.", phased ? '|' : '/');
-            else snprintf(text, sizeof(text), "%d%c%d", first, phased ? '|' : '/', second);
+                st_text_write(text, sizeof(text), ".%c.", phased ? '|' : '/');
+            else st_text_write(text, sizeof(text), "%d%c%d", first, phased ? '|' : '/', second);
             SET_STRING_ELT(column, i, mkChar(text));
         }
     }
@@ -26787,10 +36759,58 @@ static SEXP st_vcf_to_frame(SEXP args)
     return out;
 }
 
+static SEXP st_marker_info_levels(void)
+{
+    typedef struct
+    {
+        int level;
+        char name[sizeof(gv->name)];
+    } st_info_record;
+    if (gs_ndta && !gs_data)
+        error("Information registry is unavailable");
+    R_xlen_t count = 1;
+    for (gs_UNSIGNED i = 0; i < gs_ndta; i++)
+        if (gs_data[i])
+        {
+            if (count == R_XLEN_T_MAX)
+                error("Information registry exceeds R vector limits");
+            if (!memchr(gs_data[i]->name, '\0', sizeof(gs_data[i]->name)))
+                error("Information registry contains an invalid name");
+            count++;
+        }
+    if ((uintmax_t)count > SIZE_MAX / sizeof(st_info_record))
+        error("Information registry size overflow");
+    void *mark = st_work_mark();
+    st_info_record *records = st_work_alloc((size_t)count, sizeof(*records));
+    records[0].level = gv->info_level;
+    memcpy(records[0].name, "default", sizeof("default"));
+    R_xlen_t row = 1;
+    for (gs_UNSIGNED i = 0; i < gs_ndta; i++)
+        if (gs_data[i])
+        {
+            records[row].level = gs_data[i]->info_level;
+            memcpy(records[row].name, gs_data[i]->name,
+                   strlen(gs_data[i]->name) + 1);
+            row++;
+        }
+    SEXP levels = PROTECT(allocVector(INTSXP, count)),
+         names = PROTECT(allocVector(STRSXP, count));
+    for (R_xlen_t i = 0; i < count; i++)
+    {
+        INTEGER(levels)[i] = records[i].level;
+        SET_STRING_ELT(names, i, mkChar(records[i].name));
+    }
+    setAttrib(levels, R_NamesSymbol, names);
+    st_work_reset(mark);
+    UNPROTECT(2);
+    return levels;
+}
+
 SEXP st_legacy_marker(SEXP args)
 {
     const char *action =
         st_legacy_marker_string(getListElement(args, "action"), "action");
+    if (!strcmp(action, "info.levels")) return st_marker_info_levels();
     if (!strcmp(action, "vcf.identifiers")) return st_vcf_identifiers(args);
     if (!strcmp(action, "vcf.from.frame")) return st_vcf_from_frame(args);
     if (!strcmp(action, "vcf.to.frame")) return st_vcf_to_frame(args);
@@ -26810,6 +36830,10 @@ SEXP st_legacy_marker(SEXP args)
         return st_legacy_cross_allocate(args);
     if (!strcmp(action, "cross.allocate.print"))
         return st_legacy_cross_allocate_print(args);
+    if (!strcmp(action, "cross.evaluate"))
+        return st_legacy_cross_evaluate(args);
+    if (!strcmp(action, "cross.evaluate.print"))
+        return st_legacy_cross_evaluate_print(args);
     if (!strcmp(action, "call"))
         return st_legacy_buffer_call(args);
     if (!strcmp(action, "il.lines"))

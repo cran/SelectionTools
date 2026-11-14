@@ -103,7 +103,7 @@ covariance requests, as for \code{st.lmm}.}
 \item{traits}{\code{NULL} for a univariate response, or unique, nonmissing,
 nonempty trait names. Multiple names define a multivariate response without
 requiring an observed response matrix.}
-\item{...}{Reserved for future extensions. Additional arguments are rejected.
+\item{...}{Additional arguments are rejected.
 In particular, \code{st.lmm.simulate} has no fitted random coefficients to
 hold and does not accept \code{re.form}.}
 }

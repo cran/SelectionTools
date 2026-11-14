@@ -4,9 +4,8 @@
 \title{Input Files for Marker-Assisted Backcrossing Examples}
 \description{
 A collection of linkage maps and parental marker-genotype files used by the
-marker-assisted backcrossing examples.  The files are stored as an R data
-object so that they can be loaded with \code{data()} and written to a
-temporary directory when the file-based \code{mab.*} interface is used.
+marker-assisted backcrossing examples. The files are stored as character
+vectors in one R data object for the file-based \code{mab.*} interface.
 }
 \usage{
 data(masbc.input)
@@ -26,25 +25,8 @@ backcross plants.  Keeping the files as character vectors preserves the
 original input-file representation while making the complete example data
 available through the standard R \code{data()} mechanism.
 
-The marker-assisted backcrossing functions still use file names.  Therefore,
-a vignette or analysis can load \code{masbc.input}, write the required list
-elements to \code{tempdir()}, and set \code{st.input.dir} to that temporary
-directory.
-}
-\examples{
-data("masbc.input")
-
-mab.input.dir <- file.path(tempdir(), "masbc-input")
-dir.create(mab.input.dir, showWarnings = FALSE)
-
-invisible(Map(
-    function(x, file) writeLines(x, file.path(mab.input.dir, file)),
-    masbc.input,
-    names(masbc.input)
-))
-
-list.files(mab.input.dir)
-unlink(mab.input.dir, recursive = TRUE)
+The file-based marker-assisted backcrossing interface identifies these
+input files by their list-element names.
 }
 \source{
 Input files used by the marker-assisted backcrossing examples supplied with

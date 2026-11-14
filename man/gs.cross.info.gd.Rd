@@ -1,9 +1,9 @@
 \name{gs.cross.info.gd}
 \alias{gs.cross.info.gd}
-\title{Returns or write genetic-distance information for crosses}
+\title{Returns or writes genetic-distance information for crosses}
 
 \description{
-Returns or write genetic-distance information for crosses.
+Returns or writes genetic-distance information for crosses.
 }
 
 \usage{

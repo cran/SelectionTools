@@ -51,13 +51,6 @@ half-sib families. Theoretical and Applied Genetics 136:203.
 Map: supplied \file{maize2.tar.gz}, \file{map_HOH_pruned.csv}, columns
 \code{name_50k}, \code{chr}, and \code{pos_cM_estimated}; these are exported
 unchanged in \file{maize2.mmp}.}
-\examples{
-data("v-flintmaize2-vcf", package = "SelectionTools")
-st.load.vcf.data(v.flintmaize2.vcf, data.set = "flint")
-head(st.get.map(data.set = "flint"))
-A.flint <- st.get.A("flint")
-dim(A.flint)
-}
 \seealso{\code{\link{v-dentmaize2-vcf}}, \code{\link{v-hybmaize2-phe}},
 \code{\link{v-flintmaize-vcf}}, \code{\link{st.load.vcf.data}},
 \code{\link{st.set.simpop}}}

@@ -33,12 +33,12 @@ st.cross.plan.execute(plan, population, name, scheme = "DH")
   result directly from the planned parental crosses.}
 }
 \details{
-Simulation initialization occurs before this function. For example,
+Simulation initialization occurs before this function.
 \code{st.set.simpop} initializes the simulation state from a marker data set
 and creates the founder population. That initialization function performs its
 own reset; a single initialization can support several subsequent plans.
-The simulation random number generator is also initialized before execution,
-for example by \code{rng.init(seed = 101)}.
+The simulation random number generator is also initialized with
+\code{rng.init} before execution.
 
 The installed simulation genome and marker map determine meiosis. The map
 contains markers on every chromosome, with valid chromosome lengths and
@@ -92,39 +92,4 @@ data analysis with Plabsoft. Euphytica 161:133--139.
 \code{st.cross.plan}, \code{st.set.simpop}, \code{rng.init},
 \code{population.pedigree}, \code{genotype.population},
 \code{evaluate.population}
-}
-\examples{
-\dontrun{
-data("v-tropmaize-vcf")
-data("v-tropmaize-phe")
-st.load.vcf.data(v.tropmaize.vcf)
-st.load.performance.data(v.tropmaize.phe)
-parents <- head(v.tropmaize.vcf$individual, 6)
-a1 <- matrix(as.integer(v.tropmaize.vcf$allele1),
-             nrow = length(v.tropmaize.vcf$ID))
-a2 <- matrix(as.integer(v.tropmaize.vcf$allele2),
-             nrow = length(v.tropmaize.vcf$ID))
-complete <- rowSums(a1[, seq_along(parents), drop = FALSE] == 255L |
-                    a2[, seq_along(parents), drop = FALSE] == 255L |
-                    a1[, seq_along(parents), drop = FALSE] !=
-                    a2[, seq_along(parents), drop = FALSE]) == 0
-st.restrict.marker.data(ind.list = parents,
-                        mar.list = v.tropmaize.vcf$ID[complete])
-st.restrict.marker.data(NoAll.MAX = 2, ExHet.MIN = 1e-8)
-gs.esteff.rr(method = "BLUP")
-values <- gs.estimate.gv()
-K <- st.get.A()/2
-merit <- setNames(values$yhat, as.character(values$i))
-merit <- merit[rownames(K)]
-plan <- st.cross.plan(merit, K, n.crosses = 3, theta = max(K),
-                      n.progeny = 100, control = list(method = "exact"))
-plan
-st.set.simpop("MaizeFounders", effect.name = "MaizeEffect")
-rng.init(seed = 101)
-executed <- st.cross.plan.execute(plan, population = "MaizeFounders",
-                                  name = "MaizeDH")
-executed
-offspring.design <- head(attr(executed, "design"))
-offspring.design
-}
 }

@@ -1,4 +1,4 @@
-# Thin R entry points. Calculations, RNG scopes and task control are native.
+
 
 st.options <- function(options = NULL) {
     result <- .Call("st_lmm_frontend", list(action = "st.options", options = options),
@@ -68,7 +68,7 @@ as.vector.st.lmm.result <- function(x, mode = "any") .Call("st_lmm_frontend", li
 as.list.st.lmm.result <- function(x, ...) .Call("st_lmm_frontend", list(action = "result.as.list", object = x,
     dots = list(...)), PACKAGE = "SelectionTools")
 
-`[.st.lmm.result` <- function(x, ..., drop = TRUE) .Call("st_lmm_frontend", list(action = "result.subset",
+`[.st.lmm.result` <- function(x, ..., drop = FALSE) .Call("st_lmm_frontend", list(action = "result.subset",
     object = x, indices = substitute(list(...)), envir = parent.frame(), drop = drop), PACKAGE = "SelectionTools")
 
 `[[.st.lmm.result` <- function(x, ..., exact = TRUE) .Call("st_lmm_frontend", list(action = "result.extract",
@@ -308,11 +308,32 @@ print.propsd <- function(x, digits = NULL, ...) {
 
 st.cross.plan <- function(merit, K, n.crosses, theta, n.progeny = 100, lower = 0, upper = 0.5,
     pairs = NULL, contributions = NULL, mode = "joint", control = list(), scores = NULL,
-    criterion = "mean", accuracy = 1, diversity = NULL) .Call("st_lmm_frontend",
+    criterion = "mean", accuracy = 1, diversity = NULL, constraints = NULL,
+    progeny = NULL, genetic.model = NULL) .Call("st_lmm_frontend",
         list(action = "cross.plan", merit = merit, K = K, n.crosses = n.crosses, theta = theta,
             n.progeny = n.progeny, lower = lower, upper = upper, pairs = pairs,
             contributions = contributions, mode = mode, control = control, scores = scores,
-            criterion = criterion, accuracy = accuracy, diversity = diversity), PACKAGE = "SelectionTools")
+            criterion = criterion, accuracy = accuracy, diversity = diversity,
+            constraints = constraints, progeny = progeny, genetic.model = genetic.model,
+            n.progeny.supplied = !missing(n.progeny)), PACKAGE = "SelectionTools")
+
+st.cross.frontier <- function(merit, K, n.crosses, theta, n.progeny = 100, lower = 0, upper = 0.5,
+    pairs = NULL, contributions = NULL, mode = "joint", control = list(), scores = NULL,
+    criterion = "mean", accuracy = 1, diversity = NULL, constraints = NULL,
+    progeny = NULL, genetic.model = NULL, limits, metric = "theta", warmstart = FALSE) .Call("st_lmm_frontend",
+        list(action = "cross.frontier", merit = merit, K = K, n.crosses = n.crosses, theta = theta,
+            n.progeny = n.progeny, lower = lower, upper = upper, pairs = pairs,
+            contributions = contributions, mode = mode, control = control, scores = scores,
+            criterion = criterion, accuracy = accuracy, diversity = diversity,
+            constraints = constraints, progeny = progeny, genetic.model = genetic.model,
+            n.progeny.supplied = !missing(n.progeny), limits = limits, metric = metric,
+            warmstart = warmstart), PACKAGE = "SelectionTools")
+
+print.st.cross.frontier <- function(x, digits = NULL, top = NULL, bottom = NULL, char.per.line = NULL, ...) {
+    .Call("st_lmm_frontend", list(action = "cross.frontier.print", object = x, digits = digits, top = top,
+        bottom = bottom, char.per.line = char.per.line), PACKAGE = "SelectionTools")
+    invisible(x)
+}
 
 print.st.cross.plan <- function(x, digits = NULL, top = NULL, bottom = NULL, char.per.line = NULL, ...) {
     .Call("st_lmm_frontend", list(action = "cross.plan.print", object = x, digits = digits, top = top,
@@ -502,8 +523,8 @@ print.st.gwas <- function(x, digits = NULL, top = NULL, bottom = NULL,
         bottom = bottom, char.per.line = char.per.line, ...),
     PACKAGE = "SelectionTools"))
 
-# The original plotting route remains available for calls using only its
-# original arguments. Additional plot controls use standard R graphics.
+
+
 plot.st.gwas <- function(x, which = "manhattan", trait = NULL, alpha = 0.05,
     adjust = "BH", threshold = NULL, chromosome = NULL, xlim = NULL,
     position.scale = 1e6, position.unit = "Mb", shade = NULL,
@@ -775,8 +796,8 @@ plot.st.gwas <- function(x, which = "manhattan", trait = NULL, alpha = 0.05,
     invisible(x)
 }
 
-# Population plots operate on calculated distances and principal coordinates;
-# they do not load, change, or recode native marker data.
+
+
 st.plot.genetic.distances <- function(x, labels = FALSE, cluster = TRUE,
     col = grDevices::heat.colors(200), hclust.method = "complete", ...)
 {

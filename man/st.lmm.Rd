@@ -664,7 +664,7 @@ Copies and overlapping refits cannot be counted as independent trials;
 disjoint subsets of a common source can be supplied as separate trials.
 Separately fitted independent
 trials are not equated merely because their values happen to agree.
-Identical legacy snapshots without a provenance token are rejected when
+Identical earlier snapshots without a provenance token are rejected when
 independence cannot be checked. Independence can be checked after refitting independent trials with the
 current version or through genuinely disjoint observation IDs as follows.
 
@@ -1016,7 +1016,7 @@ likelihood definition. RSS uses the supplied precision weights.
 For comparisons with an intercept, TSS is the weighted sum of squared
 deviations from the weighted response mean. Without an intercept, the
 comparison uses \eqn{TSS=\sum_i y_i^2}, without weighting, even when RSS is
-weighted. This follows the legacy \code{regsubsets} normalization for
+weighted. This follows the established \code{regsubsets} normalization for
 \code{rsq}, \code{adjr2} and \code{BICm}; the sum includes only the common
 analysis sample, after excluding missing, non-finite and zero-weight rows.
 This reporting convention does not change the weighted fits, RSS,
@@ -1093,7 +1093,7 @@ Certified balanced categorical layouts use centred grouped projections for
 source sums of squares and sums of products, with analytic EMS coefficients.
 Integer cell-count checks verify the source intersections and orthogonality;
 equal marginal factor counts alone are insufficient. This calculation keeps
-the same moment equations, restricted interactions and inference methods.
+the same moment equations, constrained interactions and inference methods.
 The numerical orthogonal-basis calculation remains available for layouts or
 rank tolerances outside that certificate. Mixed categorical fits and
 fixed-only fits using \code{control$design="general"} record the selected
@@ -1288,7 +1288,7 @@ For a multivariate response, genetic trait covariances for a random
 genetic correlation matrix. These are correlations between random genetic
 effects; they are distinct from correlations between observed traits.
 
-For a multivariate response, every bare random term and \code{units} defaults to an unstructured trait covariance, equivalent to \code{us(trait)}. \code{diag(trait):gen} and \code{diag(trait):units} specify independent traits. Each \code{at(env):gen} stratum receives its own block; \code{at(env,"local"):gen} selects levels. A multivariate random regression has a full covariance over trait by regression coefficient unless restricted explicitly.
+For a multivariate response, every bare random term and \code{units} defaults to an unstructured trait covariance, equivalent to \code{us(trait)}. \code{diag(trait):gen} and \code{diag(trait):units} specify independent traits. Each \code{at(env):gen} stratum receives its own block; \code{at(env,"local"):gen} selects levels. A multivariate random regression has a full covariance over trait by regression coefficient unless constrained explicitly.
 
 For \code{random = ~gen} with \code{ucov = list(gen = A)}, the genetic effects have covariance \eqn{\sigma_g^2 A}; the variance multiplier is estimated by ML or REML. The supplied matrix is the relationship matrix itself; an inverse is not expected. No centring or rescaling is applied to the supplied matrix, so the reported variance component is a multiplier of its original scale. Singular genomic relationship matrices are supported. For multivariate effects or random regressions, the covariance between the coefficient vectors of groups \eqn{g} and \eqn{h} is \eqn{A_{gh}G}, where \eqn{G} is the estimated trait/regression covariance.
 
@@ -1829,7 +1829,7 @@ This extension is residual-only and contains one virtual \code{us(trait)}
 and one ordinary occasion axis per product. Additional axes, random
 trait-products, other trait modifiers within products, heterogeneous
 occasion scales, nested/stratified grouping expressions and direct sums
-of trait-products are not yet supported. Ordinary supported random-effect
+of trait-products are not supported. Ordinary supported random-effect
 terms can accompany an identifiable trait-product residual. Explicit
 fixed/shared covariance constraints remain unavailable for models containing
 this estimated US trait family. Multivariate precision weights and offsets
@@ -1912,7 +1912,7 @@ Asymptotic and Satterthwaite fixed-effect inference, ordinary prediction and
 simulation, serialization and response/weight refits retain constraints.
 \code{random.test="none"} applies here. Kenward--Roger adjustment, covariance likelihood
 profiles, automatic random-term deletion, subset selection and model-comparison
-tests with explicit constraints are not yet implemented and fail explicitly.
+tests with explicit constraints are not implemented and fail explicitly.
 Physical \code{newparams} overrides are rejected for constrained objects;
 the intended covariance model requires an explicit fit. Optimizer comparisons use
 L-BFGS-B and retain the same physical constraints for every supported start.
@@ -2085,7 +2085,7 @@ The symbolic pattern includes all possible nonzero coefficients over the fitted
 covariance family. Exactly zero or singular random covariance matrices therefore
 retain the same symbolic structure. Covariance derivatives are evaluated with
 grouped coefficient-space solves, without inverting \eqn{G} or dividing by its
-variances. Temporary derivative work is restricted to batches of grouping
+variances. Temporary derivative work is limited to batches of grouping
 levels. The relationship and REML projection corrections are retained exactly.
 This route supports the documented unstructured, diagonal, homogeneous diagonal,
 compound-symmetric and first-order autoregressive random-coefficient families,
@@ -2205,7 +2205,7 @@ loadings, one independent residual,
 products retain their spectral shortcut. The rule is based on measured solver
 comparisons; larger observation counts retain the prior eligibility rules.
 An explicit \code{control$auto.dense.min.threads}, or the option
-\code{SelectionTools.auto.dense.min.threads}, overrides this restricted rule
+\code{SelectionTools.auto.dense.min.threads}, overrides this rule
 for incomplete products. A finite threshold selects dense when the configured
 thread count reaches that threshold; \code{Inf} disables the preference.
 Explicit backend choices take precedence.

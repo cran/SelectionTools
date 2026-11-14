@@ -154,7 +154,12 @@ An object of class \code{st.oma} with the following components:
   assessed, which need not be a feasible returned incumbent.}
   \item{bounds}{The requested two-element \code{dF} interval, transformed
   \code{F1.lower}, \code{F1.upper} and \code{F2.upper}, merit upper bound,
-  remaining gap and bound description.}
+  remaining gap and bound description. The gap is evaluated using centered
+  merits before the common merit offset is restored. This preserves the
+  same simplex objective while avoiding cancellation under a large common
+  offset. The original-unit \code{merit.upper} remains rounded upward;
+  subtracting the rounded reported merit from it can therefore give a
+  larger difference than the reported gap.}
   \item{control}{The iteration limit and tolerance used.}
   \item{inputs}{The supplied parent and mating tables, complete matrix,
   \code{dF} request and reference convention retained for reconstruction.}

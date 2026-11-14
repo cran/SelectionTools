@@ -21,7 +21,11 @@ Returns invisible list of input arguments. The function is a compatibility wrapp
 }
 
 \details{
-Sampling does not modify the source population. The requested sample is copied into the destination. Sampling can be with or without replacement according to \code{rep}. Raw chromosome data are always the authoritative copied representation; cached genotype and genetic-value categories are transferred only when complete in the source and successfully constructed for the entire destination.
+Each derived cache is complete for all individuals or absent throughout a
+population. A mixed source cache causes all marker-genotype, genetic-value and
+phenotype caches to be cleared silently in the source and result.
+
+Sampling retains the source individuals; mixed source caches are cleared as described above. The requested sample is copied into the destination. Sampling can be with or without replacement according to \code{rep}. Raw chromosome data are always the authoritative copied representation; cached genotype and genetic-value categories are transferred only when complete in the source and successfully constructed for the entire destination.
 }
 
 

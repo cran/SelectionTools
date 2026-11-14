@@ -34,8 +34,8 @@ For multiple loci, each row represents an allele at one locus;
 the other locus columns contain zero placeholders.
 Frequencies are calculated by dividing each count by the sum of
 all returned counts. They therefore sum to one across the complete
-table, not separately within each locus. To obtain frequencies
-within a locus, evaluate that locus separately.
+table, not separately within each locus. Frequencies within one locus are obtained by evaluating that locus
+separately.
 }
 
 \examples{

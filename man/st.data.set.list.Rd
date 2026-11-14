@@ -61,7 +61,7 @@ work portion of the data set.
 
 \code{ram.core.MB} and \code{ram.work.MB} are estimates in MiB (1024^2 bytes),
 with the unit shown as \code{MB} in the column names.
-\code{ram.core.MB} includes individual identifiers and full pedigrees, marker names, allele payload and dictionaries, linkage-map storage, observed responses and the active symbolic-A fitted prediction state. Shared fitted state is counted in each owning dataset's estimate. \code{ram.work.MB} contains reconstructible calculation state, including marker statistics, legacy genotypic values and effects, haplotype/cross objects, chromosome-specific recombination and LD matrices, and reusable calculation buffers. Allocator overhead is not
+\code{ram.core.MB} includes individual identifiers and full pedigrees, marker names, allele payload and dictionaries, linkage-map storage, observed responses and the active symbolic-A fitted prediction state. Shared fitted state is counted in each owning dataset's estimate. \code{ram.work.MB} contains reconstructible calculation state, including marker statistics, earlier genotypic values and effects, haplotype/cross objects, chromosome-specific recombination and LD matrices, and reusable calculation buffers. Allocator overhead is not
 included. \code{st.compact.data.set()} releases the work portion while
 retaining the core.
 

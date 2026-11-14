@@ -110,14 +110,16 @@
 ###################################################
 ### code chunk number 10: PRINT-options (eval = FALSE)
 ###################################################
-## st.options()
+## printing.options <- st.options()
+## printing.options
 ## st.options(list(
 ##     print.digits = 3,
 ##     print.char.perline = 60,
 ##     print.top = 5,
 ##     print.bottom = 2
 ## ))
-## coef(m.rapeseed)
+## printing.coefficients <- coef(m.rapeseed)
+## printing.coefficients
 
 
 ###################################################
@@ -231,15 +233,15 @@
 ### code chunk number 22: CM15-1 (eval = FALSE)
 ###################################################
 ## data("v-lmm-rapeseed", package = "SelectionTools")
-## st.options(list(
-##     print.ems = TRUE,
-##     print.test.construction = TRUE
-## ))
 
 
 ###################################################
 ### code chunk number 23: CM15-2 (eval = FALSE)
 ###################################################
+## st.options(list(
+##     print.ems = TRUE,
+##     print.test.construction = TRUE
+## ))
 ## m.rape <- st.lmm(
 ##     fixed = hgt ~ geno * env,
 ##     random = ~rep:env,
@@ -391,7 +393,7 @@
 ### code chunk number 38: M37_NA_NA-details (eval = FALSE)
 ###################################################
 ## st.options(list(print.test.construction = TRUE))
-## print(m)
+## m
 
 
 ###################################################
@@ -1811,12 +1813,13 @@
 ##     cov = ~at(env):units,
 ##     data = barley.seven.traits,
 ##     random.test = "none",
-##     control = list(backend = "block")
+##     control = list(backend = "block", optimizer = "AI")
 ## )
 ## barley.lsmeans <- as.data.frame(st.lsm(m.met.seven.means, ~gen))
-## round(xtabs(lsmeans ~ gen + trait, data = barley.lsmeans)[
+## barley.lsmeans.table <- round(xtabs(lsmeans ~ gen + trait, data = barley.lsmeans)[
 ##     , c("YLD", "HLW", "TKW", "PLH", "DH", "DM", "SC")
 ## ], 2)
+## barley.lsmeans.table
 
 
 ###################################################
@@ -2327,6 +2330,7 @@
 ### code chunk number 227: barley-series-setup (eval = FALSE)
 ###################################################
 ## library(SelectionTools)
+## st.set.num.threads(1)
 ## data("v-lmm-barley-met", package = "SelectionTools")
 ## barley.met$env <- interaction(barley.met$loc, barley.met$year,
 ##     drop = TRUE)
@@ -2508,6 +2512,7 @@
 ### code chunk number 245: tropmaize-prediction-load (eval = FALSE)
 ###################################################
 ## library(SelectionTools)
+## st.set.num.threads(1)
 ## data("v-lmm-tropmaize", package = "SelectionTools")
 ## data("v-tropmaize-vcf", package = "SelectionTools")
 ## st.load.vcf.data(v.tropmaize.vcf, data.set = "maize.lmm")
@@ -2567,6 +2572,7 @@
 ### code chunk number 252: tropmaize-split-load (eval = FALSE)
 ###################################################
 ## library(SelectionTools)
+## st.set.num.threads(1)
 ## data("v-tropmaize-vcf", package = "SelectionTools")
 ## st.load.vcf.data(v.tropmaize.vcf, data.set = "maize.split")
 
@@ -2644,6 +2650,7 @@
 ###################################################
 ### code chunk number 260: tropmaize-lattice-mask (eval = FALSE)
 ###################################################
+## st.set.num.threads(1)
 ## data("v-lmm-tropmaize-lattice", package = "SelectionTools")
 ## data("v-tropmaize-vcf", package = "SelectionTools")
 ## st.load.vcf.data(v.tropmaize.vcf, data.set = "maize.lattice")
@@ -2687,6 +2694,7 @@
 ###################################################
 ### code chunk number 265: H01-load (eval = FALSE)
 ###################################################
+## st.set.num.threads(1)
 ## data("v-flintmaize-vcf", package = "SelectionTools")
 ## data("v-dentmaize-vcf", package = "SelectionTools")
 ## data("v-hybmaize-phe", package = "SelectionTools")
@@ -2792,6 +2800,7 @@
 ###################################################
 ### code chunk number 277: tropmaize-dataset-load (eval = FALSE)
 ###################################################
+## st.set.num.threads(1)
 ## data("v-tropmaize-vcf", package = "SelectionTools")
 ## data("v-tropmaize-phe", package = "SelectionTools")
 ## st.load.vcf.data(v.tropmaize.vcf, data.set = "maize")
@@ -2857,6 +2866,7 @@
 ###################################################
 ### code chunk number 285: H02-load (eval = FALSE)
 ###################################################
+## st.set.num.threads(1)
 ## data("v-flintmaize-vcf", package = "SelectionTools")
 ## data("v-dentmaize-vcf", package = "SelectionTools")
 ## data("v-hybmaize-phe", package = "SelectionTools")
@@ -2964,6 +2974,7 @@
 ###################################################
 ### code chunk number 298: H03-fit (eval = FALSE)
 ###################################################
+## st.set.num.threads(1)
 ## hybrid.gca.sca <- st.lmm(
 ##     fixed = GY ~ 1,
 ##     random = ~flint + dent + flint:dent,
@@ -3013,6 +3024,7 @@
 ###################################################
 ### code chunk number 303: H04-load (eval = FALSE)
 ###################################################
+## st.set.num.threads(1)
 ## data("v-flintmaize2-vcf")
 ## data("v-dentmaize2-vcf")
 ## data("v-hybmaize2-phe")

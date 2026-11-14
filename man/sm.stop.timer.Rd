@@ -1,9 +1,9 @@
 \name{sm.stop.timer}
 \alias{sm.stop.timer}
-\title{Start or stop the simulation timing helper}
+\title{Stops the simulation timing helper}
 
 \description{
-Start or stop the simulation timing helper.
+Stops the simulation timing helper.
 }
 
 \usage{
@@ -11,7 +11,7 @@ sm.stop.timer(depth=1, info.level=0)
 }
 
 \arguments{
-   \item{depth}{Function argument used by this operation.}
+   \item{depth}{Timer depth, a finite whole number from 1 through 5.}
    \item{info.level}{Function argument used by this operation.}
 }
 \value{

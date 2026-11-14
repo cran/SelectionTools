@@ -31,15 +31,6 @@ half-sib families. Theoretical and Applied Genetics 136:203.
 \doi{10.1007/s00122-023-04446-3}.
 Original parental markers and hybrid records: Technow et al. (2014),
 Genetics 197:1343--1355. \doi{10.1534/genetics.114.165860}.}
-\examples{
-data("v-flintmaize2-vcf", package = "SelectionTools")
-data("v-dentmaize2-vcf", package = "SelectionTools")
-data("v-hybmaize2-phe", package = "SelectionTools")
-st.load.vcf.data(v.flintmaize2.vcf, data.set = "flint")
-st.load.vcf.data(v.dentmaize2.vcf, data.set = "dent")
-st.hybrid.data.set("flint", "dent", v.hybmaize2.phe, "maize2")
-st.hybrid.data.set.list()
-}
 \seealso{\code{\link{v-flintmaize2-vcf}}, \code{\link{v-dentmaize2-vcf}},
 \code{\link{v-hybmaize-phe}}, \code{\link{st.hybrid.data.set}},
 \code{\link{st.lmm}}}

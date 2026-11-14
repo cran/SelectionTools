@@ -1,57 +1,65 @@
 
 SEXP define_map_df(SEXP map)
 {
-    int i;
-    int counter = 0;
-
     if (cMP != 0)
     {
         info(-2, "First remove previously loaded linkage map\n");
         return R_NilValue;
     }
-
-    SEXP chromS = VECTOR_ELT(map, 0);
-    SEXP posS = VECTOR_ELT(map, 1);
-    SEXP nameS = VECTOR_ELT(map, 2);
-    SEXP classS = VECTOR_ELT(map, 3);
-
-    int n = LENGTH(chromS);
-
-    for (i = 0; i < n; i++)
+    if (!validate_map_genome())
+        error("A valid genome is required before defining a linkage map");
+    if (TYPEOF(map) != VECSXP || XLENGTH(map) < 4)
+        error("A linkage map requires chromosome, position, name and class columns");
+    SEXP chromosome = VECTOR_ELT(map, 0), position = VECTOR_ELT(map, 1),
+         name = VECTOR_ELT(map, 2), class = VECTOR_ELT(map, 3);
+    R_xlen_t length = XLENGTH(chromosome);
+    if (TYPEOF(chromosome) != INTSXP || TYPEOF(position) != REALSXP ||
+        TYPEOF(name) != STRSXP || TYPEOF(class) != STRSXP ||
+        XLENGTH(position) != length || XLENGTH(name) != length ||
+        XLENGTH(class) != length || length > INT_MAX)
+        error("Invalid linkage-map column types or lengths");
+    if (!length)
+        return R_NilValue;
+    if ((size_t)length > SIZE_MAX / sizeof(TMappoint) ||
+        length > INT_MAX / NoHoms)
+        error("The linkage map is too large");
+    st_map_extension *stage = calloc(1, sizeof(*stage));
+    if (!stage)
+        error("Cannot allocate linkage-map stage");
+    st_work_adopt(stage, st_map_extension_free);
+    stage->n = (int)length;
+    stage->points = calloc((size_t)length, sizeof(*stage->points));
+    if (!stage->points)
+        error("Cannot allocate linkage-map points");
+    for (int i = 0; i < stage->n; i++)
     {
-        int chrom = INTEGER(chromS)[i];
-        double pos = REAL(posS)[i];
-
-        PopDescr[chrom - 1].NrMappoints++;
-        cMP++;
-
-        if (1 == PopDescr[chrom - 1].NrMappoints)
-            PopDescr[chrom - 1].Mappoint = (TMappoint *)yCalloc(1, TMappoint);
-        else
-
-            PopDescr[chrom - 1].Mappoint = (TMappoint *)yRealloc(
-                PopDescr[chrom - 1].Mappoint, PopDescr[chrom - 1].NrMappoints,
-                TMappoint);
-
-        {
-            TMappoint *tmpPoint =
-                &PopDescr[chrom - 1]
-                     .Mappoint[PopDescr[chrom - 1].NrMappoints - 1];
-            (*tmpPoint).chrom = chrom;
-            (*tmpPoint).Pos = pos;
-            (*tmpPoint).name =
-                (char *)yCalloc(strlen(CHAR(STRING_ELT(nameS, i))) + 1, char);
-            (*tmpPoint).class =
-                (char *)yCalloc(strlen(CHAR(STRING_ELT(classS, i))) + 1, char);
-            (*tmpPoint).counter = counter++;
-            strcpy((*tmpPoint).name, CHAR(STRING_ELT(nameS, i)));
-            strcpy((*tmpPoint).class, CHAR(STRING_ELT(classS, i)));
-        }
+        int chrom = INTEGER(chromosome)[i];
+        double pos = REAL(position)[i];
+        if (chrom == NA_INTEGER || chrom < 1 || chrom > NoChroms ||
+            !R_FINITE(pos) || pos < 0 || pos > PopDescr[chrom - 1].ChromLen ||
+            STRING_ELT(name, i) == NA_STRING || STRING_ELT(class, i) == NA_STRING)
+            error("Invalid linkage-map chromosome, position, name or class");
+        TMappoint *point = stage->points + i;
+        point->chrom = chrom;
+        point->Pos = pos;
+        point->counter = i;
+        point->name = st_text_dup(CHAR(STRING_ELT(name, i)));
+        point->class = st_text_dup(CHAR(STRING_ELT(class, i)));
+        if (!point->name || !point->class)
+            error("Cannot allocate linkage-map labels");
     }
-
-    cMPhom = NoHoms * cMP;
-
+    qsort(stage->points, (size_t)stage->n, sizeof(*stage->points), mccmp);
+    if (!install_mappoints(stage->points, stage->n))
+        error("Cannot install linkage map");
+    st_work_detach(stage);
+    st_map_extension_free(stage);
     return R_NilValue;
+}
+
+static void st_define_effect_stage_free(void *pointer)
+{
+    st_sim_ef_free(pointer);
+    free(pointer);
 }
 
 static int st_define_effects_native(const char *effname,
@@ -60,8 +68,7 @@ static int st_define_effects_native(const char *effname,
                                     R_xlen_t nrows)
 {
     int i, hom;
-    TEffects Effect;
-    TEffects *tmpEffects;
+    TEffects *Effect = NULL;
 
     if (NULL != find_Effect((char *)effname))
     {
@@ -69,7 +76,7 @@ static int st_define_effects_native(const char *effname,
         return -1;
     }
 
-    if (strlen(effname) >= sizeof(Effect.Name))
+    if (strlen(effname) >= sizeof(Effect->Name))
     {
         info(-2, "Effect name too long\n");
         return -1;
@@ -81,7 +88,7 @@ static int st_define_effects_native(const char *effname,
         return -1;
     }
 
-    if ((0 < nrows) && ((size_t)nrows > SIZE_MAX / sizeof(*Effect.Eff)))
+    if ((0 < nrows) && ((size_t)nrows > SIZE_MAX / sizeof(*Effect->Eff)))
     {
         info(-2, "Memory allocation failed in define_effects_df\n");
         return -1;
@@ -99,19 +106,31 @@ static int st_define_effects_native(const char *effname,
         return -1;
     }
 
-    memset(&Effect, 0, sizeof(Effect));
-    Effect.GValue_avg = 0;
-    Effect.weight = 1;
-    strcpy(Effect.Name, effname);
+    for (R_xlen_t row = 0; row < nrows; row++)
+        if (!marker_names[row] || !isfinite(values[row]) || fabs(values[row]) > FLT_MAX)
+        {
+            info(-2, "Effect names and finite float values are required\n");
+            return -1;
+        }
+    Effect = calloc(1, sizeof(*Effect));
+    if (!Effect)
+    {
+        info(-2, "Cannot allocate effect-definition stage\n");
+        return -1;
+    }
+    st_work_adopt(Effect, st_define_effect_stage_free);
+    Effect->GValue_avg = 0;
+    Effect->weight = 1;
+    strcpy(Effect->Name, effname);
 
     if (0 < nrows)
     {
-        Effect.Eff = malloc((size_t)nrows * sizeof(*Effect.Eff));
+        Effect->Eff = malloc((size_t)nrows * sizeof(*Effect->Eff));
 
-        if (NULL == Effect.Eff)
+        if (NULL == Effect->Eff)
         {
             info(-2, "Memory allocation failed in define_effects_df\n");
-            return -1;
+            goto fail;
         }
     }
 
@@ -132,11 +151,11 @@ static int st_define_effects_native(const char *effname,
             goto fail;
         }
 
-        newEff = &(Effect.Eff[Effect.NrEff]);
+        newEff = &(Effect->Eff[Effect->NrEff]);
         newEff->Eff = (float)values[i];
         newEff->NrLoci = 1;
         newEff->Loc = NULL;
-        Effect.NrEff++;
+        Effect->NrEff++;
 
         newEff->Loc = malloc(sizeof(*newEff->Loc));
 
@@ -165,36 +184,19 @@ static int st_define_effects_native(const char *effname,
         newEff->Loc[0].All[0] = allele;
     }
 
-    if (!st_sim_ef_finalize(&Effect))
+    if (!st_sim_ef_finalize(Effect))
     {
         info(-2, "Memory allocation failed in define_effects_df\n");
         goto fail;
     }
 
-    if (INT_MAX == NrEffects)
+    if (!st_effect_commit(Effect))
     {
-        info(-2, "Too many effects\n");
+        info(-2, "Cannot install effect definition\n");
         goto fail;
     }
-
-    if ((size_t)(NrEffects + 1) > SIZE_MAX / sizeof(*Effects))
-    {
-        info(-2, "Memory allocation failed in define_effects_df\n");
-        goto fail;
-    }
-
-    tmpEffects = realloc(Effects, (size_t)(NrEffects + 1) * sizeof(*Effects));
-
-    if (NULL == tmpEffects)
-    {
-        info(-2, "Memory allocation failed in define_effects_df\n");
-        goto fail;
-    }
-
-    Effects = tmpEffects;
-    Effect.Pos = NrEffects + 1;
-    Effects[NrEffects] = Effect;
-    NrEffects++;
+    st_work_detach(Effect);
+    st_define_effect_stage_free(Effect);
 
     st_clear_all_population_gvalue();
 
@@ -202,7 +204,8 @@ static int st_define_effects_native(const char *effname,
 
 fail:
 
-    st_sim_ef_free(&Effect);
+    st_work_detach(Effect);
+    st_define_effect_stage_free(Effect);
     return -1;
 }
 
@@ -225,7 +228,8 @@ SEXP define_effects_df(SEXP df, SEXP nameS)
             error("Effect locus names must not be missing");
         names[i] = CHAR(STRING_ELT(marker, i));
     }
-    st_define_effects_native(CHAR(STRING_ELT(nameS, 0)), names, INTEGER(allele),
-                             REAL(value), n);
+    st_define_effects_native(CHAR(STRING_ELT(nameS, 0)), names,
+                             n ? INTEGER(allele) : NULL,
+                             n ? REAL(value) : NULL, n);
     return R_NilValue;
 }

@@ -22,7 +22,10 @@
 #include <Rdefines.h>
 #include <Rinternals.h>
 #include <R_ext/Random.h>
+#include <R_ext/Print.h>
 #include "SelectionToolsAllele.h"
+
+int st_text_write(char *, size_t, const char *, ...) R_PRINTF_FORMAT(3, 4);
 
 extern gs_varset_type *gs_fdta(char *set_name);
 extern void gs_info(gs_varset_type *gv, int level, char *message);
@@ -232,8 +235,12 @@ static gs_UNSIGNED *gs_map_storage_index(gs_varset_type *gv,
         for (m = 1; m < gv->NoMar; m++)
             if (0 == strcmp(names[m - 1], names[m]))
             {
-                snprintf(gv->msg, sizeof(gv->msg),
-                         "Duplicate marker name %s in marker data", names[m]);
+                int written = snprintf(gv->msg, sizeof(gv->msg),
+                                       "Duplicate marker name %s in marker data",
+                                       names[m]);
+                if (written < 0 || (size_t)written >= sizeof(gv->msg))
+                    memcpy(gv->msg, "Duplicate marker name in marker data",
+                           sizeof("Duplicate marker name in marker data"));
                 gs_info(gv, -2, gv->msg);
                 goto cleanup;
             }
@@ -306,6 +313,9 @@ static int st_phase_match_names(char *const *from, size_t n_from,
         (0u == n_from) || (n_from != n_to))
         return -1;
     *match_out = NULL;
+    if (n_to > SIZE_MAX / sizeof(*index) ||
+        n_from > SIZE_MAX / sizeof(*match))
+        return -1;
 
     index = malloc(n_to * sizeof(*index));
     match = malloc(n_from * sizeof(*match));
@@ -522,6 +532,14 @@ SEXP st_switch_error(SEXP true_data_set, SEXP data_set)
     }
 
     M = (size_t)truth->NoMar;
+    if (M > SIZE_MAX / sizeof(*truth_code) ||
+        M > SIZE_MAX / sizeof(*test_code) ||
+        M > SIZE_MAX / sizeof(*truth_n) || M > SIZE_MAX / sizeof(*test_n))
+    {
+        free(ind_match);
+        free(marker_match);
+        error("Memory allocation size overflow in st.switch.error");
+    }
     truth_code = malloc(M * sizeof(*truth_code));
     test_code = malloc(M * sizeof(*test_code));
     truth_n = malloc(M * sizeof(*truth_n));
@@ -700,7 +718,8 @@ enum
     ST_PHASE_DONORS,
     ST_PHASE_SAMPLE_COUNT,
     ST_PHASE_REFERENCE,
-    ST_PHASE_PBWT
+    ST_PHASE_PBWT,
+    ST_PHASE_GRID
 };
 
 static _Noreturn void st_phase_error(const char *format, ...)
@@ -708,8 +727,11 @@ static _Noreturn void st_phase_error(const char *format, ...)
     char message[gs_MAXSTR];
     va_list args;
     va_start(args, format);
-    vsnprintf(message, sizeof(message), format, args);
+    int written = vsnprintf(message, sizeof(message), format, args);
     va_end(args);
+    if (written < 0 || (size_t)written >= sizeof(message))
+        memcpy(message, "Phasing error message exceeds its output buffer",
+               sizeof("Phasing error message exceeds its output buffer"));
     if (st_phase_dataset)
         Rf_error("Data set '%s': %s", st_phase_dataset, message);
     Rf_error("st.phase: %s", message);
@@ -740,6 +762,9 @@ static _Noreturn void st_report_error(int code, int stage)
     case ST_PHASE_PBWT:
         message = "Invalid donor-search workspace dimensions";
         break;
+    case ST_PHASE_GRID:
+        message = "Donor-search spacing or context exceeds supported limits";
+        break;
     default:
         message = "Internal phasing error";
     }
@@ -765,6 +790,40 @@ static _Noreturn void st_failure(int code)
     }
 
     st_report_error(code, 0);
+}
+static size_t st_product(size_t a, size_t b)
+{
+    if (b && a > SIZE_MAX / b)
+        st_failure(ST_PHASE_SIZE);
+    return a * b;
+}
+static size_t st_sum(size_t a, size_t b)
+{
+    if (a > SIZE_MAX - b)
+        st_failure(ST_PHASE_SIZE);
+    return a + b;
+}
+static int st_grid_count(float distance, float step, int ceiling)
+{
+    if (!(step > 0.0f) || !isfinite(step))
+        st_failure(ST_PHASE_GRID);
+    double count = (double)(distance / step);
+    if (!isfinite(count) || count < 0.0)
+        st_failure(ST_PHASE_GRID);
+    count = ceiling ? ceil(count) : rint(count);
+    if (count > INT_MAX)
+        st_failure(ST_PHASE_GRID);
+    return (int)count;
+}
+static int st_word_count(int markers)
+{
+    return markers / 64 + (markers % 64 != 0);
+}
+static int st_batches(int count, int size)
+{
+    if (count < 1 || size < 1)
+        st_failure(ST_PHASE_SIZE);
+    return count / size + (count % size != 0);
 }
 static void st_worker_run(void (*work)(void *), void *data, int stage)
 {
@@ -940,7 +999,7 @@ static cs_work cs_create(const cs_input *in)
 {
     cs_work w = {0, cs_alloc(in->H, sizeof(int)),
                  cs_alloc(in->K, sizeof(cs_segment)),
-                 cs_alloc((size_t)in->K * in->words, sizeof(uint64_t))};
+                 cs_alloc(st_product((size_t)in->K, in->words), sizeof(uint64_t))};
     return w;
 }
 
@@ -1148,7 +1207,7 @@ static pe_work pe_create(int markers, int states)
     pe_work w;
     w.fwd = calloc((size_t)states, sizeof(float));
     w.bwd = calloc((size_t)states, sizeof(float));
-    w.saved = calloc((size_t)markers * states, sizeof(float));
+    w.saved = calloc(st_product((size_t)markers, states), sizeof(float));
     if (!w.fwd || !w.bwd || !w.saved)
     {
         st_failure(ST_PHASE_MEMORY);
@@ -1413,10 +1472,10 @@ static er_result er_run(const er_input *in, FILE *trace)
     for (int w = 0; w < workers; ++w)
     {
         pool[w].ci = ci;
-        pool[w].ci.donors = cs_alloc((size_t)2 * ci.S, sizeof(int));
+        pool[w].ci.donors = cs_alloc(st_product(2, ci.S), sizeof(int));
         pool[w].cw = cs_create(&pool[w].ci);
         pool[w].work = pe_create(ci.M, ci.K);
-        pool[w].discord = cs_alloc((size_t)2 * ci.M * ci.K, 1);
+        pool[w].discord = cs_alloc(st_product(st_product(2, ci.M), ci.K), 1);
     }
     int *selected = cs_alloc(in->samples, sizeof(int));
     pe_result *rows = cs_alloc(in->samples, sizeof(pe_result));
@@ -1606,6 +1665,8 @@ static void ibs_append(ibs_list *l, ibs_segment x)
 {
     if (l->n == l->cap)
     {
+        if (l->cap > SIZE_MAX / 2)
+            st_failure(ST_PHASE_SIZE);
         l->cap = l->cap ? 2 * l->cap : 8;
         l->v = ibs_grow(l->v, l->cap, sizeof(*l->v));
     }
@@ -1615,6 +1676,8 @@ static void ibs_cluster_append(ibs_clusters *l, ibs_cluster x)
 {
     if (l->n == l->cap)
     {
+        if (l->cap > SIZE_MAX / 2)
+            st_failure(ST_PHASE_SIZE);
         l->cap = l->cap ? 2 * l->cap : 8;
         l->v = ibs_grow(l->v, l->cap, sizeof(*l->v));
     }
@@ -1725,7 +1788,7 @@ static ibs_result ibs_build(const int *g, const double *pos, const float *maf,
             fprintf(trace, " %d", starts[w]);
         fputc('\n', trace);
     }
-    unsigned char *pairs = ibs_calloc((size_t)N * N, 1);
+    unsigned char *pairs = ibs_calloc(st_product((size_t)N, N), 1);
     for (int w = 0; w < W; ++w)
     {
         int start = starts[w], end = w + 1 < W ? starts[w + 1] : M, L = 0;
@@ -2168,19 +2231,19 @@ static ba_work ba_create(const ba_input *in)
     w.a = ba_alloc(in->M, sizeof(int));
     w.b = ba_alloc(in->M, sizeof(int));
     w.unph = ba_alloc(in->C, sizeof(int));
-    w.mm = ba_alloc((size_t)3 * in->C * in->K, 1);
-    w.rows = ba_alloc((size_t)3 * in->C, sizeof(unsigned char *));
-    w.fwd = ba_alloc((size_t)3 * in->K, sizeof(float));
-    w.bwd = ba_alloc((size_t)3 * in->K, sizeof(float));
+    w.mm = ba_alloc(st_product(st_product(3, in->C), in->K), 1);
+    w.rows = ba_alloc(st_product(3, in->C), sizeof(unsigned char *));
+    w.fwd = ba_alloc(st_product(3, in->K), sizeof(float));
+    w.bwd = ba_alloc(st_product(3, in->K), sizeof(float));
     for (int c = 0; c < in->C; ++c)
     {
         w.nmiss += in->types[c] < 2;
         w.nunph += in->types[c] == 4;
     }
-    w.bmiss1 = ba_alloc((size_t)w.nmiss * in->K, sizeof(float));
-    w.bmiss2 = ba_alloc((size_t)w.nmiss * in->K, sizeof(float));
-    w.bhet1 = ba_alloc((size_t)w.nunph * in->K, sizeof(float));
-    w.bhet2 = ba_alloc((size_t)w.nunph * in->K, sizeof(float));
+    w.bmiss1 = ba_alloc(st_product((size_t)w.nmiss, in->K), sizeof(float));
+    w.bmiss2 = ba_alloc(st_product((size_t)w.nmiss, in->K), sizeof(float));
+    w.bhet1 = ba_alloc(st_product((size_t)w.nunph, in->K), sizeof(float));
+    w.bhet2 = ba_alloc(st_product((size_t)w.nunph, in->K), sizeof(float));
     return w;
 }
 static void ba_reset(const ba_input *in, ba_work *w)
@@ -2410,7 +2473,7 @@ static void it_ints(FILE *f, const char *tag, int index, const int *v, int n)
 static it_donors it_find_donors(const it_input *in, const ibs_result *ibs,
                                 FILE *trace)
 {
-    int M = in->M, H = 2 * in->N, words = (M + 63) / 64;
+    int M = in->M, H = 2 * in->N, words = st_word_count(M);
     it_donors out = {0};
     out.ends = ba_alloc(M, sizeof(int));
     for (int end = 0; end < M;)
@@ -2421,10 +2484,10 @@ static it_donors it_find_donors(const it_input *in, const ibs_result *ibs,
             ++end;
         out.ends[out.S++] = end;
     }
-    out.per_batch = (out.S + in->threads - 1) / in->threads;
-    out.batches = (out.S + out.per_batch - 1) / out.per_batch;
-    out.overlap = (int)rint((double)(in->buffer / in->step));
-    out.backoff = (int)rint((double)(0.3f / in->step));
+    out.per_batch = st_batches(out.S, in->threads);
+    out.batches = st_batches(out.S, out.per_batch);
+    out.overlap = st_grid_count(in->buffer, in->step, 0);
+    out.backoff = st_grid_count(0.3f, in->step, 0);
     int candidates = 100;
     if (in->it >= in->burnin)
     {
@@ -2437,9 +2500,9 @@ static it_donors it_find_donors(const it_input *in, const ibs_result *ibs,
     if (in->it >= in->burnin + in->iterations)
         candidates = 10;
     out.candidates = candidates < H ? candidates : H;
-    out.codes = ba_alloc((size_t)out.S * H, sizeof(int));
+    out.codes = ba_alloc(st_product((size_t)out.S, H), sizeof(int));
     out.sizes = ba_alloc(out.S, sizeof(int));
-    out.donors = ba_alloc((size_t)out.S * H, sizeof(int));
+    out.donors = ba_alloc(st_product((size_t)out.S, H), sizeof(int));
     uint32_t *hash = ba_alloc(H, sizeof(uint32_t));
     for (int s = 0, start = 0; s < out.S; start = out.ends[s++])
     {
@@ -2473,10 +2536,14 @@ static it_donors it_find_donors(const it_input *in, const ibs_result *ibs,
     int backward = (in->it & 1) == 0;
     for (int batch = 0; batch < out.batches; ++batch)
     {
-        int start = batch * out.per_batch, end = start + out.per_batch;
-        if (end > out.S)
-            end = out.S;
-        int first = backward ? end + out.overlap : start - out.overlap;
+        int start = batch * out.per_batch;
+        int span = out.per_batch < out.S - start ? out.per_batch
+                                                : out.S - start;
+        int end = start + span;
+        int first = backward
+                        ? end + (out.overlap < out.S - end ? out.overlap
+                                                          : out.S - end)
+                        : start - out.overlap;
         if (first < 0)
             first = 0;
         if (first > out.S)
@@ -2626,7 +2693,7 @@ static it_donors it_find_donors(const it_input *in, const ibs_result *ibs,
 {
     if (trace)
         return st_serial_find_donors(in, ibs, trace);
-    int M = in->M, H = 2 * in->N, words = (M + 63) / 64,
+    int M = in->M, H = 2 * in->N, words = st_word_count(M),
         workers = st_phase_threads;
     it_donors out = {0};
     out.ends = ba_alloc(M, sizeof(int));
@@ -2639,10 +2706,10 @@ static it_donors it_find_donors(const it_input *in, const ibs_result *ibs,
         out.ends[out.S++] = end;
     }
 
-    out.per_batch = (out.S + in->threads - 1) / in->threads;
-    out.batches = (out.S + out.per_batch - 1) / out.per_batch;
-    out.overlap = (int)rint((double)(in->buffer / in->step));
-    out.backoff = (int)rint((double)(0.3f / in->step));
+    out.per_batch = st_batches(out.S, in->threads);
+    out.batches = st_batches(out.S, out.per_batch);
+    out.overlap = st_grid_count(in->buffer, in->step, 0);
+    out.backoff = st_grid_count(0.3f, in->step, 0);
     int candidates = 100;
     if (in->it >= in->burnin)
     {
@@ -2655,9 +2722,9 @@ static it_donors it_find_donors(const it_input *in, const ibs_result *ibs,
     if (in->it >= in->burnin + in->iterations)
         candidates = 10;
     out.candidates = candidates < H ? candidates : H;
-    out.codes = ba_alloc((size_t)out.S * H, sizeof(int));
+    out.codes = ba_alloc(st_product((size_t)out.S, H), sizeof(int));
     out.sizes = ba_alloc(out.S, sizeof(int));
-    out.donors = ba_alloc((size_t)out.S * H, sizeof(int));
+    out.donors = ba_alloc(st_product((size_t)out.S, H), sizeof(int));
     st_build_codes(in->haps, H, words, out.S, out.ends, out.codes, out.sizes,
                    workers);
     pbwt_workspace w;
@@ -2669,15 +2736,19 @@ static it_donors it_find_donors(const it_input *in, const ibs_result *ibs,
     {
         BLOCK = 128
     };
-    int *snap_a = ba_alloc((size_t)BLOCK * H, sizeof(int));
-    int *snap_d = ba_alloc((size_t)BLOCK * (H + 1), sizeof(int));
+    int *snap_a = ba_alloc(st_product(BLOCK, H), sizeof(int));
+    int *snap_d = ba_alloc(st_product(BLOCK, H + 1), sizeof(int));
     int steps[BLOCK], count = 0;
     for (int batch = 0; batch < out.batches; ++batch)
     {
-        int start = batch * out.per_batch, end = start + out.per_batch;
-        if (end > out.S)
-            end = out.S;
-        int first = backward ? end + out.overlap : start - out.overlap;
+        int start = batch * out.per_batch;
+        int span = out.per_batch < out.S - start ? out.per_batch
+                                                : out.S - start;
+        int end = start + span;
+        int first = backward
+                        ? end + (out.overlap < out.S - end ? out.overlap
+                                                          : out.S - end)
+                        : start - out.overlap;
         if (first < 0)
             first = 0;
         if (first > out.S)
@@ -2765,9 +2836,9 @@ static void sq_task_run(void *data)
     cs_input ci = task->ci;
     uint64_t *next = task->next;
     FILE *trace = task->trace;
-    int M = in->M, H = 2 * in->N, words = (M + 63) / 64;
+    int M = in->M, H = 2 * in->N, words = st_word_count(M);
     uint64_t checksum = 0, unphased_count = 0, swap_count = 0;
-    ci.donors = ba_alloc((size_t)2 * donor.S, sizeof(int));
+    ci.donors = ba_alloc(st_product(2, donor.S), sizeof(int));
     cs_work cw = cs_create(&ci);
     for (int sample = task->begin; sample < task->end; sample += task->stride)
     {
@@ -2810,9 +2881,9 @@ static void sq_task_run(void *data)
                            NULL,
                            NULL,
                            NULL};
-            bi.refs = ba_alloc((size_t)missing * K, sizeof(int));
+            bi.refs = ba_alloc(st_product((size_t)missing, K), sizeof(int));
             bi.recomb = ba_alloc(cl.n, sizeof(float));
-            bi.mm = ba_alloc((size_t)3 * cl.n * K, 1);
+            bi.mm = ba_alloc(st_product(st_product(3, cl.n), K), 1);
             hi_recomb(&cl, in->recomb, bi.recomb);
             hi_mismatches(&cl, K, words, h1, h2, cw.comp, bi.mm, bi.refs);
             ba_work bw = ba_create(&bi);
@@ -2857,17 +2928,17 @@ static void sq_task_run(void *data)
 static uint64_t sq_phase(it_input *in, it_donors donor, uint64_t *unphased,
                          uint64_t *swaps, FILE *trace)
 {
-    int M = in->M, H = 2 * in->N, words = (M + 63) / 64;
+    int M = in->M, H = 2 * in->N, words = st_word_count(M);
     cs_input ci = {M,     H,    donor.S, in->max_states, 200,
                    words, NULL, NULL,    in->haps};
-    int min_steps = (int)ceil((double)(1.0f / in->step));
+    int min_steps = st_grid_count(1.0f, in->step, 1);
     if (min_steps > ci.min_steps)
         ci.min_steps = min_steps;
     ci.starts = ba_alloc(donor.S, sizeof(int));
     for (int s = 1; s < donor.S; ++s)
         ci.starts[s] = donor.ends[s - 1];
     uint64_t checksum = 0, unphased_count = 0, swap_count = 0;
-    uint64_t *next = ba_alloc((size_t)H * words, sizeof(uint64_t));
+    uint64_t *next = ba_alloc(st_product((size_t)H, words), sizeof(uint64_t));
 
     memcpy(next + (size_t)2 * in->T * words,
            in->haps + (size_t)2 * in->T * words,
@@ -2918,7 +2989,7 @@ static float sq_threshold(const it_input *in, float initial)
 }
 static void sq_check_reference(const it_input *in)
 {
-    int H = 2 * in->N, words = (in->M + 63) / 64;
+    int H = 2 * in->N, words = st_word_count(in->M);
     for (int h = 2 * in->T; h < H; ++h)
         for (int m = 0; m < in->M; ++m)
             if ((int)((in->haps[(size_t)h * words + (m >> 6)] >> (m & 63)) &
@@ -2940,14 +3011,14 @@ static sq_result sq_run(sq_input *seq, const ibs_result *ibs, FILE *trace)
         it_donors donor = it_find_donors(in, ibs, trace);
         if (seq->em && (in->it == 0 || in->it < in->burnin))
         {
-            int min_steps = (int)ceil((double)(1.0f / in->step));
+            int min_steps = st_grid_count(1.0f, in->step, 1);
             if (min_steps < 200)
                 min_steps = 200;
             int *starts = ba_alloc(donor.S, sizeof(int));
             for (int s = 1; s < donor.S; ++s)
                 starts[s] = donor.ends[s - 1];
             er_input est = {{in->M, 2 * in->N, donor.S, in->max_states,
-                             min_steps, (in->M + 63) / 64, starts, NULL,
+                             min_steps, st_word_count(in->M), starts, NULL,
                              in->haps},
                             in->T,
                             in->it == 0,
@@ -3167,8 +3238,8 @@ static sq_input fp_select(const np_input *raw, const int *na, int **selected)
     in->seed = (high << 32) + (uint64_t)low;
     in->pos = ba_alloc(S, sizeof(double));
     in->bp = ba_alloc(S, sizeof(int));
-    in->gt = ba_alloc((size_t)S * H, sizeof(int));
-    in->haps = ba_alloc((size_t)H * ((S + 63) / 64), sizeof(uint64_t));
+    in->gt = ba_alloc(st_product((size_t)S, H), sizeof(int));
+    in->haps = ba_alloc(st_product((size_t)H, st_word_count(S)), sizeof(uint64_t));
     in->clusters = ba_alloc(N, sizeof(hi_clusters));
     in->recomb = ba_alloc(S, sizeof(float));
     out.distance = ba_alloc(S, sizeof(float));
@@ -3191,6 +3262,11 @@ static sq_input fp_select(const np_input *raw, const int *na, int **selected)
     int n = S - 1;
     float median = 0.5f * (float)(diff[(n - 1) / 2] + diff[n / 2]);
     in->step = raw->scale * median;
+    if (!(in->step > 0.0f) || !isfinite(in->step))
+        st_failure(ST_PHASE_GRID);
+    st_grid_count(in->buffer, in->step, 0);
+    st_grid_count(0.3f, in->step, 0);
+    st_grid_count(1.0f, in->step, 1);
     free(diff);
     *selected = ix;
     return out;
@@ -3256,8 +3332,10 @@ static int rp_best(const rp_input *in, int step, int i, const int *a,
     int edge = (i + 1) < in->H ? (in->backward ? rp_max(d[i], d[i + 1])
                                                : rp_min(d[i], d[i + 1]))
                                : d[i];
-    int limit = in->backward ? rp_max(edge - in->backoff, step)
-                             : rp_min(edge + in->backoff, step);
+    int64_t context = in->backward ? (int64_t)edge - in->backoff
+                                   : (int64_t)edge + in->backoff;
+    int limit = in->backward ? (context > step ? (int)context : step)
+                             : (context < step ? (int)context : step);
     int pi = prev[i];
     while (pi > INT_MIN && rp_excluded(in, step, a[i], a[pi]))
         pi = prev[pi];
@@ -3383,11 +3461,13 @@ static void rp_run(const rp_input *in, int *selected, FILE *trace)
     pbwt_workspace w;
     if (!a || !d || !inv || !prev || !next || !tmp || pbwt_alloc(&w, H))
         st_failure(ST_PHASE_PBWT);
-    for (int start = 0; start < in->S; start += in->per_batch)
+    for (int start = 0; start < in->S;)
     {
-        int end = rp_min(start + in->per_batch, in->S);
-        int buffer = in->backward ? rp_min(end + in->overlap, in->S)
-                                  : rp_max(0, start - in->overlap);
+        int span = rp_min(in->per_batch, in->S - start);
+        int end = start + span;
+        int buffer = in->backward
+                         ? end + rp_min(in->overlap, in->S - end)
+                         : rp_max(0, start - in->overlap);
         for (int i = 0; i < H; ++i)
             a[i] = i;
         for (int i = 0; i <= H; ++i)
@@ -3410,6 +3490,7 @@ static void rp_run(const rp_input *in, int *selected, FILE *trace)
             rp_print(trace, "NEXT", s, next, H);
             rp_print(trace, "DONOR", s, out, in->T);
         }
+        start = end;
     }
     pbwt_free(&w);
     free(a);
@@ -3440,15 +3521,17 @@ typedef struct
 } ls_work;
 static ls_work ls_create(const ls_input *in)
 {
+    if (in->K < 1 || in->S > (INT_MAX - in->K) / 2)
+        st_failure(ST_PHASE_SIZE);
     ls_work w = {0};
     w.queue.last = cs_alloc(in->H, sizeof(int));
     w.queue.heap = cs_alloc(in->K, sizeof(cs_segment));
     w.first = cs_alloc(in->K, sizeof(int));
     w.last = cs_alloc(in->K, sizeof(int));
     w.cursor = cs_alloc(in->K, sizeof(int));
-    w.nodes = cs_alloc((size_t)2 * in->S + in->K, sizeof(ls_node));
-    w.ids = cs_alloc((size_t)in->M * in->K, sizeof(int));
-    w.mismatch = cs_alloc((size_t)in->M * in->K, sizeof(unsigned char));
+    w.nodes = cs_alloc(st_sum(st_product(2, in->S), in->K), sizeof(ls_node));
+    w.ids = cs_alloc(st_product((size_t)in->M, in->K), sizeof(int));
+    w.mismatch = cs_alloc(st_product((size_t)in->M, in->K), sizeof(unsigned char));
     return w;
 }
 static void ls_destroy(ls_work *w)
@@ -3746,7 +3829,7 @@ static fp_data fp_prepare(const np_input *raw, const int *na,
         f.ibs = ibs_build(in->gt, in->pos, maf, C, N, NULL);
     else
     {
-        int *target = ba_alloc((size_t)C * 2 * in->T, sizeof(int));
+        int *target = ba_alloc(st_product(st_product((size_t)C, 2), in->T), sizeof(int));
         for (int m = 0; m < C; ++m)
             memcpy(target + (size_t)m * 2 * in->T, in->gt + (size_t)m * H,
                    (size_t)2 * in->T * sizeof(int));
@@ -3754,12 +3837,14 @@ static fp_data fp_prepare(const np_input *raw, const int *na,
         free(target);
     }
     free(maf);
-    f.offset = ba_alloc(M + 1, sizeof(int));
+    f.offset = ba_alloc((size_t)M + 1, sizeof(int));
     f.previous = ba_alloc(M, sizeof(int));
     f.weight = ba_alloc(M, sizeof(float));
     f.full_to_common = ba_alloc(M, sizeof(int));
     for (int m = 0; m < M; ++m)
     {
+        if (na[m] > INT_MAX - f.offset[m])
+            st_failure(ST_PHASE_SIZE);
         f.offset[m + 1] = f.offset[m] + na[m];
         f.full_to_common[m] = -1;
     }
@@ -3809,7 +3894,7 @@ static fp_data fp_prepare(const np_input *raw, const int *na,
 
 static void fp_codes(const it_input *in, rp_input *rp, int **starts, int **ends)
 {
-    int M = in->M, H = 2 * in->N, words = (M + 63) / 64;
+    int M = in->M, H = 2 * in->N, words = st_word_count(M);
     *starts = ba_alloc(M, sizeof(int));
     *ends = ba_alloc(M, sizeof(int));
     for (int end = 0; end < M;)
@@ -3823,14 +3908,14 @@ static void fp_codes(const it_input *in, rp_input *rp, int **starts, int **ends)
     }
     rp->H = H;
     rp->T = 2 * in->T;
-    rp->per_batch = (rp->S + in->threads - 1) / in->threads;
-    rp->overlap = (int)rint((double)(in->buffer / in->step));
-    rp->backoff = (int)rint((double)(0.3f / in->step));
+    rp->per_batch = st_batches(rp->S, in->threads);
+    rp->overlap = st_grid_count(in->buffer, in->step, 0);
+    rp->backoff = st_grid_count(0.3f, in->step, 0);
     rp->candidates = rp_min(10, H);
     rp->seed = in->seed;
     rp->starts = *starts;
     rp->ends = *ends;
-    rp->codes = ba_alloc((size_t)rp->S * H, sizeof(int));
+    rp->codes = ba_alloc(st_product((size_t)rp->S, H), sizeof(int));
     rp->sizes = ba_alloc(rp->S, sizeof(int));
     st_build_codes(in->haps, H, words, rp->S, *ends, rp->codes, rp->sizes,
                    st_phase_threads);
@@ -3864,16 +3949,16 @@ static void fp_samples_run(void *data)
     const np_input *raw = f->raw;
     int M = raw->M, C = in->M, N = raw->N, H = 2 * N;
     int Kmax = in->max_states / 2,
-        min_steps = rp_max(200, (int)ceil((double)(1.0f / in->step)));
-    int *pair = ba_alloc((size_t)2 * rp.S, sizeof(int));
+        min_steps = rp_max(200, st_grid_count(1.0f, in->step, 1));
+    int *pair = ba_alloc(st_product(2, rp.S), sizeof(int));
     ls_input li = {C, H,        rp.S,   Kmax, min_steps,
                    0, in->seed, starts, pair, phase};
     ls_work lw = ls_create(&li);
-    int *ids[2] = {ba_alloc((size_t)C * Kmax, sizeof(int)),
-                   ba_alloc((size_t)C * Kmax, sizeof(int))};
-    float *prob[2] = {ba_alloc((size_t)C * Kmax, sizeof(float)),
-                      ba_alloc((size_t)C * Kmax, sizeof(float))};
-    unsigned char *mm = ba_alloc((size_t)C * Kmax, 1);
+    int *ids[2] = {ba_alloc(st_product((size_t)C, Kmax), sizeof(int)),
+                   ba_alloc(st_product((size_t)C, Kmax), sizeof(int))};
+    float *prob[2] = {ba_alloc(st_product((size_t)C, Kmax), sizeof(float)),
+                      ba_alloc(st_product((size_t)C, Kmax), sizeof(float))};
+    unsigned char *mm = ba_alloc(st_product((size_t)C, Kmax), 1);
     float *back = ba_alloc(Kmax, sizeof(float));
     rr_donor *rd[2] = {ba_alloc(Kmax, sizeof(rr_donor)),
                        ba_alloc(Kmax, sizeof(rr_donor))};
@@ -3953,8 +4038,8 @@ static void fp_stage2(fp_data *f, int *out, FILE *trace)
 {
     it_input *in = &f->seq.input;
     const np_input *raw = f->raw;
-    int M = raw->M, C = in->M, N = raw->N, H = 2 * N, words = (C + 63) / 64;
-    int *phase = ba_alloc((size_t)C * H, sizeof(int));
+    int M = raw->M, C = in->M, N = raw->N, H = 2 * N, words = st_word_count(C);
+    int *phase = ba_alloc(st_product((size_t)C, H), sizeof(int));
     for (int m = 0; m < M; ++m)
         memcpy(out + (size_t)m * H + 2 * in->T,
                raw->gt + (size_t)m * H + 2 * in->T,
@@ -3975,7 +4060,7 @@ static void fp_stage2(fp_data *f, int *out, FILE *trace)
     int *starts, *ends;
     fp_codes(in, &rp, &starts, &ends);
     rp.ibs = &f->ibs;
-    rp.list_start = ba_alloc(rp.S + 1, sizeof(int));
+    rp.list_start = ba_alloc((size_t)rp.S + 1, sizeof(int));
     int capacity = f->offset[M];
     rp.lists = ba_alloc(capacity, sizeof(int *));
     rp.lengths = ba_alloc(capacity, sizeof(int));
@@ -4003,8 +4088,8 @@ static void fp_stage2(fp_data *f, int *out, FILE *trace)
             }
     }
     rp.list_start[rp.S] = lists;
-    int *donors[2] = {ba_alloc((size_t)rp.S * rp.T, sizeof(int)),
-                      ba_alloc((size_t)rp.S * rp.T, sizeof(int))};
+    int *donors[2] = {ba_alloc(st_product((size_t)rp.S, rp.T), sizeof(int)),
+                      ba_alloc(st_product((size_t)rp.S, rp.T), sizeof(int))};
 #ifdef MT
     int directions = trace ? 1 : (st_phase_threads < 2 ? 1 : 2);
 #pragma omp parallel for num_threads(directions) if (directions > 1)
@@ -4071,7 +4156,7 @@ static int *np_phase_overlap(int M, int N, const int *g, uint64_t seed,
                              int overlap, int T)
 {
     int H = 2 * N;
-    size_t Z = (size_t)M * H;
+    size_t Z = st_product((size_t)M, H);
     int *rev = calloc(Z, sizeof(int)), *fwd = calloc(Z, sizeof(int));
     int *a = calloc(H, sizeof(int)), *order = calloc(H, sizeof(int)),
         *next = calloc(H, sizeof(int));
@@ -4200,7 +4285,7 @@ static int gm_search_double(const double *a, int n, double key)
     int lo = 0, hi = n - 1;
     while (lo <= hi)
     {
-        int mid = (lo + hi) >> 1;
+        int mid = lo + (hi - lo) / 2;
         if (a[mid] < key)
             lo = mid + 1;
         else if (a[mid] > key)
@@ -4225,7 +4310,7 @@ static double gm_position(const int *bp, const double *cm, int n, int x)
     int lo = 0, hi = n - 1;
     while (lo <= hi)
     {
-        int mid = (lo + hi) >> 1;
+        int mid = lo + (hi - lo) / 2;
         if (bp[mid] < x)
             lo = mid + 1;
         else if (bp[mid] > x)
@@ -4299,14 +4384,14 @@ static int *np_phase_windows(int M, int N, const int *gt, const double *pos,
     if (end == M)
         return np_phase_overlap(M, N, gt, seed, overlap, T);
     int haps = 2 * N, start = 0, previous_end = 0, part = 0;
-    int *out = ba_alloc((size_t)M * haps, sizeof(int));
+    int *out = ba_alloc(st_product((size_t)M, haps), sizeof(int));
     int *hets = ba_alloc(M, sizeof(int));
     for (;;)
     {
         int fixed = overlap > start ? overlap - start : 0;
         int *phase = np_phase_overlap(end - start, N, gt + (size_t)start * haps,
                                       seed + part, fixed, T);
-        int copy_start = (start + previous_end) >> 1;
+        int copy_start = start + (previous_end - start) / 2;
         for (int s = 0; s < N; ++s)
         {
             int swap = 0;
@@ -4365,7 +4450,7 @@ static void np_initialize_overlap(sq_input *seq, float ne, FILE *trace,
                                   int overlap)
 {
     it_input *in = &seq->input;
-    int M = in->M, N = in->N, H = 2 * N, words = (M + 63) / 64;
+    int M = in->M, N = in->N, H = 2 * N, words = st_word_count(M);
     int *phase =
         np_phase_windows(M, N, in->gt, in->pos, in->seed, overlap, in->T);
     memset(in->haps, 0, (size_t)H * words * sizeof(uint64_t));
@@ -4549,7 +4634,7 @@ static int st_plan_windows(const int *map_bp, const double *map_cm, int map_n,
                 lo = 0;
             while (lo <= hi)
             {
-                int mid = (lo + hi) >> 1;
+                int mid = lo + (hi - lo) / 2;
                 if (positions[start + mid] < key)
                     lo = mid + 1;
                 else if (positions[start + mid] > key)
@@ -4565,7 +4650,8 @@ static int st_plan_windows(const int *map_bp, const double *map_cm, int map_n,
                    positions[start + keep - 1] == positions[start + keep])
                 --keep;
         }
-        int emit_start = carried >> 1, emit_end = (n + keep) >> 1;
+        int emit_start = carried >> 1;
+        int emit_end = keep + (n - keep) / 2;
         if (emit_end <= emit_start ||
             (used && windows[used - 1].start + windows[used - 1].emit_end !=
                          start + emit_start))
@@ -4596,7 +4682,8 @@ static int st_phase_windowed(const np_input *chromosome, const int *alleles,
         (!isfinite(initial_error) || initial_error < 0 || initial_error > 1))
         return 0;
     const np_input *c = chromosome;
-    if (c->M < 2 || c->N < 2 || c->N > 5000 || c->T < 1 || c->T > c->N ||
+    if (c->M < 2 || c->M > INT_MAX - 2 || c->N < 2 || c->N > 5000 ||
+        c->T < 1 || c->T > c->N ||
         c->K < 2 || c->burn < 0 || c->iterations < 1 || !c->gt || !c->bp ||
         !isfinite(c->rare) || c->rare < 0 || c->rare > 1 ||
         !isfinite(c->scale) || c->scale <= 0 || !isfinite(c->ne) ||
@@ -4648,7 +4735,7 @@ static int st_phase_windowed(const np_input *chromosome, const int *alleles,
             break;
         }
         np_input spliced = raw;
-        spliced.gt = ba_alloc((size_t)raw.M * haps, sizeof(int));
+        spliced.gt = ba_alloc(st_product((size_t)raw.M, haps), sizeof(int));
         memcpy(spliced.gt, raw.gt, (size_t)raw.M * haps * sizeof(int));
         if (w.fixed_prefix)
         {
@@ -4688,7 +4775,7 @@ static int st_phase_windowed(const np_input *chromosome, const int *alleles,
             in->mismatch = (float)initial_error;
         sq_result result = sq_run(&f.seq, &f.ibs, NULL);
         in->seed = f.phase_seed + (uint64_t)in->it;
-        int *out = ba_alloc((size_t)raw.M * haps, sizeof(int));
+        int *out = ba_alloc(st_product((size_t)raw.M, haps), sizeof(int));
         fp_stage2(&f, out, NULL);
         for (int m = 0; m < raw.M; ++m)
             for (int h = 2 * c->T; h < haps; ++h)
@@ -5041,6 +5128,17 @@ static void stp_options(SEXP input, stp_controls *out, SEXP *seed_input)
                    0);
         out->value[k] = stp_number_at(values[k], 0);
     }
+    if (out->value[STP_BURNIN] > INT_MAX - out->value[STP_ITERATIONS])
+        st_phase_error("burnin plus iterations exceeds the supported limit");
+    const int float_indices[] = {STP_NE, STP_SCALE, STP_BUFFER, STP_RARE};
+    for (size_t i = 0; i < sizeof(float_indices) / sizeof(float_indices[0]); i++)
+    {
+        int k = float_indices[i];
+        float value = (float)out->value[k];
+        if (!(value > 0.0f) || !isfinite(value))
+            st_phase_error("%s is outside the supported floating-point range",
+                           stp_option_names[k]);
+    }
     if (supplied[STP_EM])
         out->value[STP_EM] = stp_logical(values[STP_EM], "em");
     out->error_set = values[STP_ERR] != R_NilValue;
@@ -5185,7 +5283,9 @@ typedef struct
 
 static void stp_native_metadata(gs_varset_type *x, stp_metadata *out)
 {
-    if (!x || !x->NoMar || !x->NoInd || x->NoMar > INT_MAX || x->NoInd > 5000 ||
+    if (x && x->NoMar > INT_MAX - 2)
+        st_phase_error("Marker count exceeds the supported limit");
+    if (!x || !x->NoMar || !x->NoInd || x->NoInd > 5000 ||
         !st_allele_present(x) || !x->MarName || !x->IndName || !x->NLoc ||
         !x->map || !x->mdl)
         st_phase_error("No valid marker data and linkage map available");
@@ -5223,7 +5323,7 @@ static void stp_native_metadata(gs_varset_type *x, stp_metadata *out)
         {
             char *label = st_zero(64, 1);
             levels[used++] = chr;
-            snprintf(label, 64, "%d", chr);
+            st_text_write(label, 64, "%d", chr);
             out->levels[c] = label;
         }
         out->chrom[j] = c + 1;
@@ -5366,8 +5466,8 @@ static void stp_native_prepare(stp_native_view *v, const stp_metadata *metadata,
                 char target_labels[100][16];
                 for (int k = 0; k < count; k++)
                 {
-                    snprintf(target_labels[k], sizeof(target_labels[k]), "%d",
-                             k + 1);
+                    st_text_write(target_labels[k], sizeof(target_labels[k]),
+                                  "%d", k + 1);
                     labels[k] = target_labels[k];
                 }
                 int shared = 0;
@@ -5547,8 +5647,8 @@ static stp_window_result *stp_windows(const stp_metadata *input,
                 overlap = stp_expanded(options->overlap, options->noverlap, c,
                                        chromosomes);
                 window = fmax(window, 1.1 * overlap);
-                snprintf(reason_buffer, sizeof(reason_buffer),
-                         "%s;explicit_overlap", reason);
+                st_text_write(reason_buffer, sizeof(reason_buffer),
+                              "%s;explicit_overlap", reason);
                 reason = reason_buffer;
             }
             if (!R_FINITE(window) && end - start > options->value[STP_MARKERS])
@@ -5565,7 +5665,7 @@ static stp_window_result *stp_windows(const stp_metadata *input,
         }
         out[c].window = window;
         out[c].overlap = overlap;
-        snprintf(out[c].reason, sizeof(out[c].reason), "%s", reason);
+        st_text_write(out[c].reason, sizeof(out[c].reason), "%s", reason);
         start = end;
     }
     st_release(common);
@@ -5764,8 +5864,8 @@ static SEXP st_phase_body(void *data)
         raw.lr = (float)o[9];
         raw.em = (int)o[10];
         raw.bp = bp + start;
-        raw.gt = st_zero((size_t)m * 2 * v.samples, sizeof(int));
-        int *output = st_zero((size_t)m * 2 * v.samples, sizeof(int));
+        raw.gt = st_zero(st_product(st_product((size_t)m, 2), v.samples), sizeof(int));
+        int *output = st_zero(st_product(st_product((size_t)m, 2), v.samples), sizeof(int));
         for (int j = 0; j < m; j++)
             for (int i = 0; i < v.samples; i++)
             {
@@ -5834,7 +5934,7 @@ static SEXP st_phase_body(void *data)
     {
         INTEGER(per_chromosome)[i] = windows[i].windows;
         char label[32];
-        snprintf(label, sizeof(label), "%d", windows[i].chromosome);
+        st_text_write(label, sizeof(label), "%d", windows[i].chromosome);
         SET_STRING_ELT(chromosome_names, i, Rf_mkChar(label));
     }
     Rf_setAttrib(per_chromosome, R_NamesSymbol, chromosome_names);

@@ -1,6 +1,6 @@
 \name{get.population.pvalue}
 \alias{get.population.pvalue}
-\title{Get phenotypic values from a simulation population}
+\title{Returns phenotypic values from a simulation population}
 
 \description{
 Returns stored phenotypic values for the active individuals of a simulation

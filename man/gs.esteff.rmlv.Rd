@@ -23,7 +23,7 @@ gs.esteff.rmlv(maxiter = 1000, precision = 0.001, hsq = 0.9,
 }
 
 \details{
-The restricted maximum likelihood (REML) method is used to estimate variance components.
+The REML method is used to estimate variance components.
 
 }
 

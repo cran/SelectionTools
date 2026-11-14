@@ -3,7 +3,7 @@
 \title{Gs mme restrhs}
 
 \description{
-Builds or returns the restricted right-hand side for genomic-selection mixed-model equations.
+Builds or returns the model-specific right-hand side for genomic-selection mixed-model equations.
 }
 
 \usage{
@@ -15,5 +15,5 @@ gs.mme.restrhs(out.filename = "mme.rhs", auxfiles = FALSE)
    \item{auxfiles}{Logical. If \code{TRUE}, the result is returned directly from memory.}
 }
 \value{
-Invisibly returns a numeric \code{matrix} containing the restricted mixed-model right-hand side when \code{auxfiles = TRUE} and the compiled calculation succeeds; otherwise \code{NULL}.
+Invisibly returns a numeric \code{matrix} containing the model-specific mixed-model right-hand side when \code{auxfiles = TRUE} and the compiled calculation succeeds; otherwise \code{NULL}.
 }

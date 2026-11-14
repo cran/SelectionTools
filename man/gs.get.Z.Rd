@@ -12,7 +12,7 @@ gs.get.Z(data.set = "default", names = FALSE)
 
 \arguments{
    \item{data.set}{Name of the SelectionTools data set.}
-   \item{names}{Logical. Attach individual identifiers as matrix row names.}
+   \item{names}{Logical. A value of \code{TRUE} attaches individual identifiers as matrix row names.}
 }
 \value{
 Invisibly returns the current numeric marker/design \code{matrix} \code{Z}

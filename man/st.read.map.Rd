@@ -27,7 +27,7 @@ Marker matching is by marker name. Loci present in the map but absent from the m
 
 Duplicate marker names in either the linkage map or marker matrix are rejected because they make the mapping ambiguous. Equal positions on the same chromosome are separated deterministically while preserving their relative order and without moving a tied locus beyond the next genuinely distinct map position.
 
-The operation is transactional. Parsing, matching, construction of the restricted genotype matrix, linkage-map structures, and marker statistics are completed before the existing marker data are replaced. On failure, the previous marker matrix, map, phenotype vector, and derived state remain available. On successful replacement, model- and marker-order-dependent derived structures belonging to the old marker set are invalidated.
+The operation is transactional. Parsing, matching, construction of the selected genotype matrix, linkage-map structures, and marker statistics are completed before the existing marker data are replaced. On failure, the previous marker matrix, map, phenotype vector, and derived state remain available. On successful replacement, model- and marker-order-dependent derived structures belonging to the old marker set are invalidated.
 }
 
 \value{

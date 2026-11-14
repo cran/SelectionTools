@@ -293,14 +293,10 @@ The stored data contain no missing values.
 \item{\code{Diet}}{Diet treatment. Factor with 4 levels: \code{d1}, \code{d2}, \code{d3}, \code{d4}.}
 }}
 }}
-\details{The file name and loaded object name are both listed for every dataset.
-For example, \file{v-lmm-oats.rda} contains \code{oats}.
-The call \code{data("v-lmm-oats", package="SelectionTools")} loads
-the oats data, or replace \code{v-lmm-oats} with another dataset name
-listed above. All listed datasets are available through \code{data()}.
-The \code{envir} argument specifies the destination environment.
-Objects have the short dataset names shown above, for example \code{oats} and
-\code{barley.lattice}; multiword names use dots, for example \code{met.seven.traits}.
+\details{The file name and loaded object name are listed for every dataset.
+All listed datasets are available through \code{data()}; its \code{envir}
+argument specifies the destination environment. Object names follow the
+names listed above, with dots separating words in multiword names.
 
 All categorical grouping variables, including years, are stored as factors. Responses and
 continuous covariates (including chick measurement time) remain numeric.
@@ -340,13 +336,4 @@ environment specified by \code{envir}.}
 REML: An efficient algorithm for variance parameter estimation in linear
 mixed models. Biometrics 51:1440--1450. \doi{10.2307/2533274}.}
 \seealso{\code{\link{st.lmm}}, \code{\link{st.lsm}}}
-\examples{
-e <- new.env()
-data("v-lmm-oats", package = "SelectionTools", envir = e)
-head(e$oats)
-str(e$oats)
-
-data("v-lmm-met-seven-traits", package = "SelectionTools", envir = e)
-colSums(is.na(e$met.seven.traits))
-}
 \keyword{datasets}

@@ -1,6 +1,6 @@
 \name{population.sort}
 \alias{population.sort}
-\title{Sort a simulation population by genetic or phenotypic value}
+\title{Sorts a simulation population by genetic or phenotypic value}
 
 \description{
 Sorts the active individuals of a simulation population by a stored genetic

@@ -112,24 +112,3 @@ conservation: the R package optiSel. BMC Bioinformatics 20:25.
 \code{gs.esteff.rr}, \code{gs.estimate.gv}, \code{st.get.A},
 \code{gs.cross.info}
 }
-\examples{
-\dontrun{
-data("v-tropmaize-vcf")
-data("v-tropmaize-phe")
-st.load.vcf.data(v.tropmaize.vcf)
-st.load.performance.data(v.tropmaize.phe)
-st.restrict.marker.data(NoAll.MAX = 2)
-st.restrict.marker.data(MaMis.MAX = 0.05)
-st.restrict.marker.data(ExHet.MIN = 0.1)
-st.restrict.marker.data(InMis.MAX = 0.1)
-gs.esteff.rr(method = "BLUP")
-values <- gs.estimate.gv()
-K <- st.get.A()/2
-merit <- setNames(values$yhat, as.character(values$i))
-merit <- merit[rownames(K)]
-fit <- st.ocs(merit, K, theta = 0.02, upper = 0.1)
-fit
-largest.contributions <- head(sort(fit$contributions, decreasing = TRUE), 10)
-largest.contributions
-}
-}

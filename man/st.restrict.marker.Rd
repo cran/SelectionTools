@@ -46,7 +46,7 @@ within the same call. Separate calls provide staged filtering.
 For example, one call removes individuals with high missingness and
 a later call filters markers using the updated statistics.
 
-The linkage map and associated performance data are restricted
+The linkage map and associated performance data are subset
 along with the marker data. Removing markers invalidates
 marker-dependent model results, which must be recalculated
 before further use.

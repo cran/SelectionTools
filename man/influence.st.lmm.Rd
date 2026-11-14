@@ -35,25 +35,26 @@ residuals, and the status of every requested deletion.
 }
 \arguments{
 \item{model}{For fitted-model methods, a converged \code{st.lmm} object
-fitted by ML or REML. For influence-object methods, an
+fitted by ML or REML. The \code{rstudent} method also supports univariate
+method-of-moments models containing only fixed effects. For influence-object methods, an
 \code{st.lmm.influence} object.}
 \item{group}{NULL deletes one retained data row per case, including all
 its observed traits. A single character string names a column of the
-retained data whose values define groups. Otherwise supply a nonmissing
+retained data whose values define groups. The alternative is a nonmissing
 atomic vector with exactly one value per retained row. A vector indexed
 to the original input rows is not accepted when its length differs from
 the retained data.}
-\item{units}{NULL requests every deletion unit. Otherwise supply distinct
+\item{units}{NULL requests every deletion unit. The alternative is a vector of distinct
 unit IDs or labels from the inventory. IDs follow the first appearance
 of each unit in the retained data. Units not requested remain visible
 in the result.}
 \item{control}{Named fitting controls that override the original controls
 for deletion fits. The original ML or REML method is retained.}
-\item{keep.fits}{Retain complete deletion models when TRUE. Raw coefficient
+\item{keep.fits}{Complete deletion models are retained when TRUE. Raw coefficient
 and covariance estimates, diagnostic status and warnings are retained
 regardless of this choice when a fit was returned.}
 
-\item{influence}{NULL computes deletion influence. Alternatively supply
+\item{influence}{NULL computes deletion influence. The alternative is
 an influence result from the same fitted model. \code{rstudent} requires
 a complete case-deletion result; grouped or partial results are rejected.}
 \item{object,x}{An \code{st.lmm.influence} object.}
@@ -148,6 +149,15 @@ at their deletion estimates for this calculation. No exact t reference
 distribution is asserted for general mixed models. For ordinary Gaussian
 regression fitted by REML this agrees with conventional externally
 studentized residuals.
+
+For a univariate fixed-only method-of-moments model, \code{rstudent}
+uses the analytic externally studentized regression residual. Positive
+precision weights multiply the response residual by their square root;
+the deleted residual variance uses the weighted residual sum of squares
+and DF minus one, where DF is the number of observations minus the
+fixed-design rank. This method requires \code{influence=NULL} and an
+empty \code{control} list; supplied influence objects and deletion-fit
+controls are rejected.
 }
 \subsection{Plots}{
 The default panels show Cook's distance and the maximum absolute DFBETA
@@ -176,8 +186,8 @@ a named vector; \code{dfbeta} and \code{dfbetas} return matrices with one
 row per inventory unit and one column per original fixed coefficient.
 \code{rstudent} returns a matrix with one row per observation and one column
 per trait, restores omitted
-selected rows under \code{na.exclude}, and attaches the deletion-status
-table. Originally missing responses and unavailable deletion diagnostics
+selected rows under \code{na.exclude}. For likelihood fits it attaches
+the deletion-status table. Originally missing responses and unavailable deletion diagnostics
 remain \code{NA}.
 }
 \seealso{

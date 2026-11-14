@@ -1,12 +1,22 @@
-###################################################################################
-# SelectionTools01.R
-###################################################################################
+
+
+
 
 .GS_ALLELE_MAX <- 254L
 .GS_STVCF_MAX_ALT <- .GS_ALLELE_MAX - 1L
 
+.st.restore.graphics <- function(settings) {
+  graphics::par(settings[!names(settings) %in% c("pin", "plt", "mfg", "fig", "new")])
+  graphics::par(mfg=settings$mfg)
+  if (!isTRUE(all.equal(graphics::par("fig"), settings$fig, tolerance=1e-12)))
+    graphics::par(fig=settings$fig)
+  graphics::par(cex=settings$cex, mex=settings$mex)
+  graphics::par(new=settings$new)
+  invisible(NULL)
+}
 
-## Startup message
+
+
 
 st.info <-  function( lev, msg )
   {
@@ -27,6 +37,9 @@ st.info <-  function( lev, msg )
 
 "st.set.openblas.threads" <- function( active )
 {
+  if (!is.numeric(active) || length(active) != 1L || is.na(active) ||
+      !is.finite(active) || active != floor(active) || active < 1 || active > 256)
+    stop("'active' must be one integer between 1 and 256", call. = FALSE)
   c  <-  .Call("st_legacy_marker", list(action="legacy.result",
         routine="gs_set_openblas_threads",
         arguments=list(as.integer(active))), PACKAGE="SelectionTools")
@@ -45,9 +58,9 @@ st.info <-  function( lev, msg )
   c
 }
 
-###################################################################################
-# Genomic selection functions: gs.
-###################################################################################
+
+
+
 
 "gs.info" <-  function( lev, msg ){
     c <- .Call("st_legacy_marker", list(action="legacy.result",
@@ -247,79 +260,79 @@ gs.make.A <- function(Z, coding = "0 1 2")
     invisible(result)
 }
 
-## "gs.check.model.fit" <- function ( cor.filename = "breeding.values"  ,
-##                                       auxfiles = TRUE                   )
-## {
-##   gs.start.timer()
-##   o.filename <- paste(st.output.dir,op,cor.filename,sep="")
-##   retval <- 0;
-##   c <- .C ( "gs_check_model_fit_01_GV"  ,
-##             as.character(o.filename)    ,
-##             as.integer(auxfiles)        ,
-##             retval = as.integer(retval) )
-##   x <- NULL
-##   if  ( (auxfiles) && (-2 != c$retval ) ) {
-##     x <- data.matrix( read.table(file=o.filename,header=TRUE) )
-##     unlink(o.filename)
-##   }
-##   gs.stop.timer (info.level=1)
-##   return( invisible(x) )
-##}
-
-## "gs.estimate.breeding.values" <- function (
-##           mar.filename ,
-##           cor.filename = "breeding.values",
-##           auxfiles = TRUE                          )
-## {
-##   gs.start.timer()
-##   if ( "" == st.input.dir )  ip <- "" else ip <- "/"
-##   if ( "" == st.output.dir ) op <- "" else op <- "/"
-##   m.filename <- paste(st.input.dir,ip,mar.filename,sep="")
-##   o.filename <- paste(st.output.dir,op,cor.filename,sep="")
-##   retval <- 0;
-##   c <- .C ( "gs_estimate_breeding_values_01_GV",
-##             as.character(m.filename),
-##             as.character(o.filename),
-##             as.integer(auxfiles),
-##             retval = as.integer(retval))
-##   x <- NULL
-##   if  ( (auxfiles) && (-2 != c$retval ) ) {
-##     x <- read.table(file=o.filename,header=FALSE,skip=1,stringsAsFactors=FALSE)
-##     unlink(o.filename)
-##     if (2 == ncol(x)) names(x) <- c("i","yhat")
-##     if (3 == ncol(x)) names(x) <- c("i","y","yhat")
-##   }
-##   gs.stop.timer (info.level=1)
-##   return( invisible(x) )
-## }
 
 
-## "gs.validation" <- function ( mar.filename ,
-##                                 per.filename ,
-##                                 cor.filename = "predicted",
-##                                 auxfiles = TRUE )
-## {
-##   gs.start.timer()
-##   if ( "" == st.input.dir )  ip <- "" else ip <- "/"
-##   if ( "" == st.output.dir ) op <- "" else op <- "/"
-##   m.filename <- paste(st.input.dir,ip,mar.filename,sep="")
-##   p.filename <- paste(st.input.dir,ip,per.filename,sep="")
-##   o.filename <- paste(st.output.dir,op,cor.filename,sep="")
-##   retval <- 0;
-##   c <- .C ( "gs_validation_01_GV",
-##             as.character(m.filename),
-##             as.character(p.filename),
-##             as.character(o.filename),
-##             as.integer(auxfiles),
-##             retval = as.integer(retval))
-##   x <- NULL
-##   if  ( (auxfiles) && (-2 != c$retval ) ) {
-##     x <- data.matrix( read.table(file=o.filename,header=TRUE) )
-##     unlink(o.filename)
-##   }
-##   gs.stop.timer (info.level=1)
-##   return( invisible(x) )
-## }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 "gs.single.marker.reg" <- function(out.filename = "sm.reg", auxfiles = TRUE, data.set = "default") {
     gs.start.timer()
@@ -582,9 +595,9 @@ gs.make.A <- function(Z, coding = "0 1 2")
   }
 
 
-###################################################################################
-# Selection tools functions: st.
-###################################################################################
+
+
+
 
 
 "st.reset" <-  function(){
@@ -672,8 +685,10 @@ gs.make.A <- function(Z, coding = "0 1 2")
 
 "st.start.timer" <- function(depth=1)
   {
-    if ( 0 > depth ) depth = 0
-    if ( depth > 5 ) depth = 4 else depth = depth-1
+    if (!is.numeric(depth) || length(depth) != 1L || is.na(depth) ||
+        !is.finite(depth) || depth != floor(depth) || depth < 1 || depth > 5)
+        stop("'depth' must be one integer between 1 and 5", call. = FALSE)
+    depth <- as.integer(depth) - 1L
 
       c  <-  .Call("st_legacy_marker", list(action="legacy.result",
         routine="st_start_timer",
@@ -682,8 +697,10 @@ gs.make.A <- function(Z, coding = "0 1 2")
 
 "st.stop.timer" <- function ( depth=1, info.level=0 )
 {
-    if ( 0 > depth ) depth = 0
-    if ( depth > 5 ) depth = 4 else depth = depth-1
+    if (!is.numeric(depth) || length(depth) != 1L || is.na(depth) ||
+        !is.finite(depth) || depth != floor(depth) || depth < 1 || depth > 5)
+        stop("'depth' must be one integer between 1 and 5", call. = FALSE)
+    depth <- as.integer(depth) - 1L
 
     etime = 0
     c  <-  .Call("st_legacy_marker", list(action="legacy.result",
@@ -707,7 +724,7 @@ gs.make.A <- function(Z, coding = "0 1 2")
     st.info(info.level,paste("Elapsed time:",paste(round(time,digits=2),tunit,sep="")))
   }
 
-#######
+
 
 "st.read.marker.data" <- function (filename, format, auxfiles = FALSE, data.set = "default") 
 {
@@ -993,7 +1010,7 @@ gs.make.A <- function(Z, coding = "0 1 2")
   if (identical(format.code, "n") && is.null(nfilename))
     stop("nfilename must be supplied for format 'n'")
   st.start.timer()
-  #
+  
   output.filename <- function(filename, extension = "") {
     st.output.dir <- get0("st.output.dir", envir = .GlobalEnv,
                           inherits = FALSE, ifnotfound = "")
@@ -1013,19 +1030,19 @@ gs.make.A <- function(Z, coding = "0 1 2")
       paste(st.output.dir, "/", filename, extension, sep="")
     }
   }
-  # Data in list format #
+  
   lpo.filename <- output.filename(lfilename, ".lpo")
-  # Map for graphical genotypes #
+  
   mmp.filename <- output.filename(mfilename, ".mmp")
-  # Data matrix for graphical genotypes #
+  
   mpo.filename <- output.filename(mfilename, ".mpo")
-  # Genome paramteters for Plabsim #
+  
   ngp.filename <- output.filename(nfilename, ".ngp")
-  # Map for Plabsim #
+  
   nmp.filename <- output.filename(nfilename, ".nmp")
-  # Data matrix for Plabsim #
+  
   npo.filename <- output.filename(nfilename, ".npo")
-  # Individual list for sorting and selecting #
+  
   ind.filename <- ""
   if ( "" != ifilename)
     ind.filename <- output.filename(ifilename)
@@ -1146,30 +1163,30 @@ gs.make.A <- function(Z, coding = "0 1 2")
   m <- map
   g <- pop
   missing.allele <- c("-1", "--", "-", ".", "NA")
-  #
-  #
-   oldmar <- graphics::par("mar")
-   on.exit(graphics::par(mar=oldmar), add = TRUE)
+  
+  
+   oldpar <- graphics::par(no.readonly = TRUE)
+   on.exit(.st.restore.graphics(oldpar), add = TRUE)
   existing.screens <- split.screen()
   if (!identical(existing.screens, FALSE))
     stop("st.plot.ggt cannot be used while split-screen mode is active")
-  par (mar=c(0,0,0,0) )
-  #
-  # Number of individuals
+  par(mfrow=c(1L,1L), mar=c(0,0,0,0))
+  
+  
   n.ind <- ncol(g)
-  #
+  
   clr <- color
-  # Number of chromosomes
+  
   n.chrom <- max(m[,1])
-  # Chromosome names
+  
   if ( ( 1 == length(c.nme) ) && ( "" == c.nme[1] ) ) {
     c.nme <- paste("Chr. ",1:n.chrom)
   }
-  # Individual names
+  
   if ( ( 1 == length(i.nme) ) && ( "" == i.nme[1] ) ) {
     i.nme <- names(g)
   }
-  # Length of chromosomes
+  
   {
     m.chrom <- 1:n.chrom
     l.chrom <- 1:n.chrom
@@ -1181,22 +1198,27 @@ gs.make.A <- function(Z, coding = "0 1 2")
       m.pos <- m[idx,][,2]
       l.chrom[c] <- max(m.pos) - min(m.pos)
       m.brk <- 0:length(m.pos)
-      for ( j in 2:length(m.pos) ) {
-        m.brk[j] <- m.pos[j-1] + (m.pos[j] - m.pos[j-1]) / 2
-      }
+      if (length(m.pos) > 1L)
+        for (j in seq.int(2L, length(m.pos))) {
+          m.brk[j] <- m.pos[j-1] + (m.pos[j] - m.pos[j-1]) / 2
+        }
       m.brk[1+length(m.pos)] <- m.pos[length(m.pos)]
       b.chrom[[c]] <- m.brk
       p.chrom[[c]] <- m.pos
     }
   }
-  # Width of displays
+  
   ndc  <- 1 + n.chrom
-  f.disp <- c(f.lr*mean(l.chrom),l.chrom)
+  layout.length <- l.chrom
+  if (any(layout.length <= 0))
+    layout.length[layout.length <= 0] <- if (any(layout.length > 0))
+      min(layout.length[layout.length > 0]) else 1
+  f.disp <- c(f.lr*mean(layout.length),layout.length)
   f.disp <- f.disp / sum (f.disp)
   s.disp <- f.disp
   for (kk in 2:ndc) s.disp[kk] <- s.disp[kk-1] +s.disp[kk]
   s.disp <- c(0,s.disp)
-  #
+  
   dcol <- matrix(0,ncol=2,nrow=ndc)
   for (kk in 1:ndc)
     {
@@ -1204,14 +1226,14 @@ gs.make.A <- function(Z, coding = "0 1 2")
       dcol[kk,2] = s.disp[kk+1];
     }
 
-  # Height of displays
+  
   ndr <- 2 + n.ind
   f.disp <- c ( f.tb, rep(1,n.ind) , f.tb)
   f.disp <- f.disp / sum (f.disp)
   s.disp <- f.disp
   for (kk in 2:ndr) s.disp[kk] <- s.disp[kk-1] +s.disp[kk]
   s.disp <- c(0,s.disp)
-  #
+  
   drow <- matrix(0,ncol=2,nrow=ndr)
   for (kk in 1:ndr)
     {
@@ -1219,36 +1241,36 @@ gs.make.A <- function(Z, coding = "0 1 2")
       drow[kk,2] = s.disp[kk+1];
     }
 
-  # Define the figures
+  
   figs <- matrix (ncol=4,nrow=ndr*ndc )
   for (i in 1:ndr) for (c in 1:ndc)
     {
       idx  <- (i-1)*ndc + c
       figs[idx,] <- c(dcol[c,],drow[i,]  )
     }
-  #
+  
   sve      <- 1 - figs[,3]
   figs[,3] <- 1 - figs[,4]
   figs[,4] <- sve
-  #
+  
   figs[,1] <- figs[,1] + d.h
   figs[,2] <- figs[,2] - d.h
   figs[,3] <- figs[,3] + d.v
   figs[,4] <- figs[,4] - d.v
-  #
+  
   figs <- round(figs,digits=5)
-  #
+  
   neu <- split.screen ( figs  )
   on.exit(close.screen(all.screens=TRUE), add=TRUE, after=FALSE)
-  #
-  # Plot chromosome.names and legend
+  
+  
   for (c in 1:n.chrom)
     {
       scr  <- (c+1)
       screen(scr)
       plot(0,0,t="n",axes=FALSE, xlab="", ylab="")
       text (0,0,c.nme[c],cex=cex.chrom)
-#
+
       scr <- (ndr-1) * ndc + (c+1)
       screen(scr)
       mi <- min(b.chrom[[c]])
@@ -1270,34 +1292,34 @@ gs.make.A <- function(Z, coding = "0 1 2")
         }
 
      }
-  # Plot individual labels
+  
   for (i in 1:n.ind)
     {
-      # Activate screen
+      
       scr  <- (i)*ndc + (1)
       screen(scr)
       plot(0,0,t="n",axes=FALSE, xlab="", ylab="")
       text (0,0,i.nme[i],cex=cex.ind)
     }
-  # Plot all chromosomes
+  
   for (i in 1:n.ind) for (c in 1:n.chrom)
     {
-      # Activate screen
+      
       scr  <- (i)*ndc + (c+1)
       screen(scr)
-     #
+     
       p.m <- matrix( 0 ,
                    nrow=m.chrom[c] , ncol=2 ,
                    byrow=FALSE                    )
-      #
+      
       idx <- m[,1] == c
       m.nme <- as.character ( m[idx,][,3] )
       idx2 <- row.names(g) %in% m.nme
       p.g <- as.character(g[idx2,i])
-      #
+      
       if (length(p.g) != m.chrom[c])
         stop("Marker map and genotype matrix do not match")
-      #
+      
       for (p in 1:m.chrom[c]) {
         gt <- p.g[p]
         if (is.na(gt) || gt %in% missing.allele) {
@@ -1324,7 +1346,7 @@ gs.make.A <- function(Z, coding = "0 1 2")
             col = clr
             )
       box()
-      #
+      
     }
 }
 
@@ -1546,8 +1568,11 @@ gs.make.A <- function(Z, coding = "0 1 2")
         x <- if (pvals.av) gs.return.pvals(data.set=data.set) else gs.return.effects(data.set=data.set)
         if (is.null(x)) return(invisible(NULL))
         effect <- x$effect[-1L]
-        if (pvals.av) pvalue <- x$pvalue[-1L]
-        if (!is.null(pvals)) { pvalue <- pvals; pvals.av <- TRUE }
+        if (pvals.av) {
+            p <- if ("p" %in% names(x)) x$p else x[["pvalue"]]
+            p <- p[-1L]
+        }
+        if (!is.null(pvals)) { p <- pvals; pvals.av <- TRUE }
         mp <- st.get.map(data.set=data.set)
         if (is.null(mp)) return(invisible(NULL))
         names(mp) <- c("chrom", "pos", "name", "class")
@@ -1557,18 +1582,18 @@ gs.make.A <- function(Z, coding = "0 1 2")
             mp$effect <- abs(effect)
         else mp$effect <- effect
         if (TRUE == pvals.av) {
-            mp$pvalue <- pvalue
-            mp$pvalue.a <- p.adjust(mp$pvalue, p.adjust.method)
+            mp$p <- p
+            mp$p.adjusted <- p.adjust(mp$p, p.adjust.method)
         }
         c.pos <- cl
-        for (i in 2:length(c.pos)) c.pos[i] <- c.pos[i] + c.pos[i - 
-            1]
-        for (i in 1:nrow(mp)) if (mp$chrom[i] > 1) 
+        if (length(c.pos) > 1L)
+            for (i in seq.int(2L, length(c.pos))) c.pos[i] <- c.pos[i] + c.pos[i - 1L]
+        for (i in seq_len(nrow(mp))) if (mp$chrom[i] > 1) 
             mp$pos[i] <- mp$pos[i] + c.pos[mp$chrom[i] - 1]
     }
     if (TRUE == plt) {
         oldpar <- graphics::par(no.readonly = TRUE)
-        on.exit(graphics::par(oldpar), add = TRUE)
+        on.exit(.st.restore.graphics(oldpar), add = TRUE)
         par(mar = c(4, 4, 1, 1))
         if (is.null(ylim)) 
             ylim = c(min(c(min(mp$effect), 0)), max(mp$effect))
@@ -1587,11 +1612,11 @@ gs.make.A <- function(Z, coding = "0 1 2")
             lines(xlim, c(0, 0))
         tol = 1e-08
         if (TRUE == pvals.av) {
-            mp1 <- mp[mp$pvalue.a < alpha, ]
+            mp1 <- mp[mp$p.adjusted < alpha, ]
             mp1ap <- mp1[mp1$effect > tol, ]
             mp1an <- mp1[mp1$effect < -tol, ]
             mp1b <- mp1[abs(mp1$effect) <= tol, ]
-            mp2 <- mp[mp$pvalue.a >= alpha, ]
+            mp2 <- mp[mp$p.adjusted >= alpha, ]
             points(mp1b$pos, mp1b$effect, type = "p", lwd = 2, 
                 col = col.ns, pch = pch.ns)
             points(mp2$pos, mp2$effect, type = "p", lwd = 2, 
@@ -1608,7 +1633,7 @@ gs.make.A <- function(Z, coding = "0 1 2")
     ret.val <- data.frame(chrom = mp$chrom, pos = mp$pos, name = mp$name, 
         cpos = mp$pos, effect = mp$effect)
     if (TRUE == pvals.av) 
-        ret.val$pvalue <- mp$pvalue
+        ret.val$p <- mp$p
     gs.stop.timer(info.level = 1)
     return(invisible(ret.val))
 }
@@ -1619,14 +1644,14 @@ gs.make.A <- function(Z, coding = "0 1 2")
     gs.start.timer()
     x <- gs.return.effects(data.set = data.set.a)
     if (is.null(x)) return(invisible(NULL))
-    effects.a <- x$effect[2:nrow(x)]
+    effects.a <- x$effect[-1L]
     x <- gs.return.effects(data.set = data.set.b)
     if (is.null(x)) return(invisible(NULL))
-    effects.b <- x$effect[2:nrow(x)]
+    effects.b <- x$effect[-1L]
     max <- max(c(abs(effects.a), abs(effects.b)))
     min <- -max
     oldpar <- graphics::par(no.readonly = TRUE)
-    on.exit(graphics::par(oldpar), add = TRUE)
+    on.exit(.st.restore.graphics(oldpar), add = TRUE)
     par(mar = c(4, 4, 1, 1))
     plot(effects.b ~ effects.a, type = "p", lwd = 2, col = "blue", 
         ylim = c(min, max), xlim = c(min, max), xlab = label.a, 
@@ -1643,17 +1668,17 @@ gs.plot.model.fit <- function ( training.set ="default",
   c1 <- gs.predict.genotypes ( training.set   = training.set,
                                prediction.set = training.set )
   if ( is.null(c1) ) return (invisible(NULL) )
-  #
+  
   c1 <- c1[,2:3]
-  #
+  
   oldpar <- graphics::par(no.readonly = TRUE)
-  on.exit(graphics::par(oldpar), add = TRUE)
+  on.exit(.st.restore.graphics(oldpar), add = TRUE)
   par(mar=c(4,4,1,1) )
-  #
+  
   l <- c(min(c1),max(c1))
   p1 <- l[1] + 0.65*(l[2]-l[1] ) ; p2 <- l[1] + 0.10*(l[2]-l[1] )
   p3 <- l[1] + 0.05*(l[2]-l[1] ) ; p4 <- l[1] + 0.90*(l[2]-l[1] )
-  #
+  
   plot(c1,ylim=l,xlim=l,col="blue")
   text(p1,p2,sprintf("r = %4.2f\nrho = %4.2f",cor(c1)[2],
                    cor(c1,method="spearman")[2]),pos=4)
@@ -1667,30 +1692,30 @@ gs.plot.validation <- function ( training.set ,
                                  prediction.set ,
                                  title=""          )
 {
-  #
+  
   c1 <- gs.predict.genotypes ( training.set   = training.set,
                                prediction.set = training.set )
   c2 <- gs.predict.genotypes ( training.set   = training.set,
                                prediction.set = prediction.set )
-  #
+  
   if ( 3 == ncol(c1) ) c1 <- c1[,2:3] else return (invisible(NULL) )
   if ( 3 == ncol(c2) ) c2 <- c2[,2:3] else
    {
      st.info (-2,"No phenotypic data in the prediction set")
      return (invisible(NULL) )
    }
-  #
+  
   if ( is.null(c1) || is.null(c1) ) return (invisible(NULL) )
-  #
+  
   oldpar <- graphics::par(no.readonly = TRUE)
-  on.exit(graphics::par(oldpar), add = TRUE)
+  on.exit(.st.restore.graphics(oldpar), add = TRUE)
   par( mfcol=c(1,2) , mar=c(4,4,1,1) )
-  #
+  
   l <- c( min(c1,c2),max(c1,c2) )
-  #
+  
   p1 <- l[1] + 0.65*(l[2]-l[1] ) ; p2 <- l[1] + 0.10*(l[2]-l[1] )
   p3 <- l[1] + 0.05*(l[2]-l[1] ) ; p4 <- l[1] + 0.90*(l[2]-l[1] )
-  #
+  
   plot(c1,ylim=l,xlim=l,col="blue")
   text(p1,p2,sprintf("r = %4.2f\nrho = %4.2f",cor(c1)[2],
                      cor(c1,method="spearman")[2]),pos=4)
@@ -1698,7 +1723,7 @@ gs.plot.validation <- function ( training.set ,
   lines(l,l)
   lines ( c(mean(c1[,1]),mean(c1[,1])), c(min(c1[,2]),max(c1[,2])) )
   lines ( c(min(c1[,1]),max(c1[,1])), c(mean(c1[,2]),mean(c1[,2])) )
-  #
+  
   plot(c2,ylim=l,xlim=l,col="blue")
   text(p1,p2,sprintf("r = %4.2f\nrho = %4.2f",cor(c2)[2],
                      cor(c2,method="spearman")[2]),pos=4)
@@ -1716,14 +1741,14 @@ st.plot.corr <- function ( x , y,
                           ylab         = "y"  )
 {
   oldpar <- graphics::par(no.readonly = TRUE)
-  on.exit(graphics::par(oldpar), add = TRUE)
+  on.exit(.st.restore.graphics(oldpar), add = TRUE)
   par ( mar=c(4,4,1,1) )
-  #
+  
   lx <- c(min(x),max(x))
   ly <- c(min(y),max(y))
   p1 <- lx[1] + 0.65*(lx[2]-lx[1] ) ; p2 <- ly[1] + 0.10*(ly[2]-ly[1] )
   p3 <- lx[1] + 0.05*(lx[2]-lx[1] ) ; p4 <- ly[1] + 0.90*(ly[2]-ly[1] )
-  #
+  
   plot(x,y,xlab=xlab,ylab=ylab,type="n")
   points(x,y,pch=pch,cex=cex);
   text(p1,p2,sprintf("r = %4.2f\nrho = %4.2f",cor(x,y),
@@ -1745,14 +1770,14 @@ st.plot.corr.l <- function ( x , y,
                           xlim )
 {
   oldpar <- graphics::par(no.readonly = TRUE)
-  on.exit(graphics::par(oldpar), add = TRUE)
+  on.exit(.st.restore.graphics(oldpar), add = TRUE)
   par ( mar=c(4,4,1,1) )
-  #
+  
   lx <- c(min(x),max(x))
   ly <- c(min(y),max(y))
   p1 <- lx[1] + 0.65*(lx[2]-lx[1] ) ; p2 <- ly[1] + 0.10*(ly[2]-ly[1] )
   p3 <- lx[1] + 0.05*(lx[2]-lx[1] ) ; p4 <- ly[1] + 0.90*(ly[2]-ly[1] )
-  #
+  
   plot(x,y,xlab=xlab,ylab=ylab,type="n",xlim=xlim,ylim=ylim)
   points(x,y,pch=pch,cex=cex);
   text(p1,p2,sprintf("r = %4.2f\nrho = %4.2f",cor(x,y),
@@ -1765,8 +1790,8 @@ st.plot.corr.l <- function ( x , y,
 }
 
 
-st.genetic.distances.02 <- function ( measure = "mrd", # "mrd" "rd" "euc"
-                                      format  = "l",   # "l" "m"
+st.genetic.distances.02 <- function ( measure = "mrd", 
+                                      format  = "l",   
                                       filename  = NULL,
                                       auxfiles  = FALSE,
                                       data.set  = "default" )
@@ -1800,8 +1825,8 @@ st.genetic.distances.02 <- function ( measure = "mrd", # "mrd" "rd" "euc"
   invisible(distance)
 }
 
-st.genetic.distances <- function ( measure = "mrd", # "mrd" "rd" "euc"
-                                   format  = "l",   # "l" "m"
+st.genetic.distances <- function ( measure = "mrd", 
+                                   format  = "l",   
                                    filename  = NULL,
                                    auxfiles  = FALSE,
                                    data.set  = "default" )
@@ -1816,12 +1841,12 @@ st.genetic.distances <- function ( measure = "mrd", # "mrd" "rd" "euc"
      if ( "" == st.output.dir ) op <- "" else op <- "/"
      out.filename <- paste(st.output.dir,op,filename,".gdi",sep="")
    }
-#
+
    gs.cross.eval.gd ( dist=measure , data.set=data.set )
    c <- gs.cross.info ( data.set=data.set )
    distance <- data.frame (OTU1=c$P1Name,OTU2=c$P2Name,Measure=c$gd)
 
-#
+
   if  (auxfiles)
     {
       write.table ( distance,
@@ -1881,11 +1906,11 @@ st.genetic.distances <- function ( measure = "mrd", # "mrd" "rd" "euc"
    paste(st.data.dir,dp,filename,sep="")
 }
 
-## "st.scriptdir" <- function ( filename )
-## {
-##    if ( "" == st.script.dir ) sp <- "" else sp <- "/"
-##    paste(st.script.dir,sp,filename,sep="")
-## }
+
+
+
+
+
 
 "st.id" <- function ( filename )
 {
@@ -1914,11 +1939,11 @@ st.genetic.distances <- function ( measure = "mrd", # "mrd" "rd" "euc"
    paste(st.data.dir,dp,filename,sep="")
 }
 
-## "st.sd" <- function ( filename )
-## {
-##    if ( "" == st.script.dir ) sp <- "" else sp <- "/"
-##    paste(st.script.dir,sp,filename,sep="")
-## }
+
+
+
+
+
 
 
 "gs.cross.eval.gd" <- function ( dist     = "rd",
@@ -2001,11 +2026,34 @@ st.genetic.distances <- function ( measure = "mrd", # "mrd" "rd" "euc"
 
 st.cross.allocate <- function(plan, scores, total.progeny, n.selected = 10,
                               min.progeny = n.selected, max.progeny = total.progeny,
-                              accuracy = 1, control = list()) {
+                              accuracy = 1, control = list(),
+                              selection.method = c("burrows", "order.statistics"),
+                              constraints = NULL, genetic.model = NULL) {
+    selection.method <- match.arg(selection.method)
     .Call("st_legacy_marker", list(action = "cross.allocate", plan = plan,
         scores = scores, total.progeny = total.progeny, n.selected = n.selected,
         min.progeny = min.progeny, max.progeny = max.progeny,
-        accuracy = accuracy, control = control), PACKAGE = "SelectionTools")
+        accuracy = accuracy, control = control, selection.method = selection.method,
+        constraints = constraints, genetic.model = genetic.model),
+        PACKAGE = "SelectionTools")
+}
+
+st.cross.evaluate <- function(plan, scores = NULL, n.selected = NULL,
+                               accuracy = NULL, K = NULL, selection.method = NULL,
+                               constraints = NULL, genetic.model = NULL) {
+    .Call("st_legacy_marker", list(action = "cross.evaluate", plan = plan,
+        scores = scores, n.selected = n.selected, accuracy = accuracy, K = K,
+        selection.method = selection.method, constraints = constraints,
+        genetic.model = genetic.model),
+        PACKAGE = "SelectionTools")
+}
+
+print.st.cross.population <- function(x, digits = NULL, top = NULL, bottom = NULL,
+                                      char.per.line = NULL, ...) {
+    .Call("st_legacy_marker", list(action = "cross.evaluate.print", object = x,
+        options = st.options(), digits = digits, top = top, bottom = bottom,
+        char.per.line = char.per.line), PACKAGE = "SelectionTools")
+    invisible(x)
 }
 
 print.st.cross.allocation <- function(x, digits = NULL, top = NULL, bottom = NULL,
@@ -2069,7 +2117,7 @@ print.st.cross.allocation <- function(x, digits = NULL, top = NULL, bottom = NUL
         arguments=list(as.character        (pop.name), as.integer          (bg), retval = as.integer (retval), as.character        (data.set))), PACKAGE="SelectionTools")
 }
 
-#//+DEBUG++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
 
 "st.get.simpop2" <- function ( pop.name ,
                               data.set ="default" )
@@ -2086,7 +2134,7 @@ print.st.cross.allocation <- function(x, digits = NULL, top = NULL, bottom = NUL
         arguments=list(as.character        (pop.name), as.integer          (bg), retval = as.integer (retval), as.character        (data.set))), PACKAGE="SelectionTools")
 }
 
-#//+DEBUG++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
 
 
 
@@ -2188,9 +2236,9 @@ gs.write.pseff <- function(e, beta0=NA, file) {
   gs.stop.timer (info.level=1)
 }
 
-################################################################################
-# BEGIN: Ridge regression after transformation
-################################################################################
+
+
+
 
 "gs.mmet.coeff" <- function(out.filename = "mme.coeff", auxfiles = FALSE, data.set = "default") {
     gs.start.timer()
@@ -2277,13 +2325,13 @@ gs.write.pseff <- function(e, beta0=NA, file) {
     invisible(result)
 }
 
-################################################################################
-# END: Ridge regression after transformation
-################################################################################
 
-##############################################################################
-# BEGIN: LD based haplotypes                                           2015-04
-##############################################################################
+
+
+
+
+
+
 
 "st.calc.ld" <- function(ld.measure = "r2", auxfiles = TRUE, data.set = "default") {
     st.start.timer()
@@ -2295,7 +2343,7 @@ gs.write.pseff <- function(e, beta0=NA, file) {
     invisible(result)
 }
 
-# For problems with large LD files
+
 "st.calc.ld.2" <- function (ld.measure = "r2", auxfiles = TRUE, keep.ldfile = FALSE, data.set = "default", 
     ld.filename = NULL) 
 {
@@ -2317,7 +2365,7 @@ st.LDplot.ld <- function (ld,chrom)
     n <- nrow(l)
     d <- (1+sqrt(1+8*n))/2
     LD <- matrix(nrow=d,ncol=d)
-    for (i in 1:n) LD[ l[i,2],l[i,3] ] <- l[i,6]
+    for (i in seq_len(n)) LD[ l[i,2],l[i,3] ] <- l[i,6]
     return(LD)
   }
 
@@ -2340,18 +2388,18 @@ st.LDplot.map <- function(chrom, data.set)
 }
 
 
-##############################################################################
-# END:   LD based haplotypes                                           2015-04
-##############################################################################
-
-##############################################################################
-# Begin:   Genetid distances for factoials                             2015-11
-##############################################################################
 
 
-st.genetic.distances.fct <- function ( measure = "mrd", # "mrd" "rd" "euc"
-                                       format  = "l",   # "l" "m"
-                                       split   = 1,     # Last individual of the first set
+
+
+
+
+
+
+
+st.genetic.distances.fct <- function ( measure = "mrd", 
+                                       format  = "l",   
+                                       split   = 1,     
                                        filename  = NULL,
                                        auxfiles  = FALSE,
                                        data.set  = "default" )
@@ -2366,12 +2414,12 @@ st.genetic.distances.fct <- function ( measure = "mrd", # "mrd" "rd" "euc"
      if ( "" == st.output.dir ) op <- "" else op <- "/"
      out.filename <- paste(st.output.dir,op,filename,".gdi",sep="")
    }
-#
+
    gs.cross.eval.gd.fct ( dist=measure , split=split, data.set=data.set )
    c <- gs.cross.info ( data.set=data.set )
    distance <- data.frame (OTU1=c$P1Name,OTU2=c$P2Name,Measure=c$gd)
 
-#
+
   if  (auxfiles)
     {
       write.table ( distance,
@@ -2416,13 +2464,13 @@ st.genetic.distances.fct <- function ( measure = "mrd", # "mrd" "rd" "euc"
   gs.stop.timer (info.level=1)
 }
 
-##############################################################################
-# End:  Genetic distances for factoials                                2015-11
-##############################################################################
 
-##############################################################################
-# Begin: Recode reference for two parents                              2017-09
-##############################################################################
+
+
+
+
+
+
 
 "st.recode.ref.2" <- function ( r1 = 0,
                                 r2 = 1,
@@ -2439,13 +2487,13 @@ st.genetic.distances.fct <- function ( measure = "mrd", # "mrd" "rd" "euc"
 
 }
 
-##############################################################################
-# End: Recode reference for two parents                              2017-09
-##############################################################################
 
-##############################################################################
-# Begin: New ridge regression procedures                             2017-11
-##############################################################################
+
+
+
+
+
+
 
 
 "gs.lambda.rrblup" <- function(maxiter = 1000, precision = 1e-04, hsq = 0.8, out.filename = "lambda", 
@@ -2472,14 +2520,14 @@ st.genetic.distances.fct <- function ( measure = "mrd", # "mrd" "rd" "euc"
 
 
 
-##############################################################################
-# Begin: New ridge regression procedures                             2017-11
-##############################################################################
 
 
-##############################################################################
-# Begin: EM based genomic prediction                                      2012
-##############################################################################
+
+
+
+
+
+
 
 "gs.esteff.lsq" <- function(out.filename = "eff.lsq", auxfiles = TRUE, data.set = "default") {
     gs.start.timer()
@@ -2568,13 +2616,13 @@ st.genetic.distances.fct <- function ( measure = "mrd", # "mrd" "rd" "euc"
     invisible(result)
 }
 
-##############################################################################
-# End:  EM based genomic prediction                                       2012
-##############################################################################
 
-##############################################################################
-# New interface routines to simulations                       Jun 2019
-##############################################################################
+
+
+
+
+
+
 
 "st.set.sim.gp" <- function (data.set="default")
     {
@@ -2648,9 +2696,9 @@ st.genetic.distances.fct <- function ( measure = "mrd", # "mrd" "rd" "euc"
   invisible(c)
 }
 
-##############################################################################
-# New implementation of st.plot.genediversity                         Jun 2019
-##############################################################################
+
+
+
 
 st.plot.gene.diversity <- function (
    data.set ="default",
@@ -2673,13 +2721,14 @@ st.plot.gene.diversity <- function (
     mp <- merge (mp,ms,sort=FALSE)
     mp <- data.frame(chrom=mp$Chrom,pos=mp$Pos,name=mp$Name,gene.div=mp$ExHet)
     c.pos <- st.chrom.stats(data.set=data.set)$Length
-    for ( i in 2:length(c.pos) ) c.pos[i] <- c.pos[i] + c.pos[i-1]
+    if (length(c.pos) > 1L)
+        for (i in seq.int(2L, length(c.pos))) c.pos[i] <- c.pos[i] + c.pos[i-1L]
     mp$cpos <- mp$pos
-    for ( i in 1:nrow(mp) )
+    for (i in seq_len(nrow(mp)))
         if (mp$chrom[i] > 1)
             mp$cpos[i] <- mp$cpos[i] + c.pos[ mp$chrom[i]-1]
     cl <- st.chrom.stats(data.set=data.set)$Length
-      #
+      
     if ("" == st.output.dir) op <- "" else op <- "/"
     if (TRUE == plt.pdf)
         out.filename <- paste(st.output.dir, op, plt.fname, ".pdf", sep="")
@@ -2697,7 +2746,7 @@ st.plot.gene.diversity <- function (
                 if (!is.null(dl) && plot.device %in% dl) {
                     if (grDevices::dev.cur() != plot.device)
                         grDevices::dev.set(plot.device)
-                    try(graphics::par(oldpar), silent = TRUE)
+                    try(.st.restore.graphics(oldpar), silent = TRUE)
                     grDevices::dev.off(plot.device)
                 }
             }, add = TRUE)
@@ -2705,10 +2754,10 @@ st.plot.gene.diversity <- function (
     else
         {
             oldpar <- graphics::par(no.readonly = TRUE)
-            on.exit(graphics::par(oldpar), add = TRUE)
-       # dev.new()
+            on.exit(.st.restore.graphics(oldpar), add = TRUE)
+       
         }
-# Plot
+
     par(mar=c(4,4,1,1))
     plot(
         mp$cpos,
@@ -2721,15 +2770,15 @@ st.plot.gene.diversity <- function (
         xlab="Chromosome",
         ylab="Gene diversity"
         )
-#
+
     c.pos <- c(0,c.pos)
     axis( 1,
          at=c.pos,
          labels=c(1:length(cl)," "),
          tck=-.01)
 
-#
-# Chromosome borders
+
+
     for (i in 1:(length(c.pos))){
         x <- c.pos[i]
         y0 <- 0
@@ -2737,8 +2786,8 @@ st.plot.gene.diversity <- function (
         lines(c(x,x),c(y0,y1))
     }
 
-#
-# Gene diversity per chromosome
+
+
     gdiv.chr <- tapply(mp$gene.div,mp$chrom,mean)
     for (i in 1: (length(c.pos)-1) ){
         text((c.pos[i]+c.pos[i+1])/2,0.95, sprintf("%4.2f",gdiv.chr[i]))
@@ -2754,9 +2803,9 @@ st.plot.gene.diversity <- function (
 
 }
 
-##############################################################################
-# Begin: Write performance data to a marker data set,                     2022
-##############################################################################
+
+
+
 
 "gs.set.performance.data" <- function( y,
                                        data.set = "default" )
@@ -2786,13 +2835,13 @@ st.get.simpop.perfdata <- function(pop.name,data.set,effect)
 }
 
 
-##############################################################################
-# END: Write performance data to a marker data set,                     2022
-##############################################################################
 
-##############################################################################
-# LD Heatmap replacement                                                 2026
-##############################################################################
+
+
+
+
+
+
 
 st.LDheatmap <- function(LD, map = NULL,
                          distances = "genetical",
@@ -2998,7 +3047,7 @@ st.LDheatmap <- function(LD, map = NULL,
     breaks <- seq(zlim[1L], zlim[2L], length.out = length(plot.col) + 1L)
 
     oldpar <- graphics::par(no.readonly = TRUE)
-    on.exit(graphics::par(oldpar), add = TRUE)
+    on.exit(.st.restore.graphics(oldpar), add = TRUE)
     graphics::par(mar = c(0.5, 1.0, 1.5, 1.0))
 
     graphics::plot(NA_real_, NA_real_,
@@ -3193,15 +3242,15 @@ st.LDheatmap <- function(LD, map = NULL,
 }
 
 
-##############################################################################
-# END LDheatmap replacement                                              2026
-##############################################################################
 
 
 
-##############################################################################
-# Haplotype enrichment of separately phased marker data sets
-##############################################################################
+
+
+
+
+
+
 st.calculate.enrichment <- function(base.pool, enrichment.pool,
                                     haplotype.options=NULL, blocks=NULL,
                                     exclude.compatible=TRUE) {
@@ -3218,7 +3267,7 @@ st.select.enrichment <- function(base.pool, enrichment.pool, n,
           blocks, exclude.compatible, n, method, PACKAGE="SelectionTools")
 }
 
-# Detect a forward haplotype core within one phased marker-data pool.
+
 st.detect.core <- function(pool, n.max,
                            haplotype.options=NULL, blocks=NULL,
                            exclude.compatible=TRUE, method="forward") {

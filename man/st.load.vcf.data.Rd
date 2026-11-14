@@ -94,7 +94,7 @@ the alleles listed in \code{ALT}. When loaded into SelectionTools,
 these are represented by allele codes \code{1}, \code{2}, \code{3},
 and so on.
 
-Prepare the input object using \code{\link{st.dataframe.to.STvcf}}.
+The input object can be prepared with \code{\link{st.dataframe.to.STvcf}}.
 This function converts a data frame of marker information and
 genotypes into the STvcf format required here.
 

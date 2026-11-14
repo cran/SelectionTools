@@ -84,7 +84,7 @@ already been dispersed by the SelectionTools linkage-map or simulation
 machinery; this function returns the current stored positions and cannot
 reconstruct an earlier duplicate position that is no longer represented.
 
-The optional \code{pedigree} attribute contains the versioned \code{name}/\code{pedigree} data frame. When an active symbolic-A fit is stored, \code{prediction.state} retains its versioned fitted snapshot and source role for STvcf/RDS persistence. These attributes leave the nine-component STvcf layout unchanged. Standalone observed responses, legacy effects and selection values, and simulation GValue/PValue arrays are not exported as dataset fields. The fitted snapshot contains the response and effect information needed for prediction; refitting after import requires loading the desired response into the marker dataset.
+The optional \code{pedigree} attribute contains the versioned \code{name}/\code{pedigree} data frame. When an active symbolic-A fit is stored, \code{prediction.state} retains its versioned fitted snapshot and source role for STvcf/RDS persistence. These attributes leave the nine-component STvcf layout unchanged. Standalone observed responses, earlier effects and selection values, and simulation GValue/PValue arrays are not exported as dataset fields. The fitted snapshot contains the response and effect information needed for prediction; refitting after import requires loading the desired response into the marker dataset.
 }
 \value{
 A \code{list} of class \code{"STvcf"} containing the current marker data, individual identifiers, marker metadata and chromosome-label mapping. If conversion fails, \code{NULL} is returned.

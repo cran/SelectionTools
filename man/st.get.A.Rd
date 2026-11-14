@@ -15,7 +15,7 @@ Z from the marker alleles if necessary, followed by the existing A constructor.
 It does not implement a second marker converter or relationship formula.
 For polymorphic biallelic input, the result is equivalent to
 \code{gs.make.A(gs.get.Z(data.set, names=TRUE), coding=coding)}.
-This relationship-matrix path also accepts fixed biallelic loci, which contribute zero after centering. An entirely fixed panel has zero relationship scale and is rejected. Multiallelic loci must be excluded. The separate legacy \code{gs.get.Z} interface retains its original marker requirements. The dedicated
+This relationship-matrix path also accepts fixed biallelic loci, which contribute zero after centering. An entirely fixed panel has zero relationship scale and is rejected. Multiallelic loci must be excluded. The separate older \code{gs.get.Z} interface retains its original marker requirements. The dedicated
 \code{genomic_relationship_A} field caches the numeric relationship matrix.
 The cache is owned by the compiled marker dataset in C memory and is independent
 of returned R matrices. Removing or modifying an R result does not release or

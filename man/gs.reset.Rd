@@ -1,9 +1,9 @@
 \name{gs.reset}
 \alias{gs.reset}
-\title{Reset genomic-selection data and settings}
+\title{Resets genomic-selection data and settings}
 
 \description{
-Reset genomic-selection data and settings.
+Resets genomic-selection data and settings.
 }
 
 \usage{

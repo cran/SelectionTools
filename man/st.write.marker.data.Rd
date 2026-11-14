@@ -50,7 +50,7 @@ individuals indistinguishable are rejected.
 
 The writer does not modify the in-memory marker data set. In particular, writing a data set without a linkage map uses the marker matrix directly and does not create a synthetic map or alter map dimensions. Unsupported format codes are rejected.
 
-Individuals can be restricted either by a positional range or by a file of individual names. These output selections affect only the written files and do not alter the stored marker data.
+Individuals can be selected either by a positional range or by a file of individual names. These output selections affect only the written files and do not alter the stored marker data.
 }
 \value{
 \code{NULL}, returned invisibly. The function is called for its side effect of writing marker-data files in the selected output format.

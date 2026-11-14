@@ -21,9 +21,9 @@ evaluate.allele.freq2 <- function(PopName, Loci, missing=0)
 
 define.effects.df <- function(LocNames) {
   for (locus in LocNames) {
-    if (any(grepl(locus, list.effects()))) {
+    if (paste0("EFF", locus, 1) %in% list.effects()$effect) {
       warning(paste0("Effects already exist for ", locus, ", using preexisting effects."))
-      return(invisible(NULL))
+      next
     }
     invisible(.Call("st_legacy_sim", list(action="effect.locus", locus=as.character(locus),
                     name=paste0("EFF", locus, 1)), PACKAGE="SelectionTools"))
@@ -36,24 +36,14 @@ sel.target.define <- function(criteria.df)
 
 
 
-# Das neue select all best
+
 select.genotypes <- function(newPop, oldPop, criteria) {
-  popsize <- population.size.get(oldPop)$NoInds
-  if (is.null(popsize) || popsize == 0) {
-    info(-2, paste("Population", oldPop, "is of size 0"))
-    return(invisible(NULL))
-  }
-  loci <- unique(criteria[, 1L])
-  for (locus in loci) {
-    define.effects.df(locus)
-    temporary <- paste0("tmp", locus)
-    .Call("st_legacy_sim", list(action="select.genotype", source=oldPop,
-          target=temporary, destination=newPop, effect=paste0("EFF", locus, 1),
-          criteria=criteria[criteria[, 1L] == locus, , drop=FALSE]),
-          PACKAGE="SelectionTools")
-    oldPop <- temporary
-  }
-  population.remove(paste0("tmp", loci))
+  if (!is.data.frame(criteria) || ncol(criteria) < 3L)
+    stop("criteria must contain locus and two allele columns")
+  criteria[[1L]] <- as.character(criteria[[1L]])
+  invisible(.Call("st_legacy_sim", list(action="select.genotypes",
+      source=as.character(oldPop), destination=as.character(newPop),
+      criteria=criteria), PACKAGE="SelectionTools"))
 }
 
 st.read.marker.data.df <- function(markerdata, format = NULL,
@@ -93,7 +83,7 @@ st.read.map.df <- function(map, m.stretch = 1, data.set = "default") {
       is.na(data.set) || !nzchar(data.set))
     stop("data.set must be one non-empty character string")
   map <- as.data.frame(map, stringsAsFactors = FALSE)
-  # Matrices containing marker names have character storage throughout.
+  
   number <- function(x) {
     if (is.factor(x)) x <- as.character(x)
     if (!(is.numeric(x) || is.character(x))) stop("invalid numeric map column")

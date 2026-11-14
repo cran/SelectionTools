@@ -223,10 +223,15 @@ scenario-A value. The resulting settings are passed directly to
 the generation and selection settings and for the structure of the simulation
 results. The file name for every active scenario is taken from
 \code{result.files}; no result-file name is generated automatically.
+
+A \code{NULL} result from any simulation aborts the comparison before
+later scenarios are run. Files from completed scenarios remain intact;
+the operation does not roll back the whole comparison.
 }
 
 \value{
-\code{NULL}, returned invisibly as the value of the final \code{for} loop.
+On successful completion, \code{NULL} is returned invisibly as the value
+of the final \code{for} loop.
 The function is called for its side effect of running the active simulation
 scenarios; each call to \code{mab.simulate()} saves its result in the
 corresponding explicitly supplied file from \code{result.files}.

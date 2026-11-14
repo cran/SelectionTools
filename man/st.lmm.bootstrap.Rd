@@ -35,7 +35,7 @@ RNG kind and state, including the absence of \code{.Random.seed}. With
 \code{NULL}, drawing the recorded master seed advances the caller's state.}
 \item{type}{For generation, \code{"parametric"} samples Gaussian random
 effects and residuals; \code{"residual"} resamples centered and scaled
-conditional residuals in the restricted setting described below. For
+conditional residuals in the limited setting described below. For
 \code{confint}, the interval construction.}
 \item{re.form}{Random coefficients held at their fitted values during a
 parametric bootstrap; \code{\link{simulate.st.lmm}} describes the generation step. The default
@@ -96,10 +96,10 @@ search or an internal random-effect bootstrap test is not repeated.
 
 When selected random coefficients are held, they are treated as fixed
 plug-in constants. Unselected coefficients are generated from their marginal
-fitted covariance, with both covariance axes restricted to those
+fitted covariance, with both covariance axes limited to those
 coefficients. This does not draw their conditional distribution given the
 held coefficients. It does not propagate uncertainty in the held fitted
-values. State the resulting conditional target when interpreting a statistic.
+values. The resulting conditional target determines the interpretation of a statistic.
 
 Residual resampling requires a univariate model with one homogeneous,
 positive, independent residual variance. Heterogeneous or correlated residual

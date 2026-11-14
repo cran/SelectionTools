@@ -38,8 +38,8 @@ optimizer receives exactly the same vector for a given start.}
 \code{optimizer}, \code{parameters} or \code{evaluate.only}; the first two
 are determined by the comparison arguments.}
 
-\item{keep.fits}{Retain full fitted objects in addition to estimates and
-diagnostics.}
+\item{keep.fits}{Logical. Full fitted objects are retained in addition to estimates and
+diagnostics when TRUE.}
 \item{x}{A \code{st.lmm.allfit} object.}
 \item{...}{Display controls for the result-table printer. Omitted controls use
 \code{\link{st.options}}.}

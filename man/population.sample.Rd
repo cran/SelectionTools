@@ -1,6 +1,6 @@
 \name{population.sample}
 \alias{population.sample}
-\title{Sample a simulation population}
+\title{Samples a simulation population}
 
 \description{
 Creates a destination population by random sampling from a source population.
@@ -22,7 +22,11 @@ An invisible \code{list} returned by the compiled routine. The list is an implem
 }
 
 \details{
-The source population is not changed. Raw chromosome data are copied for the
+Each derived cache is complete for all individuals or absent throughout a
+population. A mixed source cache causes all marker-genotype, genetic-value and
+phenotype caches to be cleared silently in the source and result.
+
+The source individuals are retained. Raw chromosome data are copied for the
 sampled individuals. Complete cached genotype, genetic-value, and
 phenotypic-value categories are deep-copied when present in the source.
 Derived categories remain all-or-none for the destination population.

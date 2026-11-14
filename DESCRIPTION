@@ -1,6 +1,6 @@
 Package: SelectionTools
-Version: 26.5.2
-Date: 2026-10-13
+Version: 26.6
+Date: 2026-11-13
 Title: Simulation and Data Analysis for Plant Breeders
 Authors@R: c(
     person("Matthias", "Frisch",
@@ -23,10 +23,10 @@ Description: Provides tools for simulation of plant breeding programs
 Depends: R (>= 4.0.0)
 License: CC0
 NeedsCompilation: yes
-Packaged: 2026-11-12 08:35:45 UTC; frisch-m
+Packaged: 2026-11-13 22:45:05 UTC; frisch-m
 Author: Matthias Frisch [aut, cre],
   Hans Peter Maurer [ctb],
   Philipp Heilmann [ctb]
 Maintainer: Matthias Frisch <matthias.frisch@uni-giessen.de>
 Repository: CRAN
-Date/Publication: 2026-11-12 10:41:02 UTC
+Date/Publication: 2026-11-14 08:20:32 UTC

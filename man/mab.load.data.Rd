@@ -13,9 +13,15 @@ mab.load.data(simulation.name, simulation.run, result.file)
 }
 
 \arguments{
-   \item{simulation.name}{Simulation-name identifier retained for compatibility with the MAB workflow. It does not determine the file name.}
-   \item{simulation.run}{Simulation-run identifier retained for compatibility with the MAB workflow. It does not determine the file name.}
+   \item{simulation.name}{Requested simulation-name identifier. It must match the identifier stored in the result; it does not determine the file name.}
+   \item{simulation.run}{Requested simulation-run identifier. It must match the identifier stored in the result; it does not determine the file name.}
    \item{result.file}{Required name of the result file. Relative names are resolved against \code{st.data.dir}; absolute paths are used directly. No file name is generated from \code{simulation.name} or \code{simulation.run}.}
+}
+\details{
+The stored \code{simulation.name} and \code{simulation.run} must match
+the requested identifiers. The result is loaded through an isolated
+environment, so other variables saved in the file cannot overwrite the
+requested identifiers or other caller bindings.
 }
 \value{
 The object \code{outp} loaded from the requested simulation result file. For
@@ -34,7 +40,9 @@ summaries:
   chromosome segments in separately defined chromosome regions.}
   \item{\code{LinkageDrag1}, \code{LinkageDrag2}, \dots}{Donor chromosome
   segment attached to each target locus; target loci are evaluated separately
-  and linkage drag is averaged over the two homologues.}
+  and, for each individual, linkage drag is averaged over donor-bearing
+  homologues at that target; it is zero when neither homologue carries the
+  donor allele.}
   \item{\code{SM}}{Number of marker data points attributed to single-marker
   assays.}
   \item{\code{HT}}{Number of marker data points attributed to high-throughput

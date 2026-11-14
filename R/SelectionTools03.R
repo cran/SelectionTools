@@ -1,7 +1,7 @@
-###########################################################################
-# SelectionTools03.R
-# Chromosome-wide statistical phasing
-###########################################################################
+
+
+
+
 
 "st.phase" <- function(data.set="default", ref=NULL, phasing.options=list(),
                          impute=FALSE, commit=TRUE)

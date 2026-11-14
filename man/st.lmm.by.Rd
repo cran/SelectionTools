@@ -126,7 +126,7 @@ inference statuses.  It retains the group inventory and reports whether
 pooled inference was requested.  \code{coef} returns a matrix with one row
 per group and the union of coefficient names as columns; unavailable or
 aliased coefficients are \code{NA}.  \code{confint} returns the coefficient
-table restricted to the selected coefficients, retaining explicit rows for
+table containing only the selected coefficients, retaining explicit rows for
 failed groups.  The interval level and inference interpretation are stored
 as attributes.  These methods do not modify the fitted object.
 }

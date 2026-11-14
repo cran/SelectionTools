@@ -1,5 +1,5 @@
 
-## Functions
+
 
 "sm.start.timer" <- function(depth=1)
   {
@@ -95,8 +95,22 @@ mab.load.data <- function(
    if (!is.character(result.file) || length(result.file) != 1L ||
        is.na(result.file) || !nzchar(result.file))
      stop("result.file must be supplied as a non-empty file name")
-   outp <- NULL
-   load(file=mab.df(st.data.dir,result.file))
+   if (!is.character(simulation.name) || length(simulation.name) != 1L ||
+       is.na(simulation.name) || !nzchar(simulation.name) ||
+       !is.character(simulation.run) || length(simulation.run) != 1L ||
+       is.na(simulation.run) || !nzchar(simulation.run))
+     stop("simulation.name and simulation.run must be non-empty strings")
+   stored <- new.env(parent=emptyenv())
+   load(file=mab.df(st.data.dir,result.file), envir=stored)
+   outp <- get0("outp", envir=stored, inherits=FALSE)
+   stored.name <- if (is.list(outp)) outp[["simulation.name"]] else NULL
+   stored.run <- if (is.list(outp)) outp[["simulation.run"]] else NULL
+   if (!is.character(stored.name) || length(stored.name) != 1L ||
+       is.na(stored.name) || !is.character(stored.run) ||
+       length(stored.run) != 1L || is.na(stored.run) ||
+       !identical(as.vector(stored.name), as.vector(simulation.name)) ||
+       !identical(as.vector(stored.run), as.vector(simulation.run)))
+     stop("result.file does not contain the requested simulation.name and simulation.run")
    outp
 }  
 
@@ -121,13 +135,17 @@ mab.tabulate<- function(
                             )
 {
   if (percent) percent <- TRUE else percent <- FALSE
+  if (!is.character(simulation.names.runs) || length(simulation.names.runs) < 2L ||
+      length(simulation.names.runs) %% 2L || anyNA(simulation.names.runs) ||
+      any(!nzchar(simulation.names.runs)))
+    stop("simulation.names.runs must contain complete simulation-name/run pairs")
   snr <- matrix(simulation.names.runs, ncol=2, byrow=TRUE)
   n.sc <- nrow(snr)
   if (!is.character(result.files) || length(result.files) != n.sc ||
       anyNA(result.files) || any(!nzchar(result.files)))
     stop("result.files must contain one non-empty file name per scenario")
   outp <- vector("list", n.sc)
-  for (i in 1:n.sc)
+  for (i in seq_len(n.sc))
     outp[[i]] <- mab.load.data(simulation.name=snr[i,1],
                               simulation.run=snr[i,2],
                               result.file=result.files[i])
@@ -142,7 +160,7 @@ mab.tabulate<- function(
       for (i in 2:n.sc)
         if (!(identical(outp[[i]]$reg.chr, outp[[i-1]]$reg.chr) &&
               identical(outp[[i]]$reg.begin, outp[[i-1]]$reg.begin) &&
-              identical(outp[[i]]$reg.begin, outp[[i-1]]$reg.begin))) {
+              identical(outp[[i]]$reg.end, outp[[i-1]]$reg.end))) {
           info(-2, "Chromosome regions are not identical in all scenarios")
           return(invisible(NULL))
         }
@@ -190,7 +208,7 @@ mab.compare <- function (
    a.reg.end          = NULL,                            
    a.missing.allele   = "9" ,
    a.success.factor   = 1   ,                      
-#
+
    b.simulation.name =NULL, c.simulation.name =NULL, d.simulation.name =NULL,
    b.simulation.run  =NULL, c.simulation.run  =NULL, d.simulation.run  =NULL,
    b.repetitions     =NULL, c.repetitions     =NULL, d.repetitions     =NULL,      
@@ -210,7 +228,7 @@ mab.compare <- function (
    b.reg.end         =NULL, c.reg.end         =NULL, d.reg.end         =NULL,
    b.missing.allele  =NULL, c.missing.allele  =NULL, d.missing.allele  =NULL,
    b.success.factor  =NULL, c.success.factor  =NULL, d.success.factor  =NULL,
-#
+
    e.simulation.name =NULL, f.simulation.name =NULL, g.simulation.name =NULL,
    e.simulation.run  =NULL, f.simulation.run  =NULL, g.simulation.run  =NULL,
    e.repetitions     =NULL, f.repetitions     =NULL, g.repetitions     =NULL,      
@@ -230,7 +248,7 @@ mab.compare <- function (
    e.reg.end         =NULL, f.reg.end         =NULL, g.reg.end         =NULL,
    e.missing.allele  =NULL, f.missing.allele  =NULL, g.missing.allele  =NULL,
    e.success.factor  =NULL, f.success.factor  =NULL, g.success.factor  =NULL,
-#
+
    h.simulation.name =NULL, i.simulation.name =NULL,
    h.simulation.run  =NULL, i.simulation.run  =NULL,
    h.repetitions     =NULL, i.repetitions     =NULL,     
@@ -297,16 +315,12 @@ mab.compare <- function (
            "sf"
           )
 
- ### FIX: make variables visible to R CMD check (no behavior change)
+ 
   sn <- sr <- re <- rp <- dp <- li <- tl <- fl <- rl <- gt <- ps <- ss <- ns <- np <- gh <-
       gb <- ge <- am <- sf <- vector("list", 9)
 
 
   
- for (i in 1:length(an)){
-   cmd <- paste(an[i], " <- vector('list',9)",sep="")
-   eval(parse(text=cmd))
- }
 
 
   for (i in 1:9)
@@ -322,18 +336,18 @@ mab.compare <- function (
   
           n.scn   <- n.scn+1
 
-          sn[[i]] <-
+          sn[[n.scn]] <-
             eval(parse(text=paste(
                          prefix[i],"simulation.name",
                          sep="" )))
           
           for (k in 2:length(an)){
             cmd <- paste( "if( !is.null( a.",suffix[k],") ) ",
-                         an[k],"[[",i,"]]","<- a.", suffix[k],
+                         an[k],"[[",n.scn,"]]","<- a.", suffix[k],
                          sep="" )
             eval(parse(text=cmd))
             cmd <- paste( "if( !is.null(",prefix[i],suffix[k],") ) ", 
-                         an[k],"[[",i,"]]", "<-", prefix[i],suffix[k],
+                         an[k],"[[",n.scn,"]]", "<-", prefix[i],suffix[k],
                          sep="" )
             eval(parse(text=cmd))
           }
@@ -342,14 +356,16 @@ mab.compare <- function (
     }
  
   
+  if (!n.scn)
+    stop("at least one simulation scenario must be supplied")
   if (!is.character(result.files) || length(result.files) != n.scn ||
       anyNA(result.files) || any(!nzchar(result.files)))
     stop("result.files must contain one non-empty file name per active scenario")
   if (anyDuplicated(result.files))
     stop("result.files must contain unique file names")
 
-  for (i in 1:n.scn){
-    mab.simulate(
+  for (i in seq_len(n.scn)){
+    result <- mab.simulate(
                    simulation.name   =  sn[[i]] , 
                    simulation.run    =  sr[[i]] ,
                    repetitions       =  re[[i]] ,
@@ -371,6 +387,9 @@ mab.compare <- function (
                    result.file       =  result.files[i],
                    success.factor    =  sf[[i]] 
                    )
+    if (is.null(result))
+      stop("mab.compare: scenario ", sn[[i]], " (run ", sr[[i]],
+           ") did not produce a result")
   }
 }
 

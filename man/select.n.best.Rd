@@ -26,6 +26,10 @@ On successful selection, returns the invisible implementation-level \code{list} 
 }
 
 \details{
+Each derived cache is complete for all individuals or absent throughout a
+population. A mixed source cache causes all marker-genotype, genetic-value and
+phenotype caches to be cleared silently in the source and result.
+
 With \code{selection.criterion="G"}, the source population is genotyped and
 evaluated before selection. With \code{effect=NULL}, selection is based on
 the weighted genetic index.

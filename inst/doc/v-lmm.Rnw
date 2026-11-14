@@ -1084,14 +1084,16 @@ The following example changes the formatting and displays the model
 coefficients.
 
 <<PRINT-options,eval=FALSE>>=
-st.options()
+printing.options <- st.options()
+printing.options
 st.options(list(
     print.digits = 3,
     print.char.perline = 60,
     print.top = 5,
     print.bottom = 2
 ))
-coef(m.rapeseed)
+printing.coefficients <- coef(m.rapeseed)
+printing.coefficients
 @
 
 Setting either \cde{print.top} or \cde{print.bottom} to \cde{Inf}
@@ -1495,10 +1497,6 @@ whereas replicates are nested within environments.
 
 <<CM15-1,eval=FALSE>>=
 data("v-lmm-rapeseed", package = "SelectionTools")
-st.options(list(
-    print.ems = TRUE,
-    print.test.construction = TRUE
-))
 @
 
 Genotype, environment and their interaction are fixed effects. The random
@@ -1509,6 +1507,10 @@ the expected mean squares and the construction of these tests in the model
 output.
 
 <<CM15-2,eval=FALSE>>=
+st.options(list(
+    print.ems = TRUE,
+    print.test.construction = TRUE
+))
 m.rape <- st.lmm(
     fixed = hgt ~ geno * env,
     random = ~rep:env,
@@ -2155,7 +2157,7 @@ denominator DF.
 
 <<M37_NA_NA-details,eval=FALSE>>=
 st.options(list(print.test.construction = TRUE))
-print(m)
+m
 @
 
 \begin{Soutput}
@@ -6280,12 +6282,13 @@ m.met.seven.means <- st.lmm(
     cov = ~at(env):units,
     data = barley.seven.traits,
     random.test = "none",
-    control = list(backend = "block")
+    control = list(backend = "block", optimizer = "AI")
 )
 barley.lsmeans <- as.data.frame(st.lsm(m.met.seven.means, ~gen))
-round(xtabs(lsmeans ~ gen + trait, data = barley.lsmeans)[
+barley.lsmeans.table <- round(xtabs(lsmeans ~ gen + trait, data = barley.lsmeans)[
     , c("YLD", "HLW", "TKW", "PLH", "DH", "DM", "SC")
 ], 2)
+barley.lsmeans.table
 @
 
 \begin{Soutput}
@@ -8009,6 +8012,7 @@ Give each location--year trial a unique environment label.
 
 <<barley-series-setup,eval=FALSE>>=
 library(SelectionTools)
+st.set.num.threads(1)
 data("v-lmm-barley-met", package = "SelectionTools")
 barley.met$env <- interaction(barley.met$loc, barley.met$year,
     drop = TRUE)
@@ -8578,13 +8582,13 @@ marker calls for the tropical maize example. The marker calls are stored in
 
 <<tropmaize-prediction-load,eval=FALSE>>=
 library(SelectionTools)
+st.set.num.threads(1)
 data("v-lmm-tropmaize", package = "SelectionTools")
 data("v-tropmaize-vcf", package = "SelectionTools")
 st.load.vcf.data(v.tropmaize.vcf, data.set = "maize.lmm")
 @
 
 \begin{Soutput}
-M (data set 'maize.lmm'): New data set generated 'maize.lmm'
 M (data set 'maize.lmm'): No. of individuals: 264, no. of markers: 1076
 \end{Soutput}
 
@@ -8707,6 +8711,7 @@ the prediction dataset contains markers only.
 
 <<tropmaize-split-load,eval=FALSE>>=
 library(SelectionTools)
+st.set.num.threads(1)
 data("v-tropmaize-vcf", package = "SelectionTools")
 st.load.vcf.data(v.tropmaize.vcf, data.set = "maize.split")
 @
@@ -8873,6 +8878,7 @@ example. \cde{st.load.vcf.data} stores the marker data under
 \cde{"maize.lattice"}.
 
 <<tropmaize-lattice-mask,eval=FALSE>>=
+st.set.num.threads(1)
 data("v-lmm-tropmaize-lattice", package = "SelectionTools")
 data("v-tropmaize-vcf", package = "SelectionTools")
 st.load.vcf.data(v.tropmaize.vcf, data.set = "maize.lattice")
@@ -9002,6 +9008,7 @@ The two marker objects contain the flint and dent parental pools, and
 The first import stores the flint markers under the name \cde{"flintmaize"}.
 
 <<H01-load,eval=FALSE>>=
+st.set.num.threads(1)
 data("v-flintmaize-vcf", package = "SelectionTools")
 data("v-dentmaize-vcf", package = "SelectionTools")
 data("v-hybmaize-phe", package = "SelectionTools")
@@ -9236,6 +9243,7 @@ name. The supplied tropical-maize marker and phenotype objects are loaded,
 and the marker calls are imported as \cde{"maize"}.
 
 <<tropmaize-dataset-load,eval=FALSE>>=
+st.set.num.threads(1)
 data("v-tropmaize-vcf", package = "SelectionTools")
 data("v-tropmaize-phe", package = "SelectionTools")
 st.load.vcf.data(v.tropmaize.vcf, data.set = "maize")
@@ -9402,6 +9410,7 @@ the hybrid phenotype table are loaded, and the flint markers are stored
 under the name \cde{"flint"}.
 
 <<H02-load,eval=FALSE>>=
+st.set.num.threads(1)
 data("v-flintmaize-vcf", package = "SelectionTools")
 data("v-dentmaize-vcf", package = "SelectionTools")
 data("v-hybmaize-phe", package = "SelectionTools")
@@ -9642,6 +9651,7 @@ from the two parental matrices. \cde{prediction = "NAonly"} stores
 predictions for the missing responses in the performance frame.
 
 <<H03-fit,eval=FALSE>>=
+st.set.num.threads(1)
 hybrid.gca.sca <- st.lmm(
     fixed = GY ~ 1,
     random = ~flint + dent + flint:dent,
@@ -9774,6 +9784,7 @@ The package data provide the parental marker calls and observed hybrid
 responses.
 
 <<H04-load,eval=FALSE>>=
+st.set.num.threads(1)
 data("v-flintmaize2-vcf")
 data("v-dentmaize2-vcf")
 data("v-hybmaize2-phe")

@@ -1,9 +1,9 @@
 \name{population.individual.remove}
 \alias{population.individual.remove}
-\title{Individual remove a population or population data}
+\title{Removes one individual from a population}
 
 \description{
-Individual remove a population or population data.
+Removes one individual from a population.
 }
 
 \usage{
@@ -12,8 +12,10 @@ population.individual.remove(PopName, IndPos)
 
 \arguments{
    \item{PopName}{Name of the population.}
-   \item{IndPos}{Function argument used by this operation.}
+   \item{IndPos}{One whole-number individual position. An out-of-range position leaves the population unchanged.}
 }
 \value{
-For a valid individual position, the invisible implementation-level \code{list} returned by the final population operation used to remove the individual. If the position is outside the population, \code{NULL}. The main effect is modification of the population.
+\code{NULL}, invisibly. A valid individual position removes that individual
+while preserving the order of the remaining individuals. An out-of-range
+position leaves the population unchanged.
 }

@@ -1,9 +1,9 @@
 \name{data.params}
 \alias{data.params}
-\title{Returns or inspect parameters associated with a data object}
+\title{Returns or inspects parameters associated with a data object}
 
 \description{
-Returns or inspect parameters associated with a data object.
+Returns or inspects parameters associated with a data object.
 }
 
 \usage{
